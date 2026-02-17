@@ -1,0 +1,27 @@
+{
+  "manifest_version": 1,
+  "issued_at": "2024-01-01T00:00:00Z",
+  "expires_at": "2030-01-01T00:00:00Z",
+  "broker_execute_url": "https://localhost:8081/execute",
+  "match_rules": [
+    {
+      "integration_id": "int_1fde97a6131b4b6c99a0afed59774e45",
+      "provider": "openai",
+      "match": {
+        "hosts": ["api.openai.com"],
+        "schemes": ["https"],
+        "ports": [443],
+        "path_groups": ["*"]
+      },
+      "rewrite": {
+        "mode": "execute",
+        "send_intended_url": true
+      }
+    }
+  ],
+  "signature": {
+    "alg": "EdDSA",
+    "kid": "test-key-1",
+    "jws": "test-signature"
+  }
+}

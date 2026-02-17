@@ -1,0 +1,234 @@
+# Docker Compose for broker-interceptor local/CI stack.
+# Base services (default): postgres + redis.
+# Optional profiles:
+# - apps: broker-admin-api + broker-api
+# - tools: pgAdmin + Redis Commander
+# - vault: local Vault dev server
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: broker-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: broker
+      POSTGRES_PASSWORD: broker
+      POSTGRES_DB: broker
+    ports:
+      - '5432:5432'
+    volumes:
+      - broker-postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U broker -d broker']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - broker-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: broker-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass broker
+    ports:
+      - '6379:6379'
+    volumes:
+      - broker-redis-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a broker ping | grep -q PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - broker-network
+
+  broker-admin-api:
+    profiles: ['apps']
+    build:
+      context: .
+      dockerfile: apps/broker-admin-api/Dockerfile
+    container_name: broker-admin-api
+    restart: unless-stopped
+    depends_on:
+      broker-api-certs:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${BROKER_RUNTIME_ENV:-development}
+      BROKER_ADMIN_API_HOST: 0.0.0.0
+      BROKER_ADMIN_API_PORT: 8080
+      BROKER_ADMIN_API_INFRA_ENABLED: 'true'
+      BROKER_ADMIN_API_DATABASE_URL: ${BROKER_ADMIN_API_DATABASE_URL_DOCKER:-postgresql://broker:broker@postgres:5432/broker}
+      BROKER_ADMIN_API_REDIS_URL: ${BROKER_ADMIN_API_REDIS_URL_DOCKER:-redis://:broker@redis:6379}
+      BROKER_ADMIN_API_REDIS_KEY_PREFIX: ${BROKER_ADMIN_API_REDIS_KEY_PREFIX:-broker-admin-api:control-plane}
+      BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS: ${BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS:-http://localhost:4173}
+      BROKER_ADMIN_API_AUTH_MODE: ${BROKER_ADMIN_API_AUTH_MODE:-static}
+      BROKER_ADMIN_API_STATIC_TOKENS_JSON: '[{"token":"dev-admin-token-change-in-production","subject":"dev-admin","tenant_ids":["*"],"roles":["owner"]}]'
+      BROKER_ADMIN_API_OIDC_CLIENT_ID: ${BROKER_ADMIN_API_OIDC_CLIENT_ID}
+      BROKER_ADMIN_API_OIDC_CLIENT_SECRET: ${BROKER_ADMIN_API_OIDC_CLIENT_SECRET}
+      BROKER_ADMIN_API_OIDC_ISSUER: ${BROKER_ADMIN_API_OIDC_ISSUER}
+      BROKER_ADMIN_API_OIDC_AUDIENCE: ${BROKER_ADMIN_API_OIDC_AUDIENCE}
+      BROKER_ADMIN_API_OIDC_JWKS_URI: ${BROKER_ADMIN_API_OIDC_JWKS_URI:-https://brok.local.com/roles}
+      BROKER_ADMIN_API_OIDC_ROLE_CLAIM: ${BROKER_ADMIN_API_OIDC_ROLE_CLAIM:-https://brok.local.com/tenants}
+      BROKER_ADMIN_API_OIDC_TENANT_CLAIM: ${BROKER_ADMIN_API_OIDC_TENANT_CLAIM}
+      BROKER_ADMIN_API_SECRET_KEY_B64: ${BROKER_ADMIN_API_SECRET_KEY_B64:-}
+      BROKER_ADMIN_API_SECRET_KEY_ID: ${BROKER_ADMIN_API_SECRET_KEY_ID:-v1}
+      BROKER_ADMIN_API_CERT_ISSUER_MODE: ${BROKER_ADMIN_API_CERT_ISSUER_MODE:-local}
+      BROKER_ADMIN_API_LOCAL_CA_CERT_PATH: ${BROKER_ADMIN_API_LOCAL_CA_CERT_PATH:-/app/certs/ca.crt}
+      BROKER_ADMIN_API_LOCAL_CA_KEY_PATH: ${BROKER_ADMIN_API_LOCAL_CA_KEY_PATH:-/app/certs/ca.key}
+      BROKER_ADMIN_API_MTLS_CA_PEM: ${BROKER_ADMIN_API_MTLS_CA_PEM:-}
+      BROKER_ADMIN_API_VAULT_ADDR: ${BROKER_ADMIN_API_VAULT_ADDR:-http://vault:8200}
+      BROKER_ADMIN_API_VAULT_TOKEN: ${BROKER_ADMIN_API_VAULT_TOKEN:-dev-root-token}
+      BROKER_ADMIN_API_VAULT_PKI_MOUNT: ${BROKER_ADMIN_API_VAULT_PKI_MOUNT:-pki}
+      BROKER_ADMIN_API_VAULT_PKI_ROLE: ${BROKER_ADMIN_API_VAULT_PKI_ROLE:-broker-workloads}
+    ports:
+      - '8080:8080'
+    volumes:
+      - ./apps/broker-api/certs:/app/certs:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - broker-network
+
+  broker-api:
+    profiles: ['apps']
+    build:
+      context: .
+      dockerfile: apps/broker-api/Dockerfile
+    container_name: broker-api
+    restart: unless-stopped
+    depends_on:
+      broker-api-certs:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${BROKER_RUNTIME_ENV:-development}
+      BROKER_API_HOST: 0.0.0.0
+      BROKER_API_PORT: 8081
+      BROKER_API_PUBLIC_BASE_URL: ${BROKER_API_PUBLIC_BASE_URL:-https://localhost:8081}
+      BROKER_API_INFRA_ENABLED: 'true'
+      BROKER_API_DATABASE_URL: ${BROKER_API_DATABASE_URL_DOCKER:-postgresql://broker:broker@postgres:5432/broker}
+      BROKER_API_REDIS_URL: ${BROKER_API_REDIS_URL_DOCKER:-redis://:broker@redis:6379}
+      BROKER_API_MANIFEST_TTL_SECONDS: ${BROKER_API_MANIFEST_TTL_SECONDS:-300}
+      BROKER_API_CORS_ALLOWED_ORIGINS: ${BROKER_API_CORS_ALLOWED_ORIGINS:-http://localhost:4173}
+      BROKER_API_REDIS_KEY_PREFIX: ${BROKER_API_REDIS_KEY_PREFIX:-broker-api:data-plane}
+      BROKER_API_TLS_ENABLED: ${BROKER_API_TLS_ENABLED:-true}
+      BROKER_API_TLS_KEY_PATH: ${BROKER_API_TLS_KEY_PATH:-/run/certs/broker-api/server.key}
+      BROKER_API_TLS_CERT_PATH: ${BROKER_API_TLS_CERT_PATH:-/run/certs/broker-api/server.crt}
+      BROKER_API_TLS_CLIENT_CA_PATH: ${BROKER_API_TLS_CLIENT_CA_PATH:-/run/certs/broker-api/ca.crt}
+      BROKER_API_TLS_REQUIRE_CLIENT_CERT: ${BROKER_API_TLS_REQUIRE_CLIENT_CERT:-true}
+      BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: ${BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT:-false}
+    ports:
+      - '8081:8081'
+    volumes:
+      - ./apps/broker-api/certs:/run/certs/broker-api:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "const https=require(\"node:https\"); const fs=require(\"node:fs\"); const
+          req=https.request({host:\"127.0.0.1\",port:8081,path:\"/healthz\",method:\"GET\",ca:fs.readFileSync(\"/run/certs/broker-api/ca.crt\"),rejectUnauthorized:true},res=>process.exit(res.statusCode===200?0:1));
+          req.on(\"error\",()=>process.exit(1)); req.end();"'
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - broker-network
+
+  broker-api-certs:
+    profiles: ['apps']
+    image: alpine:3.20
+    container_name: broker-api-certs
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssl >/dev/null
+        if [ "${BROKER_API_CERTS_FORCE_ROTATE:-false}" = "true" ]; then
+          /workspace/apps/broker-api/scripts/generate-dev-mtls-certs.sh --force --renew-before-days "${BROKER_API_CERTS_RENEW_BEFORE_DAYS:-30}" /workspace/apps/broker-api/certs
+        else
+          /workspace/apps/broker-api/scripts/generate-dev-mtls-certs.sh --renew-before-days "${BROKER_API_CERTS_RENEW_BEFORE_DAYS:-30}" /workspace/apps/broker-api/certs
+        fi
+    volumes:
+      - ./apps/broker-api:/workspace/apps/broker-api
+    restart: 'no'
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: broker-pgadmin
+    profiles: ['tools']
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@broker.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - '5050:80'
+    volumes:
+      - broker-pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - broker-network
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: broker-redis-commander
+    profiles: ['tools']
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:broker
+    ports:
+      - '8082:8081'
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - broker-network
+
+  vault:
+    image: hashicorp/vault:1.16
+    container_name: broker-vault
+    profiles: ['vault']
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${BROKER_ADMIN_API_VAULT_TOKEN:-dev-root-token}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    command: server -dev
+    ports:
+      - '8200:8200'
+    healthcheck:
+      test: ['CMD-SHELL', 'VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - broker-network
+
+volumes:
+  broker-postgres-data:
+    name: broker-postgres-data
+  broker-redis-data:
+    name: broker-redis-data
+  broker-pgadmin-data:
+    name: broker-pgadmin-data
+
+networks:
+  broker-network:
+    name: broker-network
+    driver: bridge

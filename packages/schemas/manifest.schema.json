@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/manifest.schema.json",
+  "title": "WorkloadManifest",
+  "type": "object",
+  "required": ["manifest_version", "issued_at", "expires_at", "broker_execute_url", "match_rules", "signature"],
+  "properties": {
+    "manifest_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "broker_execute_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "dpop_required": {
+      "type": "boolean"
+    },
+    "dpop_ath_required": {
+      "type": "boolean"
+    },
+    "match_rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["integration_id", "provider", "match", "rewrite"],
+        "properties": {
+          "integration_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "match": {
+            "type": "object",
+            "required": ["hosts", "schemes", "ports", "path_groups"],
+            "properties": {
+              "hosts": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              },
+              "schemes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["https"]
+                },
+                "minItems": 1
+              },
+              "ports": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "enum": [443]
+                },
+                "minItems": 1
+              },
+              "path_groups": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "rewrite": {
+            "type": "object",
+            "required": ["mode", "send_intended_url"],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": ["execute"]
+              },
+              "send_intended_url": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["alg", "kid", "jws"],
+      "properties": {
+        "alg": {
+          "type": "string"
+        },
+        "kid": {
+          "type": "string"
+        },
+        "jws": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "dpop_ath_required": {
+            "const": true
+          }
+        },
+        "required": ["dpop_ath_required"]
+      },
+      "then": {
+        "properties": {
+          "dpop_required": {
+            "const": true
+          }
+        },
+        "required": ["dpop_required"]
+      }
+    }
+  ],
+  "additionalProperties": false
+}

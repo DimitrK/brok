@@ -1,0 +1,64 @@
+services:
+  broker-admin-api:
+    image: ${BROKER_ADMIN_API_IMAGE:?BROKER_ADMIN_API_IMAGE is required}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BROKER_ADMIN_API_HOST: 0.0.0.0
+      BROKER_ADMIN_API_PORT: ${BROKER_ADMIN_API_PORT:-8080}
+      BROKER_ADMIN_API_INFRA_ENABLED: 'true'
+      BROKER_ADMIN_API_DATABASE_URL: ${BROKER_ADMIN_API_DATABASE_URL:?BROKER_ADMIN_API_DATABASE_URL is required}
+      BROKER_ADMIN_API_REDIS_URL: ${BROKER_ADMIN_API_REDIS_URL:?BROKER_ADMIN_API_REDIS_URL is required}
+      BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS: ${BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS:-}
+      BROKER_ADMIN_API_SECRET_KEY_B64: ${BROKER_ADMIN_API_SECRET_KEY_B64:?BROKER_ADMIN_API_SECRET_KEY_B64 is required}
+      BROKER_ADMIN_API_AUTH_MODE: ${BROKER_ADMIN_API_AUTH_MODE:-oidc}
+      BROKER_ADMIN_API_OIDC_ISSUER: ${BROKER_ADMIN_API_OIDC_ISSUER:-}
+      BROKER_ADMIN_API_OIDC_AUDIENCE: ${BROKER_ADMIN_API_OIDC_AUDIENCE:-}
+      BROKER_ADMIN_API_OIDC_JWKS_URI: ${BROKER_ADMIN_API_OIDC_JWKS_URI:-}
+      BROKER_ADMIN_API_CERT_ISSUER_MODE: ${BROKER_ADMIN_API_CERT_ISSUER_MODE:-vault}
+      BROKER_ADMIN_API_MTLS_CA_PEM: ${BROKER_ADMIN_API_MTLS_CA_PEM:-}
+      BROKER_ADMIN_API_VAULT_ADDR: ${BROKER_ADMIN_API_VAULT_ADDR:-}
+      BROKER_ADMIN_API_VAULT_TOKEN: ${BROKER_ADMIN_API_VAULT_TOKEN:-}
+      BROKER_ADMIN_API_VAULT_PKI_MOUNT: ${BROKER_ADMIN_API_VAULT_PKI_MOUNT:-pki}
+      BROKER_ADMIN_API_VAULT_PKI_ROLE: ${BROKER_ADMIN_API_VAULT_PKI_ROLE:-}
+    ports:
+      - '${BROKER_ADMIN_API_PORT:-8080}:8080'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  broker-api:
+    image: ${BROKER_API_IMAGE:?BROKER_API_IMAGE is required}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BROKER_API_HOST: 0.0.0.0
+      BROKER_API_PORT: ${BROKER_API_PORT:-8081}
+      BROKER_API_PUBLIC_BASE_URL: ${BROKER_API_PUBLIC_BASE_URL:?BROKER_API_PUBLIC_BASE_URL is required}
+      BROKER_API_INFRA_ENABLED: 'true'
+      BROKER_API_DATABASE_URL: ${BROKER_API_DATABASE_URL:?BROKER_API_DATABASE_URL is required}
+      BROKER_API_REDIS_URL: ${BROKER_API_REDIS_URL:?BROKER_API_REDIS_URL is required}
+      BROKER_API_CORS_ALLOWED_ORIGINS: ${BROKER_API_CORS_ALLOWED_ORIGINS:-}
+      BROKER_API_STATE_PATH: ${BROKER_API_STATE_PATH:-}
+      BROKER_API_INITIAL_STATE_JSON: ${BROKER_API_INITIAL_STATE_JSON:-}
+      BROKER_API_TLS_ENABLED: 'true'
+      BROKER_API_TLS_KEY_PATH: ${BROKER_API_TLS_KEY_PATH:-/run/certs/broker-api/server.key}
+      BROKER_API_TLS_CERT_PATH: ${BROKER_API_TLS_CERT_PATH:-/run/certs/broker-api/server.crt}
+      BROKER_API_TLS_CLIENT_CA_PATH: ${BROKER_API_TLS_CLIENT_CA_PATH:-/run/certs/broker-api/ca.crt}
+      BROKER_API_TLS_REQUIRE_CLIENT_CERT: ${BROKER_API_TLS_REQUIRE_CLIENT_CERT:-true}
+      BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: ${BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT:-true}
+    ports:
+      - '${BROKER_API_PORT:-8081}:8081'
+    volumes:
+      - ${BROKER_API_TLS_CERTS_DIR:?BROKER_API_TLS_CERTS_DIR is required}:/run/certs/broker-api:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "const https=require(\"node:https\"); const fs=require(\"node:fs\"); const req=https.request({host:\"127.0.0.1\",port:8081,path:\"/healthz\",method:\"GET\",key:fs.readFileSync(\"/run/certs/broker-api/healthcheck-client.key\"),cert:fs.readFileSync(\"/run/certs/broker-api/healthcheck-client.crt\"),ca:fs.readFileSync(\"/run/certs/broker-api/ca.crt\"),rejectUnauthorized:true},res=>process.exit(res.statusCode===200?0:1)); req.on(\"error\",()=>process.exit(1)); req.end();"'
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10

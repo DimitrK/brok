@@ -1,0 +1,4 @@
+interface:
+  display_name: "Engineering Guardrails"
+  short_description: "Enforce repo engineering and security rules"
+  default_prompt: "Use $software-engineering-guardrails to implement this task under repository engineering rules, OWASP-aligned security defaults, and zod-first boundary validation."

@@ -1,0 +1,20 @@
+{
+  "name": "@broker-interceptor/typescript-config",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "lint": "eslint . --max-warnings=0"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./eslint.config.js"
+  },
+  "prettier": "@broker-interceptor/prettier-config",
+  "devDependencies": {
+    "@broker-interceptor/eslint-config": "workspace:*",
+    "@broker-interceptor/prettier-config": "workspace:*"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}

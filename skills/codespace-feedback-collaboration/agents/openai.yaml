@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codespace Feedback"
+  short_description: "Manage cross-team feedback handoffs by code space"
+  default_prompt: "Use $codespace-feedback-collaboration to run the external_feedback workflow: process incoming requests, check pending responses, create new requests, and clean up resolved items."

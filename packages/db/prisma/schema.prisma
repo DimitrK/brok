@@ -1,0 +1,582 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  owner
+  admin
+  auditor
+  operator
+}
+
+enum WorkloadEnrollmentMode {
+  broker_ca
+  external_ca
+}
+
+enum SecretType {
+  api_key
+  oauth_refresh_token
+}
+
+enum ManifestSigningAlgorithm {
+  EdDSA
+  ES256
+}
+
+enum ManifestSigningKeyStatus {
+  active
+  retired
+  revoked
+}
+
+enum TemplateStatus {
+  active
+  disabled
+}
+
+enum PolicyRuleType {
+  allow
+  deny
+  approval_required
+  rate_limit
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  denied
+  expired
+  executed
+  canceled
+}
+
+enum RiskTier {
+  low
+  medium
+  high
+}
+
+enum AuditEventType {
+  session_issued
+  execute
+  policy_decision
+  approval_created
+  approval_decided
+  violation
+  throttle
+  sandbox_alert
+  admin_action
+}
+
+enum AuditDecision {
+  allowed
+  denied
+  approval_required
+  throttled
+}
+
+enum TemplateInvalidationOutboxStatus {
+  pending
+  delivered
+  failed
+}
+
+enum AdminNewUserMode {
+  allowed
+  blocked
+}
+
+enum AdminIdentityStatus {
+  active
+  pending
+  disabled
+}
+
+enum AdminAccessRequestStatus {
+  pending
+  approved
+  denied
+  canceled
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  tenantId  String   @unique @map("tenant_id")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users            HumanUser[]
+  workloads        Workload[]
+  workloadSessions WorkloadSession[]
+  enrollmentTokens EnrollmentToken[]
+  integrations     Integration[]
+  templateVersions TemplateVersion[]
+  policyRules      PolicyRule[]
+  approvalRequests ApprovalRequest[]
+  auditEvents      AuditEvent[]
+  ssrfGuardDecisions SsrfGuardDecision[]
+  auditRedactionProfiles AuditRedactionProfile[]
+  cryptoVerificationDefaults CryptoVerificationDefaults?
+  templateInvalidationOutbox TemplateInvalidationOutbox[]
+  secrets          Secret[]
+  adminIdentityTenantScopes AdminIdentityTenantScope[]
+
+  @@map("tenants")
+}
+
+model AdminSignupPolicy {
+  id                   String          @id @default("default")
+  newUserMode          AdminNewUserMode @default(blocked) @map("new_user_mode")
+  requireVerifiedEmail Boolean         @default(true) @map("require_verified_email")
+  allowedEmailDomains  String[]        @default([]) @map("allowed_email_domains")
+  updatedBy            String          @map("updated_by")
+  createdAt            DateTime        @default(now()) @map("created_at")
+  updatedAt            DateTime        @updatedAt @map("updated_at")
+
+  @@map("admin_signup_policy")
+}
+
+model AdminIdentity {
+  id         String              @id @default(cuid())
+  identityId String              @unique @map("identity_id")
+  issuer     String
+  subject    String
+  email      String
+  name       String?
+  status     AdminIdentityStatus @default(active)
+  createdAt  DateTime            @default(now()) @map("created_at")
+  updatedAt  DateTime            @updatedAt @map("updated_at")
+
+  roleBindings  AdminIdentityRoleBinding[]
+  tenantScopes  AdminIdentityTenantScope[]
+
+  @@unique([issuer, subject], map: "uq_admin_identities_issuer_subject")
+  @@index([email], map: "idx_admin_identities_email")
+  @@index([status], map: "idx_admin_identities_status")
+  @@map("admin_identities")
+}
+
+model AdminIdentityRoleBinding {
+  id         String   @id @default(cuid())
+  identityId String   @map("identity_id")
+  role       UserRole
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  identity AdminIdentity @relation(fields: [identityId], references: [identityId], onDelete: Cascade)
+
+  @@unique([identityId, role], map: "uq_admin_identity_role_bindings_identity_role")
+  @@index([role], map: "idx_admin_identity_role_bindings_role")
+  @@map("admin_identity_role_bindings")
+}
+
+model AdminIdentityTenantScope {
+  id         String   @id @default(cuid())
+  identityId String   @map("identity_id")
+  tenantId   String   @map("tenant_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  identity AdminIdentity @relation(fields: [identityId], references: [identityId], onDelete: Cascade)
+  tenant   Tenant        @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@unique([identityId, tenantId], map: "uq_admin_identity_tenant_scopes_identity_tenant")
+  @@index([tenantId], map: "idx_admin_identity_tenant_scopes_tenant")
+  @@map("admin_identity_tenant_scopes")
+}
+
+model AdminAccessRequest {
+  id                 String                   @id @default(cuid())
+  requestId          String                   @unique @map("request_id")
+  issuer             String
+  subject            String
+  email              String
+  name               String?
+  requestedRoles     UserRole[]               @default([]) @map("requested_roles")
+  requestedTenantIds String[]                 @default([]) @map("requested_tenant_ids")
+  status             AdminAccessRequestStatus @default(pending)
+  requestReason      String?                  @map("request_reason")
+  decisionReason     String?                  @map("decision_reason")
+  decidedBy          String?                  @map("decided_by")
+  decidedAt          DateTime?                @map("decided_at")
+  createdAt          DateTime                 @default(now()) @map("created_at")
+  updatedAt          DateTime                 @updatedAt @map("updated_at")
+
+  @@index([issuer, subject, status], map: "idx_admin_access_requests_principal_status")
+  @@index([status, createdAt], map: "idx_admin_access_requests_status_created_at")
+  @@index([email, createdAt], map: "idx_admin_access_requests_email_created_at")
+  @@map("admin_access_requests")
+}
+
+model HumanUser {
+  id          String   @id @default(cuid())
+  userId      String   @unique @map("user_id")
+  tenantId    String   @map("tenant_id")
+  email       String
+  displayName String?  @map("display_name")
+  oidcSubject String?  @map("oidc_subject")
+  oidcIssuer  String?  @map("oidc_issuer")
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant          @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+  roles  HumanUserRole[]
+
+  @@unique([tenantId, email], map: "uq_human_users_tenant_email")
+  @@index([tenantId], map: "idx_human_users_tenant")
+  @@map("human_users")
+}
+
+model HumanUserRole {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  role      UserRole
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user HumanUser @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@unique([userId, role], map: "uq_human_user_roles_user_role")
+  @@index([role], map: "idx_human_user_roles_role")
+  @@map("human_user_roles")
+}
+
+model Workload {
+  id             String                 @id @default(cuid())
+  workloadId     String                 @unique @map("workload_id")
+  tenantId       String                 @map("tenant_id")
+  name           String
+  mtlsSanUri     String                 @unique @map("mtls_san_uri")
+  enabled        Boolean
+  ipAllowlist    String[]               @default([]) @map("ip_allowlist")
+  enrollmentMode WorkloadEnrollmentMode @default(broker_ca) @map("enrollment_mode")
+  createdAt      DateTime               @default(now()) @map("created_at")
+  updatedAt      DateTime               @updatedAt @map("updated_at")
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+  sessions WorkloadSession[]
+  enrollmentTokens EnrollmentToken[]
+
+  @@unique([tenantId, name], map: "uq_workloads_tenant_name")
+  @@index([tenantId], map: "idx_workloads_tenant")
+  @@map("workloads")
+}
+
+model EnrollmentToken {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique @map("token_hash")
+  workloadId String   @map("workload_id")
+  tenantId   String   @map("tenant_id")
+  expiresAt  DateTime @map("expires_at")
+  usedAt     DateTime? @map("used_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  workload Workload @relation(fields: [workloadId], references: [workloadId], onDelete: Cascade)
+  tenant   Tenant   @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@index([tenantId, workloadId], map: "idx_enrollment_tokens_tenant_workload")
+  @@index([expiresAt], map: "idx_enrollment_tokens_expires_at")
+  @@index([usedAt], map: "idx_enrollment_tokens_used_at")
+  @@map("enrollment_tokens")
+}
+
+model WorkloadSession {
+  id                 String   @id @default(cuid())
+  sessionId          String   @unique @map("session_id")
+  workloadId         String   @map("workload_id")
+  tenantId           String   @map("tenant_id")
+  certFingerprint256 String   @map("cert_fingerprint_256")
+  tokenHash          String   @unique @map("token_hash")
+  dpopJkt            String?  @map("dpop_jkt")
+  scopes             Json
+  expiresAt          DateTime @map("expires_at")
+  revokedAt          DateTime? @map("revoked_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  workload Workload @relation(fields: [workloadId], references: [workloadId], onDelete: Restrict)
+  tenant   Tenant   @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@index([tenantId, workloadId], map: "idx_workload_sessions_tenant_workload")
+  @@index([expiresAt], map: "idx_workload_sessions_expires_at")
+  @@index([revokedAt], map: "idx_workload_sessions_revoked_at")
+  @@map("workload_sessions")
+}
+
+model Integration {
+  id            String   @id @default(cuid())
+  integrationId String   @unique @map("integration_id")
+  tenantId      String   @map("tenant_id")
+  provider      String
+  name          String
+  templateId    String   @map("template_id")
+  templateVersion Int?   @map("template_version")
+  enabled       Boolean
+  secretRef     String?  @unique @map("secret_ref")
+  secretVersion Int?     @map("secret_version")
+  lastRotatedAt DateTime? @map("last_rotated_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant  @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+  secret Secret?
+
+  @@unique([tenantId, name], map: "uq_integrations_tenant_name")
+  @@index([tenantId], map: "idx_integrations_tenant")
+  @@index([tenantId, templateId], map: "idx_integrations_template")
+  @@map("integrations")
+}
+
+model Secret {
+  id          String     @id @default(cuid())
+  secretRef   String     @unique @map("secret_ref")
+  tenantId    String     @map("tenant_id")
+  integrationId String   @unique @map("integration_id")
+  type        SecretType
+  activeVersion Int      @map("active_version")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+  integration Integration  @relation(fields: [integrationId], references: [integrationId], onDelete: Restrict)
+  versions    SecretVersion[]
+
+  @@index([tenantId], map: "idx_secrets_tenant")
+  @@index([tenantId, integrationId], map: "idx_secrets_tenant_integration")
+  @@map("secrets")
+}
+
+model SecretVersion {
+  id                   String   @id @default(cuid())
+  secretRef            String   @map("secret_ref")
+  version              Int
+  keyId                String   @map("key_id")
+  contentEncryptionAlg String   @map("content_encryption_alg")
+  keyEncryptionAlg     String   @map("key_encryption_alg")
+  wrappedDataKeyB64    String   @map("wrapped_data_key_b64")
+  ivB64                String   @map("iv_b64")
+  ciphertextB64        String   @map("ciphertext_b64")
+  authTagB64           String   @map("auth_tag_b64")
+  aadB64               String?  @map("aad_b64")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  secret Secret @relation(fields: [secretRef], references: [secretRef], onDelete: Cascade)
+
+  @@unique([secretRef, version], map: "uq_secret_versions_secret_ref_version")
+  @@index([secretRef, createdAt], map: "idx_secret_versions_secret_ref_created_at")
+  @@map("secret_versions")
+}
+
+model ManifestSigningKey {
+  id            String                   @id @default(cuid())
+  kid           String                   @unique
+  alg           ManifestSigningAlgorithm
+  publicJwk     Json                     @map("public_jwk")
+  privateKeyRef String                   @map("private_key_ref")
+  status        ManifestSigningKeyStatus @map("status")
+  createdAt     DateTime                 @default(now()) @map("created_at")
+  activatedAt   DateTime?                @map("activated_at")
+  retiredAt     DateTime?                @map("retired_at")
+  revokedAt     DateTime?                @map("revoked_at")
+
+  @@index([status, activatedAt], map: "idx_manifest_signing_keys_status_activated_at")
+  @@index([status, createdAt], map: "idx_manifest_signing_keys_status_created_at")
+  @@map("manifest_signing_keys")
+}
+
+model ManifestKeysetMetadata {
+  id            String   @id @default(cuid())
+  keysetName    String   @unique @map("keyset_name")
+  etag          String
+  generatedAt   DateTime @map("generated_at")
+  maxAgeSeconds Int      @map("max_age_seconds")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("manifest_keyset_metadata")
+}
+
+model CryptoVerificationDefaults {
+  id                     String   @id @default(cuid())
+  tenantId               String   @unique @map("tenant_id")
+  requireTemporalValidity Boolean @default(true) @map("require_temporal_validity")
+  maxClockSkewSeconds    Int      @default(0) @map("max_clock_skew_seconds")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@map("crypto_verification_defaults")
+}
+
+model TemplateVersion {
+  id           String         @id @default(cuid())
+  tenantId     String         @map("tenant_id")
+  templateId   String         @map("template_id")
+  version      Int
+  provider     String
+  status       TemplateStatus @default(active)
+  templateJson Json           @map("template_json")
+  publishedBy  String?        @map("published_by")
+  publishedAt  DateTime       @default(now()) @map("published_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@unique([tenantId, templateId, version], map: "uq_template_versions_tenant_template_version")
+  @@index([tenantId, templateId], map: "idx_template_versions_tenant_template")
+  @@index([tenantId, templateId, status], map: "idx_template_versions_tenant_template_status")
+  @@map("template_versions")
+}
+
+model PolicyRule {
+  id                     String         @id @default(cuid())
+  policyId               String         @unique @map("policy_id")
+  tenantId               String         @map("tenant_id")
+  enabled                Boolean        @default(true)
+  ruleType               PolicyRuleType @map("rule_type")
+  workloadId             String?        @map("workload_id")
+  integrationId          String         @map("integration_id")
+  templateId             String?        @map("template_id")
+  templateVersion        Int?           @map("template_version")
+  actionGroup            String         @map("action_group")
+  method                 String
+  host                   String
+  queryKeys              String[]       @default([]) @map("query_keys")
+  constraintsJson        Json?          @map("constraints_json")
+  rateLimitMaxRequests   Int?           @map("rate_limit_max_requests")
+  rateLimitIntervalSeconds Int?         @map("rate_limit_interval_seconds")
+  policyJson             Json           @map("policy_json")
+  createdBy              String?        @map("created_by")
+  createdAt              DateTime       @default(now()) @map("created_at")
+  updatedAt              DateTime       @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@index([tenantId, integrationId, actionGroup, method, host], map: "idx_policy_rules_primary_scope")
+  @@index([tenantId, workloadId], map: "idx_policy_rules_workload_scope")
+  @@index([enabled], map: "idx_policy_rules_enabled")
+  @@map("policy_rules")
+}
+
+model ApprovalRequest {
+  id                  String         @id @default(cuid())
+  approvalId          String         @unique @map("approval_id")
+  tenantId            String         @map("tenant_id")
+  status              ApprovalStatus
+  expiresAt           DateTime       @map("expires_at")
+  correlationId       String         @map("correlation_id")
+  workloadId          String         @map("workload_id")
+  integrationId       String         @map("integration_id")
+  actionGroup         String         @map("action_group")
+  riskTier            RiskTier       @map("risk_tier")
+  destinationHost     String         @map("destination_host")
+  method              String
+  path                String
+  descriptorSha256    String         @map("descriptor_sha256")
+  canonicalDescriptor Json           @map("canonical_descriptor")
+  approvalJson        Json           @map("approval_json")
+  decidedAt           DateTime?      @map("decided_at")
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@index([tenantId, workloadId, integrationId], map: "idx_approval_requests_scope")
+  @@index([status, expiresAt], map: "idx_approval_requests_status_expires_at")
+  @@index([descriptorSha256], map: "idx_approval_requests_descriptor_sha")
+  @@map("approval_requests")
+}
+
+model AuditEvent {
+  id                 String         @id @default(cuid())
+  eventId            String         @unique @map("event_id")
+  tenantId           String         @map("tenant_id")
+  timestamp          DateTime
+  workloadId         String?        @map("workload_id")
+  integrationId      String?        @map("integration_id")
+  correlationId      String         @map("correlation_id")
+  eventType          AuditEventType @map("event_type")
+  decision           AuditDecision?
+  actionGroup        String?        @map("action_group")
+  riskTier           RiskTier?      @map("risk_tier")
+  upstreamStatusCode Int?           @map("upstream_status_code")
+  latencyMs          Int?           @map("latency_ms")
+  eventJson          Json           @map("event_json")
+  createdAt          DateTime       @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@index([tenantId, timestamp], map: "idx_audit_events_tenant_timestamp")
+  @@index([tenantId, workloadId, timestamp], map: "idx_audit_events_tenant_workload_timestamp")
+  @@index([tenantId, integrationId, timestamp], map: "idx_audit_events_tenant_integration_timestamp")
+  @@index([tenantId, actionGroup, timestamp], map: "idx_audit_events_tenant_action_group_timestamp")
+  @@index([tenantId, decision, timestamp], map: "idx_audit_events_tenant_decision_timestamp")
+  @@index([correlationId], map: "idx_audit_events_correlation")
+  @@map("audit_events")
+}
+
+model SsrfGuardDecision {
+  id              String   @id @default(cuid())
+  eventId         String   @unique @map("event_id")
+  timestamp       DateTime @map("timestamp")
+  tenantId        String   @map("tenant_id")
+  workloadId      String   @map("workload_id")
+  integrationId   String   @map("integration_id")
+  templateId      String   @map("template_id")
+  templateVersion Int      @map("template_version")
+  destinationHost String   @map("destination_host")
+  destinationPort Int      @map("destination_port")
+  resolvedIps     String[] @default([]) @map("resolved_ips")
+  decision        AuditDecision
+  reasonCode      String   @map("reason_code")
+  correlationId   String   @map("correlation_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@index([tenantId, timestamp], map: "idx_ssrf_guard_decisions_tenant_timestamp")
+  @@index([reasonCode, timestamp], map: "idx_ssrf_guard_decisions_reason_timestamp")
+  @@index([destinationHost, timestamp], map: "idx_ssrf_guard_decisions_host_timestamp")
+  @@map("ssrf_guard_decisions")
+}
+
+model TemplateInvalidationOutbox {
+  id              String                          @id @default(cuid())
+  tenantId        String                          @map("tenant_id")
+  templateId      String                          @map("template_id")
+  version         Int                             @map("version")
+  updatedAtSignal DateTime                        @map("updated_at_signal")
+  payloadJson     Json                            @map("payload_json")
+  status          TemplateInvalidationOutboxStatus @default(pending) @map("status")
+  attempts        Int                             @default(0) @map("attempts")
+  deliveredAt     DateTime?                       @map("delivered_at")
+  lastError       String?                         @map("last_error")
+  createdAt       DateTime                        @default(now()) @map("created_at")
+  updatedAt       DateTime                        @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@unique([tenantId, templateId, version, updatedAtSignal], map: "uq_template_invalidation_outbox_signal")
+  @@index([status, createdAt], map: "idx_template_invalidation_outbox_status_created_at")
+  @@index([tenantId, createdAt], map: "idx_template_invalidation_outbox_tenant_created_at")
+  @@map("template_invalidation_outbox")
+}
+
+model AuditRedactionProfile {
+  id         String   @id @default(cuid())
+  tenantId   String   @unique @map("tenant_id")
+  profileId  String   @map("profile_id")
+  profileJson Json    @map("profile_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [tenantId], onDelete: Restrict)
+
+  @@map("audit_redaction_profiles")
+}

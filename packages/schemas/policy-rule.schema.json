@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/policy-rule.schema.json",
+  "title": "PolicyRule",
+  "type": "object",
+  "required": ["rule_type", "scope"],
+  "properties": {
+    "policy_id": {
+      "type": ["string", "null"]
+    },
+    "rule_type": {
+      "type": "string",
+      "enum": ["allow", "deny", "approval_required", "rate_limit"]
+    },
+    "scope": {
+      "type": "object",
+      "required": ["tenant_id", "integration_id", "action_group", "method", "host"],
+      "properties": {
+        "tenant_id": {
+          "type": "string"
+        },
+        "workload_id": {
+          "type": ["string", "null"]
+        },
+        "integration_id": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": ["string", "null"]
+        },
+        "template_version": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "action_group": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "query_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "constraints": {
+      "$ref": "./policy-constraints.schema.json"
+    },
+    "rate_limit": {
+      "type": ["object", "null"],
+      "required": ["max_requests", "interval_seconds"],
+      "properties": {
+        "max_requests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "rule_type": {
+            "const": "rate_limit"
+          }
+        },
+        "required": ["rule_type"]
+      },
+      "then": {
+        "required": ["rate_limit"]
+      },
+      "else": {
+        "properties": {
+          "rate_limit": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

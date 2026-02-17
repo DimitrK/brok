@@ -1,0 +1,28 @@
+{
+  "name": "@broker-interceptor/db",
+  "private": true,
+  "version": "0.0.1",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "prisma:generate": "DATABASE_URL=${DATABASE_URL:-postgresql://broker:broker@127.0.0.1:5432/broker} prisma generate --schema ./prisma/schema.prisma",
+    "build": "pnpm run prisma:generate && tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings=0",
+    "test": "pnpm run prisma:generate && vitest run",
+    "test:coverage": "pnpm run prisma:generate && vitest run --coverage"
+  },
+  "prettier": "@broker-interceptor/prettier-config",
+  "devDependencies": {
+    "@broker-interceptor/eslint-config": "workspace:*",
+    "@broker-interceptor/prettier-config": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.8",
+    "prisma": "6.16.3",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@broker-interceptor/schemas": "workspace:*",
+    "@prisma/client": "^6.16.3",
+    "zod": "^4.3.6"
+  }
+}

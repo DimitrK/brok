@@ -1,0 +1,1669 @@
+openapi: 3.1.0
+info:
+  title: Broker MVP API
+  version: 0.1.0
+  description:
+    Minimal OpenAPI for the broker MVP. Data-plane endpoints require mutual TLS and a short-lived session token.
+servers:
+  - url: https://broker.example
+security: []
+components:
+  securitySchemes:
+    mutualTLS:
+      type: mutualTLS
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+  schemas:
+    Header:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+      additionalProperties: false
+    HeaderList:
+      type: array
+      items:
+        $ref: '#/components/schemas/Header'
+    Error:
+      type: object
+      required: [error, message, correlation_id]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        correlation_id:
+          type: string
+      additionalProperties: false
+    AdminRole:
+      type: string
+      enum: [owner, admin, auditor, operator]
+    AdminAuthProvider:
+      type: string
+      enum: [google, github]
+    AdminAuthProviderSummary:
+      type: object
+      required: [provider, enabled]
+      properties:
+        provider:
+          $ref: '#/components/schemas/AdminAuthProvider'
+        enabled:
+          type: boolean
+      additionalProperties: false
+    AdminAuthProviderListResponse:
+      type: object
+      required: [providers]
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminAuthProviderSummary'
+      additionalProperties: false
+    AdminOAuthStartRequest:
+      type: object
+      required: [provider, redirect_uri, code_challenge, code_challenge_method]
+      properties:
+        provider:
+          $ref: '#/components/schemas/AdminAuthProvider'
+        redirect_uri:
+          type: string
+          format: uri
+        code_challenge:
+          type: string
+          minLength: 43
+          maxLength: 128
+        code_challenge_method:
+          type: string
+          enum: [S256]
+      additionalProperties: false
+    AdminOAuthStartResponse:
+      type: object
+      required: [authorization_url, state, nonce]
+      properties:
+        authorization_url:
+          type: string
+          format: uri
+        state:
+          type: string
+          minLength: 16
+        nonce:
+          type: string
+          minLength: 16
+      additionalProperties: false
+    AdminOAuthCallbackRequest:
+      type: object
+      required: [provider, code, state, code_verifier, redirect_uri]
+      properties:
+        provider:
+          $ref: '#/components/schemas/AdminAuthProvider'
+        code:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          minLength: 1
+        code_verifier:
+          type: string
+          minLength: 43
+          maxLength: 128
+        redirect_uri:
+          type: string
+          format: uri
+      additionalProperties: false
+    AdminSessionPrincipal:
+      type: object
+      required: [subject, issuer, email, roles, tenant_ids]
+      properties:
+        subject:
+          type: string
+        issuer:
+          type: string
+          format: uri
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        roles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AdminRole'
+        tenant_ids:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    AdminOAuthCallbackResponse:
+      type: object
+      required: [session_id, expires_at, principal]
+      properties:
+        session_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        principal:
+          $ref: '#/components/schemas/AdminSessionPrincipal'
+      additionalProperties: false
+    AdminSessionResponse:
+      type: object
+      required: [authenticated]
+      properties:
+        authenticated:
+          type: boolean
+        session_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        principal:
+          $ref: '#/components/schemas/AdminSessionPrincipal'
+      additionalProperties: false
+    AdminSignupPolicy:
+      type: object
+      required: [new_user_mode, require_verified_email, updated_at, updated_by]
+      properties:
+        new_user_mode:
+          type: string
+          enum: [allowed, blocked]
+        require_verified_email:
+          type: boolean
+        allowed_email_domains:
+          type: array
+          items:
+            type: string
+        updated_at:
+          type: string
+          format: date-time
+        updated_by:
+          type: string
+      additionalProperties: false
+    AdminSignupPolicyUpdateRequest:
+      type: object
+      required: [new_user_mode]
+      properties:
+        new_user_mode:
+          type: string
+          enum: [allowed, blocked]
+        require_verified_email:
+          type: boolean
+        allowed_email_domains:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    AdminUserStatus:
+      type: string
+      enum: [active, pending, disabled]
+    AdminAccessRequestStatus:
+      type: string
+      enum: [pending, approved, denied, canceled]
+    AdminUser:
+      type: object
+      required: [identity_id, issuer, subject, email, status, roles, tenant_ids, created_at, updated_at]
+      properties:
+        identity_id:
+          type: string
+        issuer:
+          type: string
+          format: uri
+        subject:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/AdminUserStatus'
+        roles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AdminRole'
+        tenant_ids:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    AdminUserListResponse:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUser'
+        next_cursor:
+          type: string
+      additionalProperties: false
+    AdminUserUpdateRequest:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/AdminUserStatus'
+        roles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AdminRole'
+        tenant_ids:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    AdminAccessRequest:
+      type: object
+      required:
+        [request_id, issuer, subject, email, requested_roles, requested_tenant_ids, status, created_at, updated_at]
+      properties:
+        request_id:
+          type: string
+        issuer:
+          type: string
+          format: uri
+        subject:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        requested_roles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AdminRole'
+        requested_tenant_ids:
+          type: array
+          items:
+            type: string
+        status:
+          $ref: '#/components/schemas/AdminAccessRequestStatus'
+        reason:
+          type: string
+        decided_by:
+          type: string
+        decided_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    AdminAccessRequestListResponse:
+      type: object
+      required: [requests]
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminAccessRequest'
+        next_cursor:
+          type: string
+      additionalProperties: false
+    AdminAccessRequestApproveRequest:
+      type: object
+      properties:
+        roles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/AdminRole'
+        tenant_ids:
+          type: array
+          items:
+            type: string
+        reason:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    AdminAccessRequestDenyRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    TenantSummary:
+      type: object
+      required: [tenant_id, name]
+      properties:
+        tenant_id:
+          type: string
+        name:
+          type: string
+      additionalProperties: false
+    TenantCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+      additionalProperties: false
+    TenantCreateResponse:
+      type: object
+      required: [tenant_id]
+      properties:
+        tenant_id:
+          type: string
+      additionalProperties: false
+    TenantListResponse:
+      type: object
+      required: [tenants]
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantSummary'
+      additionalProperties: false
+    WorkloadCreateRequest:
+      type: object
+      required: [name, enrollment_mode]
+      properties:
+        name:
+          type: string
+        ip_allowlist:
+          type: array
+          items:
+            type: string
+        enrollment_mode:
+          type: string
+          enum: [broker_ca, external_ca]
+      additionalProperties: false
+    WorkloadCreateResponse:
+      type: object
+      required: [workload_id, enrollment_token, mtls_ca_pem]
+      properties:
+        workload_id:
+          type: string
+        enrollment_token:
+          type: string
+        mtls_ca_pem:
+          type: string
+      additionalProperties: false
+    WorkloadListResponse:
+      type: object
+      required: [workloads]
+      properties:
+        workloads:
+          type: array
+          items:
+            $ref: '#/components/schemas/Workload'
+      additionalProperties: false
+    WorkloadEnrollRequest:
+      type: object
+      required: [enrollment_token, csr_pem, requested_ttl_seconds]
+      properties:
+        enrollment_token:
+          type: string
+        csr_pem:
+          type: string
+        requested_ttl_seconds:
+          type: integer
+      additionalProperties: false
+    WorkloadEnrollResponse:
+      type: object
+      required: [client_cert_pem, ca_chain_pem, expires_at]
+      properties:
+        client_cert_pem:
+          type: string
+        ca_chain_pem:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    WorkloadUpdateRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        ip_allowlist:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    IntegrationCreateResponse:
+      type: object
+      required: [integration_id]
+      properties:
+        integration_id:
+          type: string
+      additionalProperties: false
+    IntegrationListResponse:
+      type: object
+      required: [integrations]
+      properties:
+        integrations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Integration'
+      additionalProperties: false
+    IntegrationUpdateRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        template_id:
+          type: string
+      additionalProperties: false
+    TemplateCreateResponse:
+      type: object
+      required: [template_id, version]
+      properties:
+        template_id:
+          type: string
+        version:
+          type: integer
+      additionalProperties: false
+    TemplateListResponse:
+      type: object
+      required: [templates]
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: '#/components/schemas/Template'
+      additionalProperties: false
+    PolicyCreateResponse:
+      type: object
+      required: [policy_id]
+      properties:
+        policy_id:
+          type: string
+      additionalProperties: false
+    PolicyListResponse:
+      type: object
+      required: [policies]
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyRule'
+      additionalProperties: false
+    PolicyConstraints:
+      $ref: ./policy-constraints.schema.json
+    AuditEventListResponse:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+      additionalProperties: false
+    SessionRequest:
+      type: object
+      properties:
+        requested_ttl_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+        scopes:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    SessionResponse:
+      type: object
+      required: [session_token, expires_at, bound_cert_thumbprint]
+      properties:
+        session_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        bound_cert_thumbprint:
+          type: string
+        dpop_jkt:
+          type: string
+          description: Present when the session is DPoP-bound. This is the JWK thumbprint.
+    ExecuteRequest:
+      type: object
+      required: [integration_id, request]
+      properties:
+        integration_id:
+          type: string
+        request:
+          type: object
+          required: [method, url, headers]
+          properties:
+            method:
+              type: string
+              enum: [GET, POST, PUT, PATCH, DELETE]
+            url:
+              type: string
+              format: uri
+            headers:
+              $ref: '#/components/schemas/HeaderList'
+              description: Header list preserves duplicates; header names are case-insensitive.
+            body_base64:
+              type: string
+              description: Omit for methods without a body.
+        client_context:
+          type: object
+          properties:
+            request_id:
+              type: string
+            idempotency_key:
+              type: string
+            source:
+              type: string
+      additionalProperties: false
+    ExecuteResponseExecuted:
+      type: object
+      required: [status, correlation_id, upstream]
+      properties:
+        status:
+          type: string
+          enum: [executed]
+        correlation_id:
+          type: string
+        upstream:
+          type: object
+          required: [status_code, headers, body_base64]
+          properties:
+            status_code:
+              type: integer
+            headers:
+              $ref: '#/components/schemas/HeaderList'
+            body_base64:
+              type: string
+    ExecuteResponseApprovalRequired:
+      type: object
+      required: [status, approval_id, expires_at, correlation_id, summary]
+      properties:
+        status:
+          type: string
+          enum: [approval_required]
+        approval_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        correlation_id:
+          type: string
+        summary:
+          type: object
+          required: [integration_id, action_group, risk_tier, destination_host, method, path]
+          properties:
+            integration_id:
+              type: string
+            action_group:
+              type: string
+            risk_tier:
+              type: string
+              enum: [low, medium, high]
+            destination_host:
+              type: string
+            method:
+              type: string
+            path:
+              type: string
+    ApprovalDecisionRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [once, rule]
+        constraints:
+          $ref: '#/components/schemas/PolicyConstraints'
+      additionalProperties: false
+    ApprovalResponse:
+      type: object
+      required: [approval_id, status]
+      properties:
+        approval_id:
+          type: string
+        status:
+          type: string
+          enum: [approved, denied]
+    ApprovalListResponse:
+      type: object
+      required: [approvals]
+      properties:
+        approvals:
+          type: array
+          items:
+            $ref: './approval-request.schema.json'
+    Manifest:
+      $ref: ./manifest.schema.json
+    AuditEvent:
+      $ref: ./audit-event.schema.json
+    CanonicalRequestDescriptor:
+      $ref: ./canonical-request-descriptor.schema.json
+    Workload:
+      $ref: ./workload.schema.json
+    Integration:
+      $ref: ./integration.schema.json
+    IntegrationWrite:
+      $ref: ./integration-write.schema.json
+    PolicyRule:
+      $ref: ./policy-rule.schema.json
+    Template:
+      $ref: ./template.schema.json
+    ManifestKeys:
+      $ref: ./manifest-keys.schema.json
+paths:
+  /v1/admin/auth/providers:
+    get:
+      summary: List supported admin OAuth providers and availability
+      security: []
+      responses:
+        '200':
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAuthProviderListResponse'
+  /v1/admin/auth/oauth/start:
+    post:
+      summary: Start admin OAuth login flow (Authorization Code + PKCE)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminOAuthStartRequest'
+      responses:
+        '200':
+          description: OAuth authorization redirect payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOAuthStartResponse'
+        '400':
+          description: Invalid OAuth start request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/auth/oauth/callback:
+    post:
+      summary: Complete admin OAuth code exchange and establish admin session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminOAuthCallbackRequest'
+      responses:
+        '200':
+          description: OAuth callback handled and admin session established
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOAuthCallbackResponse'
+        '400':
+          description: Invalid OAuth callback payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: OAuth callback validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/auth/session:
+    get:
+      summary: Resolve current authenticated admin session
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Session state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSessionResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/auth/logout:
+    post:
+      summary: Invalidate current admin session
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Session invalidated
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/auth/signup-policy:
+    get:
+      summary: Read admin new-user sign-in policy
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Signup policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSignupPolicy'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      summary: Update admin new-user sign-in policy
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSignupPolicyUpdateRequest'
+      responses:
+        '200':
+          description: Signup policy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSignupPolicy'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/users:
+    get:
+      summary: List admin users for management
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AdminUserStatus'
+        - name: tenant_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: role
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AdminRole'
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Admin users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/users/{identityId}:
+    patch:
+      summary: Update admin user status, roles, and tenant scope
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: identityId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUserUpdateRequest'
+      responses:
+        '200':
+          description: Updated admin user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
+        '400':
+          description: Invalid admin user update request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Admin user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/access-requests:
+    get:
+      summary: List admin access requests for review
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AdminAccessRequestStatus'
+        - name: tenant_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: role
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AdminRole'
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Admin access requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAccessRequestListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/access-requests/{requestId}/approve:
+    post:
+      summary: Approve admin access request and optionally override roles/tenant scopes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAccessRequestApproveRequest'
+      responses:
+        '200':
+          description: Updated admin access request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAccessRequest'
+        '400':
+          description: Invalid approval request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Access request not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/access-requests/{requestId}/deny:
+    post:
+      summary: Deny admin access request
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAccessRequestDenyRequest'
+      responses:
+        '200':
+          description: Updated admin access request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAccessRequest'
+        '400':
+          description: Invalid denial request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Access request not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/session:
+    post:
+      summary: Issue a short-lived session token bound to the mTLS client certificate
+      security:
+        - mutualTLS: []
+      parameters:
+        - name: DPoP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional DPoP proof JWT to bind the session to a DPoP public key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRequest'
+      responses:
+        '200':
+          description: Session issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/workloads/{workloadId}/manifest:
+    get:
+      summary: Get a signed, short-lived manifest for the workload interceptor
+      security:
+        - mutualTLS: []
+          bearerAuth: []
+      parameters:
+        - name: workloadId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Manifest
+          content:
+            application/json:
+              schema:
+                $ref: './manifest.schema.json'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/execute:
+    post:
+      summary: Execute a protected-provider request through the broker with secret injection
+      description: Responses are buffered and returned as base64; streaming is not supported in MVP.
+      security:
+        - mutualTLS: []
+          bearerAuth: []
+      parameters:
+        - name: DPoP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional DPoP proof JWT when enabled
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteRequest'
+      responses:
+        '200':
+          description: Executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecuteResponseExecuted'
+        '202':
+          description: Approval required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecuteResponseApprovalRequired'
+        '400':
+          description: Invalid request or blocked by template constraints
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/approvals:
+    get:
+      summary: List approval requests
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, denied, expired]
+      responses:
+        '200':
+          description: Approvals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/approvals/{approvalId}/approve:
+    post:
+      summary: Approve an approval request
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/approvals/{approvalId}/deny:
+    post:
+      summary: Deny an approval request
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: Denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/audit/events:
+    get:
+      summary: Query audit events
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: time_min
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: time_max
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: workload_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: tenant_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: integration_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: action_group
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: decision
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [allowed, denied, approval_required, throttled]
+      responses:
+        '200':
+          description: Audit events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/tenants:
+    post:
+      summary: Create tenant
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantCreateRequest'
+      responses:
+        '201':
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantCreateResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List tenants
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Tenants
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/tenants/{tenantId}/workloads:
+    post:
+      summary: Create workload
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkloadCreateRequest'
+      responses:
+        '201':
+          description: Workload created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkloadCreateResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List workloads
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workloads
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkloadListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/workloads/{workloadId}/enroll:
+    post:
+      summary: Upload CSR and receive client certificate
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: workloadId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkloadEnrollRequest'
+      responses:
+        '200':
+          description: Client certificate issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkloadEnrollResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/workloads/{workloadId}:
+    patch:
+      summary: Update workload
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: workloadId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkloadUpdateRequest'
+      responses:
+        '200':
+          description: Workload updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workload'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/tenants/{tenantId}/integrations:
+    post:
+      summary: Create integration
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './integration-write.schema.json'
+      responses:
+        '201':
+          description: Integration created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationCreateResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List integrations
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Integrations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/integrations/{integrationId}:
+    patch:
+      summary: Update integration
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: integrationId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IntegrationUpdateRequest'
+      responses:
+        '200':
+          description: Integration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Integration'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/templates:
+    post:
+      summary: Upload template
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './template.schema.json'
+      responses:
+        '201':
+          description: Template uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateCreateResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List templates
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Templates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/templates/{templateId}/versions/{version}:
+    get:
+      summary: Get template version
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Template
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Template'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/policies:
+    post:
+      summary: Create policy rule
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './policy-rule.schema.json'
+      responses:
+        '201':
+          description: Policy rule created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyCreateResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List policy rules
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/policies/{policyId}:
+    delete:
+      summary: Delete policy rule
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Policy rule deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/keys/manifest:
+    get:
+      summary: List manifest signing keys
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Manifest signing keys
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: './manifest-keys.schema.json'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'

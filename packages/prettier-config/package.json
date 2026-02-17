@@ -1,0 +1,14 @@
+{
+  "name": "@broker-interceptor/prettier-config",
+  "private": true,
+  "version": "0.0.1",
+  "type": "commonjs",
+  "main": "index.cjs",
+  "exports": "./index.cjs",
+  "files": [
+    "index.cjs"
+  ],
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}

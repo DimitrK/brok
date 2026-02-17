@@ -1,0 +1,45 @@
+{
+  "name": "@broker-interceptor/broker-api",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "prisma:generate": "DATABASE_URL=${BROKER_API_DATABASE_URL:-postgresql://broker:broker@127.0.0.1:5432/broker} prisma generate --schema ../../packages/db/prisma/schema.prisma",
+    "build": "pnpm run prisma:generate && tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings=0",
+    "test": "pnpm run prisma:generate && vitest run",
+    "test:coverage": "pnpm run prisma:generate && vitest run --coverage",
+    "dev": "node dist/index.js"
+  },
+  "prettier": "@broker-interceptor/prettier-config",
+  "devDependencies": {
+    "@broker-interceptor/eslint-config": "workspace:*",
+    "@broker-interceptor/prettier-config": "workspace:*",
+    "@types/express": "^5.0.3",
+    "@vitest/coverage-v8": "^2.1.8",
+    "jose": "^6.1.3",
+    "prisma": "6.16.3",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@broker-interceptor/audit": "workspace:*",
+    "@broker-interceptor/auth": "workspace:*",
+    "@broker-interceptor/canonicalizer": "workspace:*",
+    "@broker-interceptor/crypto": "workspace:*",
+    "@broker-interceptor/db": "workspace:*",
+    "@broker-interceptor/forwarder": "workspace:*",
+    "@broker-interceptor/policy-engine": "workspace:*",
+    "@broker-interceptor/schemas": "workspace:*",
+    "@broker-interceptor/ssrf-guard": "workspace:*",
+    "@nestjs/common": "^11.1.13",
+    "@nestjs/core": "^11.1.13",
+    "@nestjs/platform-express": "^11.1.13",
+    "@prisma/client": "^6.16.3",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "redis": "^5.10.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^4.3.6"
+  }
+}

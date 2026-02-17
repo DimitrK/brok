@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/approval-request.schema.json",
+  "title": "ApprovalRequest",
+  "type": "object",
+  "required": ["approval_id", "status", "expires_at", "correlation_id", "summary", "canonical_descriptor"],
+  "properties": {
+    "approval_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "approved", "denied", "expired", "executed", "canceled"]
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "object",
+      "required": ["integration_id", "action_group", "risk_tier", "destination_host", "method", "path"],
+      "properties": {
+        "integration_id": {
+          "type": "string"
+        },
+        "action_group": {
+          "type": "string"
+        },
+        "risk_tier": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "destination_host": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "canonical_descriptor": {
+      "$ref": "./canonical-request-descriptor.schema.json"
+    }
+  },
+  "additionalProperties": false
+}

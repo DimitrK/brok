@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/manifest-keys.schema.json",
+  "title": "ManifestKeys",
+  "type": "object",
+  "required": ["keys"],
+  "properties": {
+    "keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kid", "kty", "alg", "use"],
+        "properties": {
+          "kid": {
+            "type": "string"
+          },
+          "kty": {
+            "type": "string",
+            "enum": ["OKP", "EC"]
+          },
+          "crv": {
+            "type": "string",
+            "enum": ["Ed25519", "P-256"]
+          },
+          "x": {
+            "type": "string"
+          },
+          "y": {
+            "type": "string"
+          },
+          "alg": {
+            "type": "string",
+            "enum": ["EdDSA", "ES256"]
+          },
+          "use": {
+            "type": "string",
+            "enum": ["sig"]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kty": {
+                  "const": "OKP"
+                }
+              },
+              "required": ["kty"]
+            },
+            "then": {
+              "required": ["crv", "x"],
+              "properties": {
+                "y": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kty": {
+                  "const": "EC"
+                }
+              },
+              "required": ["kty"]
+            },
+            "then": {
+              "required": ["crv", "x", "y"]
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

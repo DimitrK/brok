@@ -1,0 +1,38 @@
+{
+  "name": "@broker-interceptor/interceptor-node",
+  "private": true,
+  "version": "0.0.1",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./preload": {
+      "types": "./dist/preload.d.ts",
+      "import": "./dist/preload.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:service": "tsx test-service/server.ts",
+    "test:service:intercepted": "BROKER_URL=${BROKER_URL:-https://localhost:8081} BROKER_WORKLOAD_ID=${BROKER_WORKLOAD_ID:-w_1b973cf71b924bd6826fba7b63b0d5af} OPENAI_API_KEY=${OPENAI_API_KEY:-int_6dc7ecd8def449bd87cb1354bbdc1ab3} BROKER_MTLS_CERT_PATH=${BROKER_MTLS_CERT_PATH:-./test-service/certs/workload.crt} BROKER_MTLS_KEY_PATH=${BROKER_MTLS_KEY_PATH:-./test-service/certs/workload.key} BROKER_MTLS_CA_PATH=${BROKER_MTLS_CA_PATH:-./test-service/certs/ca-chain.pem} BROKER_LOG_LEVEL=${BROKER_LOG_LEVEL:-debug} node --import ./dist/preload.js --import tsx test-service/server.ts"
+  },
+  "prettier": "@broker-interceptor/prettier-config",
+  "devDependencies": {
+    "@broker-interceptor/eslint-config": "workspace:*",
+    "@broker-interceptor/prettier-config": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "tsx": "^4.19.0",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}

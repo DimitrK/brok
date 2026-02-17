@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/integration.schema.json",
+  "title": "Integration",
+  "type": "object",
+  "required": ["integration_id", "tenant_id", "provider", "name", "template_id", "enabled"],
+  "properties": {
+    "integration_id": {
+      "type": "string"
+    },
+    "tenant_id": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "template_id": {
+      "type": "string"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "secret_ref": {
+      "type": ["string", "null"]
+    },
+    "secret_version": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "last_rotated_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

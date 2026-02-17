@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/workload.schema.json",
+  "title": "Workload",
+  "type": "object",
+  "required": ["workload_id", "tenant_id", "name", "mtls_san_uri", "enabled"],
+  "properties": {
+    "workload_id": {
+      "type": "string"
+    },
+    "tenant_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "mtls_san_uri": {
+      "type": "string"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "ip_allowlist": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

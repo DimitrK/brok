@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Broker Admin Console icon">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a6f63" />
+      <stop offset="100%" stop-color="#08544b" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#g)" />
+  <path d="M18 21h28a5 5 0 0 1 5 5v12a5 5 0 0 1-5 5H18z" fill="#f4fff9" opacity="0.96" />
+  <path d="M19 31h26" stroke="#0a6f63" stroke-width="3" stroke-linecap="round" />
+  <circle cx="24" cy="40" r="2.5" fill="#0a6f63" />
+  <circle cx="31" cy="40" r="2.5" fill="#0a6f63" />
+  <circle cx="38" cy="40" r="2.5" fill="#0a6f63" />
+</svg>

@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/audit-event.schema.json",
+  "title": "AuditEvent",
+  "type": "object",
+  "required": ["event_id", "timestamp", "tenant_id", "event_type", "correlation_id"],
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "tenant_id": {
+      "type": "string"
+    },
+    "workload_id": {
+      "type": ["string", "null"]
+    },
+    "integration_id": {
+      "type": ["string", "null"]
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "session_issued",
+        "execute",
+        "policy_decision",
+        "approval_created",
+        "approval_decided",
+        "violation",
+        "throttle",
+        "sandbox_alert",
+        "admin_action"
+      ]
+    },
+    "decision": {
+      "type": ["string", "null"],
+      "enum": ["allowed", "denied", "approval_required", "throttled", null]
+    },
+    "action_group": {
+      "type": ["string", "null"]
+    },
+    "risk_tier": {
+      "type": ["string", "null"],
+      "enum": ["low", "medium", "high", null]
+    },
+    "destination": {
+      "type": ["object", "null"],
+      "properties": {
+        "scheme": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "path_group": {
+          "type": "string"
+        }
+      },
+      "required": ["scheme", "host", "port", "path_group"],
+      "additionalProperties": false
+    },
+    "latency_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "upstream_status_code": {
+      "type": ["integer", "null"],
+      "minimum": 100,
+      "maximum": 599
+    },
+    "canonical_descriptor": {
+      "anyOf": [
+        {
+          "$ref": "./canonical-request-descriptor.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policy": {
+      "type": ["object", "null"],
+      "required": ["rule_type"],
+      "properties": {
+        "rule_id": {
+          "type": ["string", "null"]
+        },
+        "rule_type": {
+          "type": "string",
+          "enum": ["allow", "deny", "approval_required", "rate_limit"]
+        },
+        "approval_id": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "message": {
+      "type": ["string", "null"]
+    },
+    "metadata": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

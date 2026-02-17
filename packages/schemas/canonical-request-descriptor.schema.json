@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/canonical-request-descriptor.schema.json",
+  "title": "CanonicalRequestDescriptor",
+  "type": "object",
+  "required": [
+    "tenant_id",
+    "workload_id",
+    "integration_id",
+    "template_id",
+    "template_version",
+    "method",
+    "canonical_url",
+    "matched_path_group_id",
+    "normalized_headers",
+    "query_keys"
+  ],
+  "properties": {
+    "tenant_id": {
+      "type": "string"
+    },
+    "workload_id": {
+      "type": "string"
+    },
+    "integration_id": {
+      "type": "string"
+    },
+    "template_id": {
+      "type": "string"
+    },
+    "template_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "method": {
+      "type": "string",
+      "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+    },
+    "canonical_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "matched_path_group_id": {
+      "type": "string"
+    },
+    "normalized_headers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "value"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "query_keys": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "query_fingerprint_base64": {
+      "type": ["string", "null"]
+    },
+    "body_sha256_base64": {
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": false
+}

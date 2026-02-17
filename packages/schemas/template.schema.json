@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/template.schema.json",
+  "title": "Template",
+  "type": "object",
+  "required": [
+    "template_id",
+    "version",
+    "provider",
+    "allowed_schemes",
+    "allowed_ports",
+    "allowed_hosts",
+    "redirect_policy",
+    "path_groups",
+    "network_safety"
+  ],
+  "properties": {
+    "template_id": {
+      "type": "string",
+      "pattern": "^tpl_[a-z0-9_]+$"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "provider": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "allowed_schemes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["https"]
+      },
+      "minItems": 1
+    },
+    "allowed_ports": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "enum": [443]
+      },
+      "minItems": 1
+    },
+    "allowed_hosts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "redirect_policy": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["deny"]
+        },
+        "max_hops": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        }
+      },
+      "additionalProperties": false
+    },
+    "path_groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "group_id",
+          "risk_tier",
+          "approval_mode",
+          "methods",
+          "path_patterns",
+          "query_allowlist",
+          "header_forward_allowlist",
+          "body_policy"
+        ],
+        "properties": {
+          "group_id": {
+            "type": "string"
+          },
+          "risk_tier": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "approval_mode": {
+            "type": "string",
+            "enum": ["none", "required"]
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+            },
+            "minItems": 1
+          },
+          "path_patterns": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "query_allowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "header_forward_allowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "body_policy": {
+            "type": "object",
+            "required": ["max_bytes", "content_types"],
+            "properties": {
+              "max_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "content_types": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "constraints": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "network_safety": {
+      "type": "object",
+      "required": [
+        "deny_private_ip_ranges",
+        "deny_link_local",
+        "deny_loopback",
+        "deny_metadata_ranges",
+        "dns_resolution_required"
+      ],
+      "properties": {
+        "deny_private_ip_ranges": {
+          "type": "boolean"
+        },
+        "deny_link_local": {
+          "type": "boolean"
+        },
+        "deny_loopback": {
+          "type": "boolean"
+        },
+        "deny_metadata_ranges": {
+          "type": "boolean"
+        },
+        "dns_resolution_required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
