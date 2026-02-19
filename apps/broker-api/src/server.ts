@@ -39,7 +39,7 @@ import {
 import type {ServiceConfig} from './config';
 import {badRequest, conflict, internal, isAppError, unauthorized, serviceUnavailable} from './errors';
 import {decodePathParam, extractCorrelationId, parseJsonBody, sendError, sendJson} from './http';
-import {DataPlaneRepository} from './repository';
+import {DataPlaneRepository, isDataPlaneRepositoryError} from './repository';
 
 const SESSION_SCOPES = new Set(['execute', 'manifest.read']);
 const manifestPathPattern = /^\/v1\/workloads\/([^/]+)\/manifest$/u;
@@ -1215,16 +1215,59 @@ export const createBrokerApiRequestHandler = ({
             forwarderPersistenceContext.idempotency_record_created = true;
           }
 
+          let injectedHeaders;
+          try {
+            injectedHeaders = await repository.getInjectedHeadersForIntegrationShared({
+              tenantId: mtls.tenant_id,
+              integrationId: integration.integration_id,
+              correlationId
+            });
+          } catch (error) {
+            if (isDataPlaneRepositoryError(error) && error.code === 'integration_secret_unavailable') {
+              executeAuditRecorded = true;
+              await appendAuditEvent({
+                auditService,
+                event: buildAuditEvent({
+                  repository,
+                  correlationId,
+                  tenantId: mtls.tenant_id,
+                  event: {
+                    workload_id: mtls.workload_id,
+                    integration_id: integration.integration_id,
+                    event_type: 'execute',
+                    decision: 'denied',
+                    action_group: decision.action_group,
+                    risk_tier: decision.risk_tier,
+                    destination: {
+                      scheme: 'https',
+                      host: ssrfResult.value.destination.host,
+                      port: ssrfResult.value.destination.port,
+                      path_group: decision.action_group
+                    },
+                    latency_ms: null,
+                    upstream_status_code: null,
+                    canonical_descriptor: canonicalized.value.descriptor,
+                    message: 'Execution denied: integration secret is unavailable',
+                    metadata: {
+                      reason_code: error.code
+                    }
+                  }
+                })
+              });
+              throw serviceUnavailable(
+                'integration_secret_unavailable',
+                'Integration secret material is unavailable for execute request'
+              );
+            }
+            throw error;
+          }
+
           const forwardResult = await forwardExecuteRequest({
             input: {
               execute_request: executeRequest,
               template,
               matched_path_group_id: canonicalized.value.matched_path_group_id,
-              injected_headers: await repository.getInjectedHeadersForIntegrationShared({
-                tenantId: mtls.tenant_id,
-                integrationId: integration.integration_id,
-                correlationId
-              }),
+              injected_headers: injectedHeaders,
               correlation_id: correlationId,
               timeouts: {
                 total_timeout_ms: config.forwarder.total_timeout_ms

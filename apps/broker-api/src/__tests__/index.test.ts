@@ -1002,6 +1002,82 @@ describe('broker-api', () => {
     ).toBe(true);
   });
 
+  it('fails closed with a stable reason code when shared secret retrieval fails', async () => {
+    const integrationWithSecretRef = {
+      ...createBaseState().integrations[0],
+      secret_ref: 'sec_1'
+    };
+    const secretRepository = createMockSecretRepository();
+    secretRepository.getActiveSecretEnvelope.mockRejectedValue(new Error('secret store unavailable'));
+
+    const context = await createContext({
+      processInfrastructure: {
+        enabled: true,
+        prisma: {} as never,
+        redis: null,
+        dbRepositories: {
+          integrationRepository: {
+            getById: vi.fn(() => Promise.resolve(integrationWithSecretRef)),
+            getIntegrationTemplateForExecute: vi.fn(() =>
+              Promise.resolve({
+                workload_enabled: true,
+                integration_enabled: true,
+                executable: true,
+                execution_status: 'executable',
+                template: createBaseState().templates[0],
+                template_id: 'tpl_openai_safe',
+                template_version: 1
+              })
+            )
+          },
+          secretRepository
+        } as never,
+        redisKeyPrefix: 'broker-api:test',
+        withTransaction: async operation => operation({} as never),
+        close: () => Promise.resolve()
+      },
+      secretKey: Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64'),
+      secretKeyId: 'v1'
+    });
+
+    const sessionResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+    const token = (sessionResponse.body as {session_token: string}).session_token;
+
+    const executeResponse = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      token,
+      body: executeRequestBody
+    });
+
+    expect(executeResponse.status).toBe(503);
+    expect(executeResponse.body).toMatchObject({error: 'integration_secret_unavailable'});
+
+    const auditResult = await context.auditService.queryAuditEvents({
+      query: {
+        tenant_id: 't_1',
+        decision: 'denied'
+      }
+    });
+    expect(auditResult.ok).toBe(true);
+    if (!auditResult.ok) {
+      return;
+    }
+
+    expect(
+      auditResult.value.events.some(
+        event => event.event_type === 'execute' && event.metadata?.['reason_code'] === 'integration_secret_unavailable'
+      )
+    ).toBe(true);
+  });
+
   it('blocks SSRF attempts when DNS resolves to denied ranges', async () => {
     const fetchImpl = vi.fn(() =>
       Promise.resolve(

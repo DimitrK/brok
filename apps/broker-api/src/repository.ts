@@ -66,6 +66,19 @@ import type {Prisma} from '@prisma/client'
 
 import type {BrokerRedisClient, ProcessInfrastructure} from './infrastructure';
 
+export class DataPlaneRepositoryError extends Error {
+  public readonly code: string
+
+  public constructor({code, message}: {code: string; message: string}) {
+    super(message)
+    this.name = 'DataPlaneRepositoryError'
+    this.code = code
+  }
+}
+
+export const isDataPlaneRepositoryError = (value: unknown): value is DataPlaneRepositoryError =>
+  value instanceof DataPlaneRepositoryError
+
 const sessionRecordSchema = z
   .object({
     session_id: z.string().min(1),
@@ -2363,6 +2376,13 @@ export class DataPlaneRepository {
     integrationId: string
     correlationId?: string
   }): Promise<OpenApiHeaderList> {
+    const integrationSecretUnavailableCode = 'integration_secret_unavailable'
+    const toIntegrationSecretUnavailableError = (message: string) =>
+      new DataPlaneRepositoryError({
+        code: integrationSecretUnavailableCode,
+        message
+      })
+
     // Try to fetch from shared infrastructure first
     const sharedInfrastructureEnabled = this.processInfrastructure?.enabled === true;
     const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository;
@@ -2370,14 +2390,16 @@ export class DataPlaneRepository {
 
     if (!this.keyManagementService) {
       if (sharedInfrastructureEnabled) {
-        throw new Error('Secret decryption key not configured for shared infrastructure mode');
+        throw toIntegrationSecretUnavailableError('Secret decryption key not configured for shared infrastructure mode');
       }
       return this.getInjectedHeadersForIntegration({integrationId});
     }
 
     if (!sharedIntegrationRepository || !sharedSecretRepository) {
       if (sharedInfrastructureEnabled) {
-        throw new Error('Shared secret repositories are not configured in shared infrastructure mode');
+        throw toIntegrationSecretUnavailableError(
+          'Shared secret repositories are not configured in shared infrastructure mode'
+        );
       }
       return this.getInjectedHeadersForIntegration({integrationId});
     }
@@ -2399,6 +2421,11 @@ export class DataPlaneRepository {
       });
 
       if (!secretEnvelope) {
+        if (sharedInfrastructureEnabled) {
+          throw toIntegrationSecretUnavailableError(
+            `No active secret envelope found for integration secret_ref ${integration.secret_ref}`
+          );
+        }
         return this.getInjectedHeadersForIntegration({integrationId});
       }
 
@@ -2440,7 +2467,7 @@ export class DataPlaneRepository {
           }
         );
         if (sharedInfrastructureEnabled) {
-          throw new Error(`Secret decryption failed: ${decryptedResult.error.code}`);
+          throw toIntegrationSecretUnavailableError(`Secret decryption failed: ${decryptedResult.error.code}`);
         }
         return this.getInjectedHeadersForIntegration({integrationId});
       }
@@ -2457,7 +2484,11 @@ export class DataPlaneRepository {
         }
       );
       if (sharedInfrastructureEnabled) {
-        throw error instanceof Error ? error : new Error('Unknown shared secret retrieval error');
+        if (isDataPlaneRepositoryError(error)) {
+          throw error
+        }
+
+        throw toIntegrationSecretUnavailableError(errorMessage);
       }
 
       return this.getInjectedHeadersForIntegration({integrationId});
