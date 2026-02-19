@@ -50,6 +50,17 @@ sequenceDiagram
 6. Run the workload with mTLS, request a session, then execute calls.
 7. If approvals are required, approve in the Admin UI.
 
+### Secret key configuration
+
+Both `broker-admin-api` and `broker-api` must be configured with the same AES key for integration secrets to work:
+
+1. Generate a 32-byte key: `openssl rand -32 | base64`
+2. Set `BROKER_ADMIN_API_SECRET_KEY_B64` in broker-admin-api environment
+3. Set `BROKER_API_SECRET_KEY_B64` in broker-api environment
+4. Use the same key ID (default: `v1`) via `BROKER_ADMIN_API_SECRET_KEY_ID` and `BROKER_API_SECRET_KEY_ID`
+
+When a secret is stored via the Admin API, it is encrypted with the admin-api's key. When broker-api needs to inject the secret during execute, it decrypts using its configured key.
+
 ## Node workload quickstart (example calls)
 
 This assumes you already created the tenant, workload, template, integration, and policy in the Admin UI and you have:
