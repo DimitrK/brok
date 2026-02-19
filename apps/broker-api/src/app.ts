@@ -103,7 +103,9 @@ export const createBrokerApiApp = async ({
       ...(config.initialState ? {initialState: config.initialState} : {}),
       approvalTtlSeconds: config.approvalTtlSeconds,
       manifestTtlSeconds: config.manifestTtlSeconds,
-      processInfrastructure
+      processInfrastructure,
+      ...(config.secretKey ? {secretKey: config.secretKey} : {}),
+      ...(config.secretKeyId ? {secretKeyId: config.secretKeyId} : {})
     })
 
     const sharedAuditRepository = processInfrastructure.dbRepositories?.auditEventRepository
@@ -221,6 +223,8 @@ export const createBrokerApiApp = async ({
     }
 
     const stop = async () => {
+      // Zeroize secret key before shutdown
+      repository.destroy()
       await Promise.allSettled([nestApp.close(), processInfrastructure.close()])
     }
 

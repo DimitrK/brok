@@ -1220,8 +1220,10 @@ export const createBrokerApiRequestHandler = ({
               execute_request: executeRequest,
               template,
               matched_path_group_id: canonicalized.value.matched_path_group_id,
-              injected_headers: repository.getInjectedHeadersForIntegration({
-                integrationId: integration.integration_id
+              injected_headers: await repository.getInjectedHeadersForIntegrationShared({
+                tenantId: mtls.tenant_id,
+                integrationId: integration.integration_id,
+                correlationId
               }),
               correlation_id: correlationId,
               timeouts: {
@@ -1559,7 +1561,6 @@ export const createBrokerApiRequestHandler = ({
         return;
       }
 
-      console.error(`[${correlationId}] Unexpected internal error:`, error);
       sendError({
         response,
         status: 500,

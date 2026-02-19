@@ -1,16 +1,19 @@
-import {createHash, randomUUID} from 'node:crypto';
-import {promises as fs} from 'node:fs';
-import path from 'node:path';
+import {createHash, randomUUID} from 'node:crypto'
+import {promises as fs} from 'node:fs'
+import path from 'node:path'
 
 import {
   createAuthStorageScope,
   type AuthStorageScope,
   type SessionRecord as AuthSessionRecord,
   type WorkloadRecord as AuthWorkloadRecord
-} from '@broker-interceptor/auth';
+} from '@broker-interceptor/auth'
 import {
+  buildEnvelopeAad,
   buildManifestKeySet,
+  createAesGcmKeyManagementService,
   createCryptoStorageService_INCOMPLETE,
+  decryptSecretMaterial,
   err as cryptoErr,
   generateManifestSigningKeyPair,
   ManifestSigningPublicKeySchema,
@@ -18,9 +21,10 @@ import {
   ok as cryptoOk,
   rotateManifestSigningKeys,
   type CryptoStorageService_INCOMPLETE,
+  type EnvelopeKeyManagementService,
   type ManifestSigningKeyRecord,
   type ManifestSigningPrivateKey
-} from '@broker-interceptor/crypto';
+} from '@broker-interceptor/crypto'
 import {
   createCryptoRedisRotationLockAdapter,
   createForwarderRedisAdapter,
@@ -29,7 +33,7 @@ import {
 import {
   createForwarderDbDependencyBridge_INCOMPLETE,
   type ForwarderDbDependencyBridge
-} from '@broker-interceptor/forwarder';
+} from '@broker-interceptor/forwarder'
 import {
   createSsrfGuardStorageBridge_INCOMPLETE,
   DnsRebindingObservationSchema,
@@ -39,7 +43,7 @@ import {
   type SsrfGuardErrorCode,
   type SsrfGuardStorageBridge,
   type StorageScope
-} from '@broker-interceptor/ssrf-guard';
+} from '@broker-interceptor/ssrf-guard'
 import {
   ApprovalRequestSchema,
   OpenApiHeaderListSchema,
@@ -56,9 +60,9 @@ import {
   type OpenApiPolicyRule,
   type OpenApiTemplate,
   type OpenApiWorkload
-} from '@broker-interceptor/schemas';
-import {z} from 'zod';
-import type {Prisma} from '@prisma/client';
+} from '@broker-interceptor/schemas'
+import {z} from 'zod'
+import type {Prisma} from '@prisma/client'
 
 import type {BrokerRedisClient, ProcessInfrastructure} from './infrastructure';
 
@@ -73,9 +77,9 @@ const sessionRecordSchema = z
     dpop_jkt: z.string().min(1).optional(),
     scopes: z.array(z.string()).default([])
   })
-  .strict();
+  .strict()
 
-const integrationSecretHeadersSchema = z.record(z.string(), OpenApiHeaderListSchema);
+const integrationSecretHeadersSchema = z.record(z.string(), OpenApiHeaderListSchema)
 const manifestSigningPrivateKeyMaterialSchema = z
   .object({
     private_key_ref: z.string().min(1),
@@ -83,7 +87,7 @@ const manifestSigningPrivateKeyMaterialSchema = z
     status: z.enum(['active', 'retired']),
     created_at: z.string().datetime({offset: true})
   })
-  .strict();
+  .strict()
 
 const persistedDataPlaneStateSchema = z
   .object({
@@ -102,39 +106,34 @@ const persistedDataPlaneStateSchema = z
     manifest_signing_private_key: ManifestSigningPrivateKeySchema.optional(),
     manifest_keys: OpenApiManifestKeysSchema.optional()
   })
-  .strict();
+  .strict()
 
-type PersistedDataPlaneState = z.infer<typeof persistedDataPlaneStateSchema>;
-type SessionRecord = z.infer<typeof sessionRecordSchema>;
-type ManifestSigningPrivateKeyMaterial = z.infer<typeof manifestSigningPrivateKeyMaterialSchema>;
-type SsrfDecisionProjection = z.infer<typeof SsrfDecisionProjectionSchema>;
-type TemplateInvalidationSignal = z.infer<typeof TemplateInvalidationSignalSchema>;
+type PersistedDataPlaneState = z.infer<typeof persistedDataPlaneStateSchema>
+type SessionRecord = z.infer<typeof sessionRecordSchema>
+type ManifestSigningPrivateKeyMaterial = z.infer<typeof manifestSigningPrivateKeyMaterialSchema>
+type SsrfDecisionProjection = z.infer<typeof SsrfDecisionProjectionSchema>
+type TemplateInvalidationSignal = z.infer<typeof TemplateInvalidationSignalSchema>
 
 type SessionSaveInput = {
-  sessionId: string;
-  workloadId: string;
-  tenantId: string;
-  certFingerprint256: string;
-  tokenHash: string;
-  expiresAt: string;
-  dpopKeyThumbprint?: string;
-};
+  sessionId: string
+  workloadId: string
+  tenantId: string
+  certFingerprint256: string
+  tokenHash: string
+  expiresAt: string
+  dpopKeyThumbprint?: string
+}
 
 type RateLimitCounter = {
-  count: number;
-  resetAtMs: number;
-};
+  count: number
+  resetAtMs: number
+}
 type AuthSessionRecordWithScopes = AuthSessionRecord & {
-  scopes?: string[];
-};
+  scopes?: string[]
+}
 
-type RotationLockAdapter = ReturnType<typeof createCryptoRedisRotationLockAdapter>;
+type RotationLockAdapter = ReturnType<typeof createCryptoRedisRotationLockAdapter>
 
-/**
- * Wraps a node-redis v4 client to match the RedisEvalClient interface.
- * RedisEvalClient expects: eval(script, keys[], args[])
- * node-redis v4 uses: eval(script, {keys: [...], arguments: [...]})
- */
 const toRedisEvalClient = (redis: BrokerRedisClient): RedisEvalClient => ({
   get: key => redis.get(key),
   set: async (key, value, options) => (await redis.set(key, value, options)) as 'OK' | null,
@@ -143,50 +142,51 @@ const toRedisEvalClient = (redis: BrokerRedisClient): RedisEvalClient => ({
 });
 
 type ManifestTemplateRule = {
-  integration_id: string;
-  provider: string;
-  hosts: string[];
-  schemes: Array<'https'>;
-  ports: number[];
-  path_groups: string[];
-};
+  integration_id: string
+  provider: string
+  hosts: string[]
+  schemes: Array<'https'>
+  ports: number[]
+  path_groups: string[]
+}
 type SsrfTemplateBindingState = {
-  template_id: string;
-  version: number;
-};
+  template_id: string
+  version: number
+}
 type SharedManifestRotationRequest = {
-  reason: string;
-  retainPreviousKeyCount: number;
-};
+  reason: string
+  retainPreviousKeyCount: number
+}
 type ForwarderIdempotencyScope = {
-  tenant_id: string;
-  workload_id: string;
-  integration_id: string;
-  action_group: string;
-  idempotency_key: string;
-};
+  tenant_id: string
+  workload_id: string
+  integration_id: string
+  action_group: string
+  idempotency_key: string
+}
 type ForwarderIdempotencyRecordCreateResult = {
-  created: boolean;
-  conflict: null | 'key_exists' | 'fingerprint_mismatch';
-};
+  created: boolean
+  conflict: null | 'key_exists' | 'fingerprint_mismatch'
+}
 type ForwarderIdempotencyRecordUpdateResult = {
-  updated: boolean;
-};
+  updated: boolean
+}
 type ForwarderIdempotencyRecordView = {
-  state: 'in_progress' | 'completed' | 'failed';
-  request_fingerprint_sha256: string;
-  correlation_id: string;
-  created_at: string;
-  expires_at: string;
-  upstream_status_code?: number;
-  response_bytes?: number;
-  error_code?: string;
-};
+  state: 'in_progress' | 'completed' | 'failed'
+  request_fingerprint_sha256: string
+  correlation_id: string
+  created_at: string
+  expires_at: string
+  upstream_status_code?: number
+  response_bytes?: number
+  error_code?: string
+}
 
-const clone = <T>(value: T): T => structuredClone(value);
-const manifestStatePrivateKeyReferencePrefix = 'state://manifest-signing-key/';
-const manifestRotationLockName = 'manifest-signing-rotation';
-const manifestRotationLockTtlMs = 30_000;
+const clone = <T>(value: T): T => structuredClone(value)
+const manifestStatePrivateKeyReferencePrefix = 'state://manifest-signing-key/'
+const manifestRotationLockName = 'manifest-signing-rotation'
+const manifestRotationLockTtlMs = 30_000
+const defaultRetainedManifestPrivateKeys = 2
 const forwarderIdempotencyRecordViewSchema = z
   .object({
     state: z.enum(['in_progress', 'completed', 'failed']),
@@ -198,27 +198,27 @@ const forwarderIdempotencyRecordViewSchema = z
     response_bytes: z.number().int().min(0).optional(),
     error_code: z.string().min(1).optional()
   })
-  .passthrough();
+  .passthrough()
 
-const privateKeyRefForKid = (kid: string) => `${manifestStatePrivateKeyReferencePrefix}${kid}`;
+const privateKeyRefForKid = (kid: string) => `${manifestStatePrivateKeyReferencePrefix}${kid}`
 const kidFromPrivateKeyRef = (privateKeyRef: string): string | null => {
   if (!privateKeyRef.startsWith(manifestStatePrivateKeyReferencePrefix)) {
-    return null;
+    return null
   }
-  const kid = privateKeyRef.slice(manifestStatePrivateKeyReferencePrefix.length);
-  return kid.length > 0 ? kid : null;
-};
+  const kid = privateKeyRef.slice(manifestStatePrivateKeyReferencePrefix.length)
+  return kid.length > 0 ? kid : null
+}
 
-const nowIso = () => new Date().toISOString();
+const nowIso = () => new Date().toISOString()
 
 const descriptorFingerprint = (descriptor: CanonicalRequestDescriptor) =>
-  createHash('sha256').update(JSON.stringify(descriptor)).digest('hex');
+  createHash('sha256').update(JSON.stringify(descriptor)).digest('hex')
 
 const etagForManifestKeys = (keys: OpenApiManifestKeys) => {
-  const stableKeys = [...keys.keys].sort((left, right) => left.kid.localeCompare(right.kid));
-  const hash = createHash('sha256').update(JSON.stringify(stableKeys)).digest('hex');
-  return `W/"${hash}"`;
-};
+  const stableKeys = [...keys.keys].sort((left, right) => left.kid.localeCompare(right.kid))
+  const hash = createHash('sha256').update(JSON.stringify(stableKeys)).digest('hex')
+  return `W/"${hash}"`
+}
 
 const defaultState = (): PersistedDataPlaneState =>
   persistedDataPlaneStateSchema.parse({
@@ -232,10 +232,10 @@ const defaultState = (): PersistedDataPlaneState =>
     integration_secret_headers: {},
     dpop_required_workload_ids: [],
     dpop_required_tenant_ids: []
-  });
+  })
 
 const parseState = (state: unknown): PersistedDataPlaneState =>
-  persistedDataPlaneStateSchema.parse(state ?? defaultState());
+  persistedDataPlaneStateSchema.parse(state ?? defaultState())
 
 const publicKeyFromPrivateKey = (privateKey: ManifestSigningPrivateKey) => {
   if (privateKey.alg === 'EdDSA') {
@@ -246,11 +246,11 @@ const publicKeyFromPrivateKey = (privateKey: ManifestSigningPrivateKey) => {
       x: privateKey.private_jwk.x,
       alg: 'EdDSA' as const,
       use: 'sig' as const
-    };
+    }
   }
 
   if (typeof privateKey.private_jwk.y !== 'string' || privateKey.private_jwk.y.length === 0) {
-    throw new Error(`Manifest ES256 signing key ${privateKey.kid} is missing y coordinate`);
+    throw new Error(`Manifest ES256 signing key ${privateKey.kid} is missing y coordinate`)
   }
 
   return {
@@ -261,34 +261,34 @@ const publicKeyFromPrivateKey = (privateKey: ManifestSigningPrivateKey) => {
     y: privateKey.private_jwk.y,
     alg: 'ES256' as const,
     use: 'sig' as const
-  };
-};
+  }
+}
 
 const normalizeManifestPrivateKeyMaterials = ({
   state,
   fallbackCreatedAt
 }: {
-  state: PersistedDataPlaneState;
-  fallbackCreatedAt: string;
+  state: PersistedDataPlaneState
+  fallbackCreatedAt: string
 }): {
-  materials: ManifestSigningPrivateKeyMaterial[];
-  activePrivateKeyRef: string;
+  materials: ManifestSigningPrivateKeyMaterial[]
+  activePrivateKeyRef: string
 } => {
-  const byRef = new Map<string, ManifestSigningPrivateKeyMaterial>();
+  const byRef = new Map<string, ManifestSigningPrivateKeyMaterial>()
 
   for (const material of state.manifest_signing_private_keys) {
-    const kidFromRef = kidFromPrivateKeyRef(material.private_key_ref);
+    const kidFromRef = kidFromPrivateKeyRef(material.private_key_ref)
     if (kidFromRef && kidFromRef !== material.private_key.kid) {
       throw new Error(
         `Manifest private key reference ${material.private_key_ref} does not match key id ${material.private_key.kid}`
-      );
+      )
     }
-    byRef.set(material.private_key_ref, material);
+    byRef.set(material.private_key_ref, material)
   }
 
-  const legacyPrivateKey = state.manifest_signing_private_key;
+  const legacyPrivateKey = state.manifest_signing_private_key
   if (legacyPrivateKey) {
-    const legacyRef = privateKeyRefForKid(legacyPrivateKey.kid);
+    const legacyRef = privateKeyRefForKid(legacyPrivateKey.kid)
     if (!byRef.has(legacyRef)) {
       byRef.set(
         legacyRef,
@@ -298,20 +298,20 @@ const normalizeManifestPrivateKeyMaterials = ({
           status: 'retired',
           created_at: fallbackCreatedAt
         })
-      );
+      )
     }
   }
 
   if (byRef.size === 0) {
-    throw new Error('Manifest private key material normalization requires at least one key');
+    throw new Error('Manifest private key material normalization requires at least one key')
   }
 
-  const preferredActiveRef = state.manifest_signing_active_private_key_ref;
-  const legacyActiveRef = legacyPrivateKey ? privateKeyRefForKid(legacyPrivateKey.kid) : undefined;
+  const preferredActiveRef = state.manifest_signing_active_private_key_ref
+  const legacyActiveRef = legacyPrivateKey ? privateKeyRefForKid(legacyPrivateKey.kid) : undefined
   const activePrivateKeyRef =
     (preferredActiveRef && byRef.has(preferredActiveRef) ? preferredActiveRef : undefined) ??
     (legacyActiveRef && byRef.has(legacyActiveRef) ? legacyActiveRef : undefined) ??
-    Array.from(byRef.keys())[0];
+    Array.from(byRef.keys())[0]
 
   const materials = Array.from(byRef.values())
     .map(material =>
@@ -320,42 +320,44 @@ const normalizeManifestPrivateKeyMaterials = ({
         status: material.private_key_ref === activePrivateKeyRef ? 'active' : 'retired'
       })
     )
-    .sort((left, right) => left.private_key_ref.localeCompare(right.private_key_ref));
+    .sort((left, right) => left.private_key_ref.localeCompare(right.private_key_ref))
 
-  return {materials, activePrivateKeyRef};
-};
+  return {materials, activePrivateKeyRef}
+}
 
 const mergeManifestVerificationKeys = ({
   existingKeys,
   materialKeys
 }: {
-  existingKeys: OpenApiManifestKeys['keys'];
-  materialKeys: OpenApiManifestKeys['keys'];
+  existingKeys: OpenApiManifestKeys['keys']
+  materialKeys: OpenApiManifestKeys['keys']
 }) => {
-  const keysByKid = new Map<string, OpenApiManifestKeys['keys'][number]>();
+  const keysByKid = new Map<string, OpenApiManifestKeys['keys'][number]>()
   for (const key of existingKeys) {
-    keysByKid.set(key.kid, key);
+    keysByKid.set(key.kid, key)
   }
   for (const key of materialKeys) {
-    keysByKid.set(key.kid, key);
+    keysByKid.set(key.kid, key)
   }
-  return Array.from(keysByKid.values());
-};
+  return Array.from(keysByKid.values())
+}
 
-const ensureManifestSigningMaterial = async (rawState: PersistedDataPlaneState): Promise<PersistedDataPlaneState> => {
-  const fallbackCreatedAt = nowIso();
-  const nextState = clone(rawState);
+const ensureManifestSigningMaterial = async (
+  rawState: PersistedDataPlaneState
+): Promise<PersistedDataPlaneState> => {
+  const fallbackCreatedAt = nowIso()
+  const nextState = clone(rawState)
 
   if (!nextState.manifest_signing_private_key && nextState.manifest_signing_private_keys.length === 0) {
     const generated = await generateManifestSigningKeyPair({
       alg: 'EdDSA',
       kid: `manifest_${randomUUID()}`
-    });
+    })
     if (!generated.ok) {
-      throw new Error(`Unable to generate manifest signing key: ${generated.error.code}`);
+      throw new Error(`Unable to generate manifest signing key: ${generated.error.code}`)
     }
 
-    nextState.manifest_signing_private_key = generated.value.private_key;
+    nextState.manifest_signing_private_key = generated.value.private_key
     nextState.manifest_signing_private_keys = [
       manifestSigningPrivateKeyMaterialSchema.parse({
         private_key_ref: privateKeyRefForKid(generated.value.private_key.kid),
@@ -363,31 +365,31 @@ const ensureManifestSigningMaterial = async (rawState: PersistedDataPlaneState):
         status: 'active',
         created_at: fallbackCreatedAt
       })
-    ];
-    nextState.manifest_signing_active_private_key_ref = privateKeyRefForKid(generated.value.private_key.kid);
+    ]
+    nextState.manifest_signing_active_private_key_ref = privateKeyRefForKid(generated.value.private_key.kid)
   }
 
   const normalizedMaterials = normalizeManifestPrivateKeyMaterials({
     state: nextState,
     fallbackCreatedAt
-  });
+  })
   const activeMaterial = normalizedMaterials.materials.find(
     material => material.private_key_ref === normalizedMaterials.activePrivateKeyRef
-  );
+  )
   if (!activeMaterial) {
-    throw new Error('Unable to determine active manifest signing private key material');
+    throw new Error('Unable to determine active manifest signing private key material')
   }
 
-  const currentKeys = rawState.manifest_keys?.keys ?? [];
-  const materialKeys = normalizedMaterials.materials.map(material => publicKeyFromPrivateKey(material.private_key));
+  const currentKeys = rawState.manifest_keys?.keys ?? []
+  const materialKeys = normalizedMaterials.materials.map(material => publicKeyFromPrivateKey(material.private_key))
   const mergedKeys = mergeManifestVerificationKeys({
     existingKeys: currentKeys,
     materialKeys
-  });
+  })
 
-  const manifestKeysResult = buildManifestKeySet({keys: mergedKeys});
+  const manifestKeysResult = buildManifestKeySet({keys: mergedKeys})
   if (!manifestKeysResult.ok) {
-    throw new Error(`Unable to build manifest key set: ${manifestKeysResult.error.code}`);
+    throw new Error(`Unable to build manifest key set: ${manifestKeysResult.error.code}`)
   }
 
   return persistedDataPlaneStateSchema.parse({
@@ -396,35 +398,35 @@ const ensureManifestSigningMaterial = async (rawState: PersistedDataPlaneState):
     manifest_signing_active_private_key_ref: normalizedMaterials.activePrivateKeyRef,
     manifest_signing_private_key: activeMaterial.private_key,
     manifest_keys: manifestKeysResult.value
-  });
-};
+  })
+}
 
 const readStateFile = async ({statePath}: {statePath: string}) => {
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- Repository path is a deliberate service configuration boundary.
-    const text = await fs.readFile(statePath, 'utf8');
-    return parseState(JSON.parse(text) as unknown);
+    const text = await fs.readFile(statePath, 'utf8')
+    return parseState(JSON.parse(text) as unknown)
   } catch (error) {
-    const nodeError = error as NodeJS.ErrnoException;
+    const nodeError = error as NodeJS.ErrnoException
     if (nodeError.code === 'ENOENT') {
-      return defaultState();
+      return defaultState()
     }
 
-    throw error;
+    throw error
   }
-};
+}
 
-const canonicalHostFromUrl = (value: string) => new URL(value).hostname.toLowerCase();
+const canonicalHostFromUrl = (value: string) => new URL(value).hostname.toLowerCase()
 
 const toSessionRecord = (value: {
-  sessionId: string;
-  workloadId: string;
-  tenantId: string;
-  certFingerprint256: string;
-  tokenHash: string;
-  expiresAt: string;
-  dpopKeyThumbprint?: string;
-  scopes?: string[];
+  sessionId: string
+  workloadId: string
+  tenantId: string
+  certFingerprint256: string
+  tokenHash: string
+  expiresAt: string
+  dpopKeyThumbprint?: string
+  scopes?: string[]
 }): SessionRecord =>
   sessionRecordSchema.parse({
     session_id: value.sessionId,
@@ -435,14 +437,14 @@ const toSessionRecord = (value: {
     expires_at: value.expiresAt,
     ...(value.dpopKeyThumbprint ? {dpop_jkt: value.dpopKeyThumbprint} : {}),
     scopes: value.scopes ?? []
-  });
+  })
 
 const toAuthSessionRecordWithScopes = ({
   session,
   scopes
 }: {
-  session: SessionSaveInput;
-  scopes: string[];
+  session: SessionSaveInput
+  scopes: string[]
 }): AuthSessionRecordWithScopes => ({
   sessionId: session.sessionId,
   workloadId: session.workloadId,
@@ -452,27 +454,27 @@ const toAuthSessionRecordWithScopes = ({
   expiresAt: session.expiresAt,
   ...(session.dpopKeyThumbprint ? {dpopKeyThumbprint: session.dpopKeyThumbprint} : {}),
   scopes
-});
+})
 
 const authSessionScopes = (value: AuthSessionRecord): string[] => {
-  const unknownScopes = (value as {scopes?: unknown}).scopes;
+  const unknownScopes = (value as {scopes?: unknown}).scopes
   if (!Array.isArray(unknownScopes)) {
-    return [];
+    return []
   }
 
-  return unknownScopes.filter((scope): scope is string => typeof scope === 'string');
-};
+  return unknownScopes.filter((scope): scope is string => typeof scope === 'string')
+}
 
 const toCryptoManifestSigningKeyRecord = (record: {
-  kid: string;
-  alg: 'EdDSA' | 'ES256';
-  public_jwk: unknown;
-  private_key_ref: string;
-  status: 'active' | 'retired' | 'revoked';
-  created_at: string;
-  activated_at?: string;
-  retired_at?: string;
-  revoked_at?: string;
+  kid: string
+  alg: 'EdDSA' | 'ES256'
+  public_jwk: unknown
+  private_key_ref: string
+  status: 'active' | 'retired' | 'revoked'
+  created_at: string
+  activated_at?: string
+  retired_at?: string
+  revoked_at?: string
 }): ManifestSigningKeyRecord => ({
   kid: record.kid,
   alg: record.alg,
@@ -483,216 +485,238 @@ const toCryptoManifestSigningKeyRecord = (record: {
   ...(record.activated_at ? {activated_at: record.activated_at} : {}),
   ...(record.retired_at ? {retired_at: record.retired_at} : {}),
   ...(record.revoked_at ? {revoked_at: record.revoked_at} : {})
-});
+})
 
 const manifestPublicKeysEqual = ({
   expected,
   actual
 }: {
-  expected: ReturnType<typeof publicKeyFromPrivateKey>;
-  actual: ManifestSigningKeyRecord['public_jwk'];
+  expected: ReturnType<typeof publicKeyFromPrivateKey>
+  actual: ManifestSigningKeyRecord['public_jwk']
 }) => {
   if (expected.kid !== actual.kid || expected.alg !== actual.alg || expected.kty !== actual.kty) {
-    return false;
+    return false
   }
 
   if (expected.kty === 'OKP' && actual.kty === 'OKP') {
-    return expected.crv === actual.crv && expected.x === actual.x && expected.use === actual.use;
+    return expected.crv === actual.crv && expected.x === actual.x && expected.use === actual.use
   }
 
   if (expected.kty === 'EC' && actual.kty === 'EC') {
     return (
-      expected.crv === actual.crv && expected.x === actual.x && expected.y === actual.y && expected.use === actual.use
-    );
+      expected.crv === actual.crv &&
+      expected.x === actual.x &&
+      expected.y === actual.y &&
+      expected.use === actual.use
+    )
   }
 
-  return false;
-};
+  return false
+}
 
 const toErrorCode = (error: unknown) => {
   if (typeof error !== 'object' || error === null || !('code' in error)) {
-    return undefined;
+    return undefined
   }
 
-  const code = (error as {code?: unknown}).code;
-  return typeof code === 'string' ? code : undefined;
-};
+  const code = (error as {code?: unknown}).code
+  return typeof code === 'string' ? code : undefined
+}
 
 const toErrorMessage = (error: unknown) => {
   if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
+    return error.message
   }
 
-  return 'Unexpected dependency error';
-};
+  return 'Unexpected dependency error'
+}
 
-const toCryptoStoreFailure = ({method, error}: {method: string; error: unknown}) => {
-  const code = toErrorCode(error);
-  const message = `${method}: ${toErrorMessage(error)}`;
+const toCryptoStoreFailure = ({
+  method,
+  error
+}: {
+  method: string
+  error: unknown
+}) => {
+  const code = toErrorCode(error)
+  const message = `${method}: ${toErrorMessage(error)}`
   if (code === 'not_found') {
     return method.toLowerCase().includes('manifest')
       ? cryptoErr('manifest_key_not_found', message)
-      : cryptoErr('invalid_input', message);
+      : cryptoErr('invalid_input', message)
   }
 
   if (code === 'state_transition_invalid') {
-    return cryptoErr('manifest_key_rotation_invalid', message);
+    return cryptoErr('manifest_key_rotation_invalid', message)
   }
 
   if (code === 'unique_violation' || code === 'conflict') {
-    return cryptoErr('manifest_key_rotation_invalid', message);
+    return cryptoErr('manifest_key_rotation_invalid', message)
   }
 
-  return cryptoErr('invalid_input', message);
-};
+  return cryptoErr('invalid_input', message)
+}
 
 export type DataPlaneRepositoryCreateInput = {
-  statePath?: string;
-  initialState?: unknown;
-  approvalTtlSeconds: number;
-  manifestTtlSeconds: number;
-  processInfrastructure?: ProcessInfrastructure;
-};
+  statePath?: string
+  initialState?: unknown
+  approvalTtlSeconds: number
+  manifestTtlSeconds: number
+  processInfrastructure?: ProcessInfrastructure
+  secretKey?: Buffer
+  secretKeyId?: string
+}
 
 export class DataPlaneRepository {
-  private readonly statePath?: string;
-  private readonly approvalTtlSeconds: number;
-  private readonly manifestTtlSeconds: number;
-  private readonly processInfrastructure?: ProcessInfrastructure;
-  private readonly authStorageScope: AuthStorageScope | null;
-  private readonly cryptoStorageService: CryptoStorageService_INCOMPLETE<Prisma.TransactionClient> | null;
-  private readonly forwarderDbBridge: ForwarderDbDependencyBridge<Prisma.TransactionClient> | null;
-  private readonly ssrfGuardStorageBridge: SsrfGuardStorageBridge;
-  private writeChain: Promise<void> = Promise.resolve();
+  private readonly statePath?: string
+  private readonly approvalTtlSeconds: number
+  private readonly manifestTtlSeconds: number
+  private readonly processInfrastructure?: ProcessInfrastructure
+  private readonly authStorageScope: AuthStorageScope | null
+  private readonly cryptoStorageService: CryptoStorageService_INCOMPLETE<Prisma.TransactionClient> | null
+  private readonly forwarderDbBridge: ForwarderDbDependencyBridge<Prisma.TransactionClient> | null
+  private readonly ssrfGuardStorageBridge: SsrfGuardStorageBridge
+  private readonly keyManagementService: EnvelopeKeyManagementService | null
+  private readonly secretKeyBuffer: Buffer | null
+  private writeChain: Promise<void> = Promise.resolve()
 
-  private readonly dpopReplayJtiExpiryByKey = new Map<string, number>();
-  private readonly rateLimitCountersByKey = new Map<string, RateLimitCounter>();
-  private readonly ssrfTemplateBindingsByScope = new Map<string, SsrfTemplateBindingState>();
+  private readonly dpopReplayJtiExpiryByKey = new Map<string, number>()
+  private readonly rateLimitCountersByKey = new Map<string, RateLimitCounter>()
+  private readonly ssrfTemplateBindingsByScope = new Map<string, SsrfTemplateBindingState>()
 
   private constructor({
     state,
     statePath,
     approvalTtlSeconds,
     manifestTtlSeconds,
-    processInfrastructure
+    processInfrastructure,
+    secretKey,
+    secretKeyId
   }: {
-    state: PersistedDataPlaneState;
-    statePath?: string;
-    approvalTtlSeconds: number;
-    manifestTtlSeconds: number;
-    processInfrastructure?: ProcessInfrastructure;
+    state: PersistedDataPlaneState
+    statePath?: string
+    approvalTtlSeconds: number
+    manifestTtlSeconds: number
+    processInfrastructure?: ProcessInfrastructure
+    secretKey?: Buffer
+    secretKeyId?: string
   }) {
-    this.state = state;
-    this.statePath = statePath;
-    this.approvalTtlSeconds = approvalTtlSeconds;
-    this.manifestTtlSeconds = manifestTtlSeconds;
-    this.processInfrastructure = processInfrastructure;
-    this.authStorageScope = this.createAuthStorageScope();
-    this.cryptoStorageService = this.createSharedCryptoStorageService();
-    this.forwarderDbBridge = this.createForwarderDbBridge();
-    this.ssrfGuardStorageBridge = this.createSsrfGuardStorageBridge();
+    this.state = state
+    this.statePath = statePath
+    this.approvalTtlSeconds = approvalTtlSeconds
+    this.manifestTtlSeconds = manifestTtlSeconds
+    this.processInfrastructure = processInfrastructure
+    this.authStorageScope = this.createAuthStorageScope()
+    this.cryptoStorageService = this.createSharedCryptoStorageService()
+    this.forwarderDbBridge = this.createForwarderDbBridge()
+    this.ssrfGuardStorageBridge = this.createSsrfGuardStorageBridge()
+    this.keyManagementService = this.createKeyManagementService({secretKey, secretKeyId})
+    // Store secret key buffer for zeroization on shutdown
+    this.secretKeyBuffer = secretKey ?? null
   }
 
-  private readonly state: PersistedDataPlaneState;
+  private readonly state: PersistedDataPlaneState
 
   public static async create({
     statePath,
     initialState,
     approvalTtlSeconds,
     manifestTtlSeconds,
-    processInfrastructure
+    processInfrastructure,
+    secretKey,
+    secretKeyId
   }: DataPlaneRepositoryCreateInput): Promise<DataPlaneRepository> {
-    const loadedState = statePath ? await readStateFile({statePath}) : parseState(initialState);
-    const state = await ensureManifestSigningMaterial(loadedState);
+    const loadedState = statePath ? await readStateFile({statePath}) : parseState(initialState)
+    const state = await ensureManifestSigningMaterial(loadedState)
 
     const repository = new DataPlaneRepository({
       state,
       statePath,
       approvalTtlSeconds,
       manifestTtlSeconds,
-      processInfrastructure
-    });
-    await repository.ensureSharedManifestSigningMaterial();
-    return repository;
+      processInfrastructure,
+      secretKey,
+      secretKeyId
+    })
+    await repository.ensureSharedManifestSigningMaterial()
+    return repository
   }
 
   private buildRedisKey({
     category,
     key
   }: {
-    category: 'dpop' | 'rate_limit' | 'ssrf_dns_cache' | 'ssrf_dns_rebinding';
-    key: string;
+    category: 'dpop' | 'rate_limit' | 'ssrf_dns_cache' | 'ssrf_dns_rebinding'
+    key: string
   }) {
-    const prefix = this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane';
-    const hashedKey = createHash('sha256').update(key).digest('hex');
-    return `${prefix}:${category}:${hashedKey}`;
+    const prefix = this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane'
+    const hashedKey = createHash('sha256').update(key).digest('hex')
+    return `${prefix}:${category}:${hashedKey}`
   }
 
   private buildSsrfTemplateInvalidationChannel() {
-    const prefix = this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane';
-    return `${prefix}:ssrf:template_invalidation:v1`;
+    const prefix = this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane'
+    return `${prefix}:ssrf:template_invalidation:v1`
   }
 
   private buildSsrfTemplateInvalidationOutboxKey() {
-    const prefix = this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane';
-    return `${prefix}:ssrf:template_invalidation_outbox:v1`;
+    const prefix = this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane'
+    return `${prefix}:ssrf:template_invalidation_outbox:v1`
   }
 
   private buildSsrfDecisionProjectionOutboxKey() {
-    const prefix = this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane';
-    return `${prefix}:ssrf:decision_projection_outbox:v1`;
+    const prefix = this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane'
+    return `${prefix}:ssrf:decision_projection_outbox:v1`
   }
 
   private buildSsrfScopeKey(scope: StorageScope) {
-    return `${scope.tenant_id}:${scope.workload_id}:${scope.integration_id}`;
+    return `${scope.tenant_id}:${scope.workload_id}:${scope.integration_id}`
   }
 
   private normalizeIpSet(ips: string[]) {
     return Array.from(new Set(ips.map(ip => ip.trim()).filter(ip => ip.length > 0))).sort((left, right) =>
       left.localeCompare(right)
-    );
+    )
   }
 
   private hashIpSet(ips: string[]) {
-    return createHash('sha256')
-      .update(JSON.stringify(this.normalizeIpSet(ips)))
-      .digest('hex');
+    return createHash('sha256').update(JSON.stringify(this.normalizeIpSet(ips))).digest('hex')
   }
 
   private toRepositoryContext(transactionClient?: unknown): {transaction_client: unknown} | undefined {
-    return transactionClient === undefined ? undefined : {transaction_client: transactionClient};
+    return transactionClient === undefined ? undefined : {transaction_client: transactionClient}
   }
 
   private resolveManifestSigningPrivateKeyByReference({
     privateKeyRef
   }: {
-    privateKeyRef: string;
+    privateKeyRef: string
   }): ManifestSigningPrivateKey | null {
-    const material = this.state.manifest_signing_private_keys.find(item => item.private_key_ref === privateKeyRef);
+    const material = this.state.manifest_signing_private_keys.find(item => item.private_key_ref === privateKeyRef)
     if (material) {
-      return clone(material.private_key);
+      return clone(material.private_key)
     }
 
-    const legacyManifestKey = this.state.manifest_signing_private_key;
+    const legacyManifestKey = this.state.manifest_signing_private_key
     if (legacyManifestKey && privateKeyRefForKid(legacyManifestKey.kid) === privateKeyRef) {
-      return clone(legacyManifestKey);
+      return clone(legacyManifestKey)
     }
 
-    return null;
+    return null
   }
 
   private getLocalManifestSigningPrivateKeyByKid({kid}: {kid: string}): ManifestSigningPrivateKey | null {
-    const material = this.state.manifest_signing_private_keys.find(item => item.private_key.kid === kid);
+    const material = this.state.manifest_signing_private_keys.find(item => item.private_key.kid === kid)
     if (material) {
-      return clone(material.private_key);
+      return clone(material.private_key)
     }
 
-    const legacyManifestKey = this.state.manifest_signing_private_key;
+    const legacyManifestKey = this.state.manifest_signing_private_key
     if (legacyManifestKey && legacyManifestKey.kid === kid) {
-      return clone(legacyManifestKey);
+      return clone(legacyManifestKey)
     }
 
-    return null;
+    return null
   }
 
   private async applySharedManifestRotationResult({
@@ -700,16 +724,16 @@ export class DataPlaneRepository {
     rotatedManifestKeys,
     retainPreviousKeyCount
   }: {
-    activeSigningPrivateKey: ManifestSigningPrivateKey;
-    rotatedManifestKeys: OpenApiManifestKeys;
-    retainPreviousKeyCount: number;
+    activeSigningPrivateKey: ManifestSigningPrivateKey
+    rotatedManifestKeys: OpenApiManifestKeys
+    retainPreviousKeyCount: number
   }) {
-    const activePrivateKeyRef = privateKeyRefForKid(activeSigningPrivateKey.kid);
+    const activePrivateKeyRef = privateKeyRefForKid(activeSigningPrivateKey.kid)
     await this.withWriteLock(() => {
       const existingByRef = new Map(
         this.state.manifest_signing_private_keys.map(material => [material.private_key_ref, material])
-      );
-      const rotatedKids = new Set(rotatedManifestKeys.keys.map(key => key.kid));
+      )
+      const rotatedKids = new Set(rotatedManifestKeys.keys.map(key => key.kid))
       const retainedPrivateKeys = Array.from(existingByRef.values())
         .filter(
           material => material.private_key_ref !== activePrivateKeyRef && rotatedKids.has(material.private_key.kid)
@@ -721,54 +745,54 @@ export class DataPlaneRepository {
             ...material,
             status: 'retired'
           })
-        );
+        )
 
       const activeMaterial = manifestSigningPrivateKeyMaterialSchema.parse({
         private_key_ref: activePrivateKeyRef,
         private_key: activeSigningPrivateKey,
         status: 'active',
         created_at: existingByRef.get(activePrivateKeyRef)?.created_at ?? nowIso()
-      });
+      })
 
-      this.state.manifest_signing_private_keys = [activeMaterial, ...retainedPrivateKeys];
-      this.state.manifest_signing_active_private_key_ref = activePrivateKeyRef;
-      this.state.manifest_signing_private_key = clone(activeSigningPrivateKey);
-      this.state.manifest_keys = clone(rotatedManifestKeys);
-    });
+      this.state.manifest_signing_private_keys = [activeMaterial, ...retainedPrivateKeys]
+      this.state.manifest_signing_active_private_key_ref = activePrivateKeyRef
+      this.state.manifest_signing_private_key = clone(activeSigningPrivateKey)
+      this.state.manifest_keys = clone(rotatedManifestKeys)
+    })
   }
 
   private async rotateManifestSigningPrivateKeyShared({
     reason,
     retainPreviousKeyCount
   }: SharedManifestRotationRequest): Promise<ManifestSigningPrivateKey> {
-    const sharedCryptoStorage = this.cryptoStorageService;
+    const sharedCryptoStorage = this.cryptoStorageService
     if (!sharedCryptoStorage) {
-      throw new Error('Manifest signing key rotation requires shared crypto storage');
+      throw new Error('Manifest signing key rotation requires shared crypto storage')
     }
 
     const lockResult = await sharedCryptoStorage.acquireCryptoRotationLock_INCOMPLETE({
       lock_name: manifestRotationLockName,
       ttl_ms: manifestRotationLockTtlMs
-    });
+    })
     if (!lockResult.ok) {
-      throw new Error(`Unable to acquire manifest signing rotation lock (${reason}): ${lockResult.error.message}`);
+      throw new Error(`Unable to acquire manifest signing rotation lock (${reason}): ${lockResult.error.message}`)
     }
     if (!lockResult.value.acquired) {
-      throw new Error(`Manifest signing rotation lock is held by another process (${reason})`);
+      throw new Error(`Manifest signing rotation lock is held by another process (${reason})`)
     }
 
-    let operationError: unknown;
-    let rotatedKey: ManifestSigningPrivateKey | null = null;
+    let operationError: unknown
+    let rotatedKey: ManifestSigningPrivateKey | null = null
     try {
-      const sharedKeysetResult = await sharedCryptoStorage.listManifestVerificationKeysWithEtag_INCOMPLETE();
+      const sharedKeysetResult = await sharedCryptoStorage.listManifestVerificationKeysWithEtag_INCOMPLETE()
       if (!sharedKeysetResult.ok && sharedKeysetResult.error.code !== 'manifest_key_not_found') {
-        throw new Error(`Unable to load shared manifest keyset before rotation: ${sharedKeysetResult.error.message}`);
+        throw new Error(`Unable to load shared manifest keyset before rotation: ${sharedKeysetResult.error.message}`)
       }
 
       const currentManifestKeys = sharedKeysetResult.ok
         ? sharedKeysetResult.value.manifest_keys
-        : this.getManifestVerificationKeys();
-      const signingAlgorithm = this.getManifestSigningPrivateKey().alg;
+        : this.getManifestVerificationKeys()
+      const signingAlgorithm = this.getManifestSigningPrivateKey().alg
 
       const executeRotate = async (transactionClient?: Prisma.TransactionClient) => {
         const rotateResult = await sharedCryptoStorage.rotateManifestSigningKeysWithStore_INCOMPLETE(
@@ -778,80 +802,78 @@ export class DataPlaneRepository {
             retain_previous_key_count: retainPreviousKeyCount
           },
           transactionClient ? {transaction_client: transactionClient} : undefined
-        );
+        )
         if (!rotateResult.ok) {
-          throw new Error(`Unable to rotate manifest signing keys: ${rotateResult.error.message}`);
+          throw new Error(`Unable to rotate manifest signing keys: ${rotateResult.error.message}`)
         }
 
         await this.applySharedManifestRotationResult({
           activeSigningPrivateKey: rotateResult.value.active_signing_private_key,
           rotatedManifestKeys: rotateResult.value.rotated_manifest_keys,
           retainPreviousKeyCount
-        });
-        return rotateResult.value.active_signing_private_key;
-      };
+        })
+        return rotateResult.value.active_signing_private_key
+      }
 
       rotatedKey = this.isSharedInfrastructureEnabled()
         ? await this.withSharedTransaction(transactionClient => executeRotate(transactionClient))
-        : await executeRotate();
+        : await executeRotate()
     } catch (error) {
-      operationError = error;
+      operationError = error
     }
 
     const releaseResult = await sharedCryptoStorage.releaseCryptoRotationLock_INCOMPLETE({
       lock_name: manifestRotationLockName,
       token: lockResult.value.token
-    });
+    })
 
     if (!releaseResult.ok || !releaseResult.value.released) {
       const releaseMessage = releaseResult.ok
         ? 'Rotation lock token was not accepted by Redis'
-        : releaseResult.error.message;
+        : releaseResult.error.message
       if (operationError) {
-        throw new Error(
-          `${toErrorMessage(operationError)}; additionally failed to release rotation lock: ${releaseMessage}`
-        );
+        throw new Error(`${toErrorMessage(operationError)}; additionally failed to release rotation lock: ${releaseMessage}`)
       }
       if (rotatedKey) {
-        return rotatedKey;
+        return rotatedKey
       }
-      throw new Error(`Failed to release manifest signing rotation lock: ${releaseMessage}`);
+      throw new Error(`Failed to release manifest signing rotation lock: ${releaseMessage}`)
     }
 
     if (operationError) {
-      throw operationError instanceof Error ? operationError : new Error(toErrorMessage(operationError));
+      throw operationError instanceof Error ? operationError : new Error(toErrorMessage(operationError))
     }
 
     if (!rotatedKey) {
-      throw new Error('Manifest signing key rotation completed without an active signing key result');
+      throw new Error('Manifest signing key rotation completed without an active signing key result')
     }
 
-    return rotatedKey;
+    return rotatedKey
   }
 
   private createAuthStorageScope(): AuthStorageScope | null {
-    const redisClient = this.processInfrastructure?.redis;
+    const redisClient = this.processInfrastructure?.redis
     if (!redisClient) {
-      return null;
+      return null
     }
 
-    const sharedSessionRepository = this.processInfrastructure?.dbRepositories?.sessionRepository;
-    const sharedWorkloadRepository = this.processInfrastructure?.dbRepositories?.workloadRepository;
-    const postgresClient = this.processInfrastructure?.prisma;
+    const sharedSessionRepository = this.processInfrastructure?.dbRepositories?.sessionRepository
+    const sharedWorkloadRepository = this.processInfrastructure?.dbRepositories?.workloadRepository
+    const postgresClient = this.processInfrastructure?.prisma
 
     return createAuthStorageScope({
       clients: {
         redis: redisClient as unknown as {
-          get: (...args: unknown[]) => unknown;
-          set: (...args: unknown[]) => unknown;
-          del: (...args: unknown[]) => unknown;
+          get: (...args: unknown[]) => unknown
+          set: (...args: unknown[]) => unknown
+          del: (...args: unknown[]) => unknown
         },
         ...(postgresClient ? {postgres: postgresClient as unknown as Record<string, unknown>} : {})
       },
       repositories: {
         sessionStore: {
           upsertSession: async ({session}) => {
-            const scopes = authSessionScopes(session);
+            const scopes = authSessionScopes(session)
             if (sharedSessionRepository) {
               await sharedSessionRepository.upsertSession({
                 sessionId: session.sessionId,
@@ -862,12 +884,12 @@ export class DataPlaneRepository {
                 expiresAt: session.expiresAt,
                 ...(session.dpopKeyThumbprint ? {dpopKeyThumbprint: session.dpopKeyThumbprint} : {}),
                 scopes
-              });
-              return;
+              })
+              return
             }
 
             await this.withWriteLock(() => {
-              this.cleanupExpiredSessions();
+              this.cleanupExpiredSessions()
               const nextRecord = sessionRecordSchema.parse({
                 session_id: session.sessionId,
                 workload_id: session.workloadId,
@@ -877,18 +899,18 @@ export class DataPlaneRepository {
                 expires_at: session.expiresAt,
                 ...(session.dpopKeyThumbprint ? {dpop_jkt: session.dpopKeyThumbprint} : {}),
                 scopes
-              });
-              this.state.sessions = this.state.sessions.filter(item => item.session_id !== nextRecord.session_id);
-              this.state.sessions.push(nextRecord);
-            });
+              })
+              this.state.sessions = this.state.sessions.filter(item => item.session_id !== nextRecord.session_id)
+              this.state.sessions.push(nextRecord)
+            })
           },
           getSessionByTokenHash: async ({tokenHash}) => {
             if (sharedSessionRepository) {
               const session = await sharedSessionRepository.getSessionByTokenHash({
                 token_hash: tokenHash
-              });
+              })
               if (!session) {
-                return null;
+                return null
               }
 
               return {
@@ -900,14 +922,14 @@ export class DataPlaneRepository {
                 expiresAt: session.expiresAt,
                 ...(session.dpopKeyThumbprint ? {dpopKeyThumbprint: session.dpopKeyThumbprint} : {}),
                 ...(session.scopes ? {scopes: session.scopes} : {})
-              } as AuthSessionRecordWithScopes;
+              } as AuthSessionRecordWithScopes
             }
 
             const session = this.getSessionByTokenHash({
               tokenHash
-            });
+            })
             if (!session) {
-              return null;
+              return null
             }
 
             return {
@@ -919,19 +941,19 @@ export class DataPlaneRepository {
               expiresAt: session.expires_at,
               ...(session.dpop_jkt ? {dpopKeyThumbprint: session.dpop_jkt} : {}),
               scopes: clone(session.scopes)
-            } as AuthSessionRecordWithScopes;
+            } as AuthSessionRecordWithScopes
           },
           revokeSessionById: async ({sessionId}) => {
             if (sharedSessionRepository) {
               await sharedSessionRepository.revokeSessionById({
                 session_id: sessionId
-              });
-              return;
+              })
+              return
             }
 
             await this.withWriteLock(() => {
-              this.state.sessions = this.state.sessions.filter(item => item.session_id !== sessionId);
-            });
+              this.state.sessions = this.state.sessions.filter(item => item.session_id !== sessionId)
+            })
           }
         },
         workloadStore: {
@@ -939,9 +961,9 @@ export class DataPlaneRepository {
             if (sharedWorkloadRepository) {
               const workload = await sharedWorkloadRepository.getBySanUri({
                 san_uri: sanUri
-              });
+              })
               if (!workload) {
-                return null;
+                return null
               }
 
               return {
@@ -949,14 +971,14 @@ export class DataPlaneRepository {
                 tenantId: workload.tenant_id,
                 enabled: workload.enabled,
                 ...(workload.ip_allowlist ? {ipAllowlist: workload.ip_allowlist} : {})
-              } as AuthWorkloadRecord;
+              } as AuthWorkloadRecord
             }
 
             const workload = this.getWorkloadBySanUri({
               sanUri
-            });
+            })
             if (!workload) {
-              return null;
+              return null
             }
 
             return {
@@ -964,45 +986,45 @@ export class DataPlaneRepository {
               tenantId: workload.tenant_id,
               enabled: workload.enabled,
               ...(workload.ip_allowlist ? {ipAllowlist: workload.ip_allowlist} : {})
-            } as AuthWorkloadRecord;
+            } as AuthWorkloadRecord
           }
         },
         replayStore: {
           reserveDpopJti: async ({replayScope, jti, expiresAt, redisClient: replayRedisClient}) => {
-            const ttlMs = expiresAt.getTime() - Date.now();
+            const ttlMs = expiresAt.getTime() - Date.now()
             if (ttlMs <= 0) {
-              return false;
+              return false
             }
 
-            const replayKey = `${replayScope}:${jti}`;
+            const replayKey = `${replayScope}:${jti}`
             const redisKey = this.buildRedisKey({
               category: 'dpop',
               key: replayKey
-            });
+            })
             const result = await (
               replayRedisClient as unknown as {
-                set: (key: string, value: string, options: {NX: boolean; PX: number}) => Promise<'OK' | null>;
+                set: (key: string, value: string, options: {NX: boolean; PX: number}) => Promise<'OK' | null>
               }
             ).set(redisKey, '1', {
               NX: true,
               PX: ttlMs
-            });
-            return result === 'OK';
+            })
+            return result === 'OK'
           }
         }
       }
-    });
+    })
   }
 
   private createForwarderDbBridge(): ForwarderDbDependencyBridge<Prisma.TransactionClient> | null {
-    const redis = this.processInfrastructure?.redis;
+    const redis = this.processInfrastructure?.redis
     if (!redis) {
-      return null;
+      return null
     }
 
     const forwarderRedisAdapter = createForwarderRedisAdapter({
       keyPrefix: `${this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane'}:forwarder`
-    });
+    })
 
     return createForwarderDbDependencyBridge_INCOMPLETE<Prisma.TransactionClient>({
       repositories: {
@@ -1074,19 +1096,15 @@ export class DataPlaneRepository {
     });
   }
 
-  private getForwarderDbBridgeOrThrow({
-    method
-  }: {
-    method: string;
-  }): ForwarderDbDependencyBridge<Prisma.TransactionClient> {
+  private getForwarderDbBridgeOrThrow({method}: {method: string}): ForwarderDbDependencyBridge<Prisma.TransactionClient> {
     if (!this.forwarderDbBridge) {
-      throw new Error(`${method}: forwarder persistence bridge is not configured`);
+      throw new Error(`${method}: forwarder persistence bridge is not configured`)
     }
-    return this.forwarderDbBridge;
+    return this.forwarderDbBridge
   }
 
   public isForwarderPersistenceEnabledShared() {
-    return this.forwarderDbBridge !== null;
+    return this.forwarderDbBridge !== null
   }
 
   public async acquireForwarderExecutionLockShared({
@@ -1094,13 +1112,13 @@ export class DataPlaneRepository {
     ttlMs,
     transactionClient
   }: {
-    scope: ForwarderIdempotencyScope;
-    ttlMs: number;
-    transactionClient?: Prisma.TransactionClient;
+    scope: ForwarderIdempotencyScope
+    ttlMs: number
+    transactionClient?: Prisma.TransactionClient
   }): Promise<{acquired: boolean; lock_token: string}> {
     const bridge = this.getForwarderDbBridgeOrThrow({
       method: 'acquireForwarderExecutionLock'
-    });
+    })
     try {
       return await bridge.acquireForwarderExecutionLock_INCOMPLETE(
         {
@@ -1108,9 +1126,9 @@ export class DataPlaneRepository {
           ttl_ms: ttlMs
         },
         transactionClient ? {transactionClient} : undefined
-      );
+      )
     } catch (error) {
-      throw new Error(`acquireForwarderExecutionLock: ${toErrorMessage(error)}`);
+      throw new Error(`acquireForwarderExecutionLock: ${toErrorMessage(error)}`)
     }
   }
 
@@ -1119,13 +1137,13 @@ export class DataPlaneRepository {
     lockToken,
     transactionClient
   }: {
-    scope: ForwarderIdempotencyScope;
-    lockToken: string;
-    transactionClient?: Prisma.TransactionClient;
+    scope: ForwarderIdempotencyScope
+    lockToken: string
+    transactionClient?: Prisma.TransactionClient
   }): Promise<{released: boolean}> {
     const bridge = this.getForwarderDbBridgeOrThrow({
       method: 'releaseForwarderExecutionLock'
-    });
+    })
     try {
       return await bridge.releaseForwarderExecutionLock_INCOMPLETE(
         {
@@ -1133,9 +1151,9 @@ export class DataPlaneRepository {
           lock_token: lockToken
         },
         transactionClient ? {transactionClient} : undefined
-      );
+      )
     } catch (error) {
-      throw new Error(`releaseForwarderExecutionLock: ${toErrorMessage(error)}`);
+      throw new Error(`releaseForwarderExecutionLock: ${toErrorMessage(error)}`)
     }
   }
 
@@ -1146,15 +1164,15 @@ export class DataPlaneRepository {
     expiresAt,
     transactionClient
   }: {
-    scope: ForwarderIdempotencyScope;
-    requestFingerprintSha256: string;
-    correlationId: string;
-    expiresAt: string;
-    transactionClient?: Prisma.TransactionClient;
+    scope: ForwarderIdempotencyScope
+    requestFingerprintSha256: string
+    correlationId: string
+    expiresAt: string
+    transactionClient?: Prisma.TransactionClient
   }): Promise<ForwarderIdempotencyRecordCreateResult> {
     const bridge = this.getForwarderDbBridgeOrThrow({
       method: 'createForwarderIdempotencyRecord'
-    });
+    })
     try {
       return await bridge.createForwarderIdempotencyRecord_INCOMPLETE(
         {
@@ -1164,9 +1182,9 @@ export class DataPlaneRepository {
           expires_at: expiresAt
         },
         transactionClient ? {transactionClient} : undefined
-      );
+      )
     } catch (error) {
-      throw new Error(`createForwarderIdempotencyRecord: ${toErrorMessage(error)}`);
+      throw new Error(`createForwarderIdempotencyRecord: ${toErrorMessage(error)}`)
     }
   }
 
@@ -1174,23 +1192,23 @@ export class DataPlaneRepository {
     scope,
     transactionClient
   }: {
-    scope: ForwarderIdempotencyScope;
-    transactionClient?: Prisma.TransactionClient;
+    scope: ForwarderIdempotencyScope
+    transactionClient?: Prisma.TransactionClient
   }): Promise<ForwarderIdempotencyRecordView | null> {
     const bridge = this.getForwarderDbBridgeOrThrow({
       method: 'getForwarderIdempotencyRecord'
-    });
+    })
     try {
       const record = await bridge.getForwarderIdempotencyRecord_INCOMPLETE(
         {scope},
         transactionClient ? {transactionClient} : undefined
-      );
+      )
       if (!record) {
-        return null;
+        return null
       }
-      return forwarderIdempotencyRecordViewSchema.parse(record);
+      return forwarderIdempotencyRecordViewSchema.parse(record)
     } catch (error) {
-      throw new Error(`getForwarderIdempotencyRecord: ${toErrorMessage(error)}`);
+      throw new Error(`getForwarderIdempotencyRecord: ${toErrorMessage(error)}`)
     }
   }
 
@@ -1201,15 +1219,15 @@ export class DataPlaneRepository {
     responseBytes,
     transactionClient
   }: {
-    scope: ForwarderIdempotencyScope;
-    correlationId: string;
-    upstreamStatusCode: number;
-    responseBytes: number;
-    transactionClient?: Prisma.TransactionClient;
+    scope: ForwarderIdempotencyScope
+    correlationId: string
+    upstreamStatusCode: number
+    responseBytes: number
+    transactionClient?: Prisma.TransactionClient
   }): Promise<ForwarderIdempotencyRecordUpdateResult> {
     const bridge = this.getForwarderDbBridgeOrThrow({
       method: 'completeForwarderIdempotencyRecord'
-    });
+    })
     try {
       return await bridge.completeForwarderIdempotencyRecord_INCOMPLETE(
         {
@@ -1219,9 +1237,9 @@ export class DataPlaneRepository {
           response_bytes: responseBytes
         },
         transactionClient ? {transactionClient} : undefined
-      );
+      )
     } catch (error) {
-      throw new Error(`completeForwarderIdempotencyRecord: ${toErrorMessage(error)}`);
+      throw new Error(`completeForwarderIdempotencyRecord: ${toErrorMessage(error)}`)
     }
   }
 
@@ -1231,14 +1249,14 @@ export class DataPlaneRepository {
     errorCode,
     transactionClient
   }: {
-    scope: ForwarderIdempotencyScope;
-    correlationId: string;
-    errorCode: string;
-    transactionClient?: Prisma.TransactionClient;
+    scope: ForwarderIdempotencyScope
+    correlationId: string
+    errorCode: string
+    transactionClient?: Prisma.TransactionClient
   }): Promise<ForwarderIdempotencyRecordUpdateResult> {
     const bridge = this.getForwarderDbBridgeOrThrow({
       method: 'failForwarderIdempotencyRecord'
-    });
+    })
     try {
       return await bridge.failForwarderIdempotencyRecord_INCOMPLETE(
         {
@@ -1247,33 +1265,33 @@ export class DataPlaneRepository {
           error_code: errorCode
         },
         transactionClient ? {transactionClient} : undefined
-      );
+      )
     } catch (error) {
-      throw new Error(`failForwarderIdempotencyRecord: ${toErrorMessage(error)}`);
+      throw new Error(`failForwarderIdempotencyRecord: ${toErrorMessage(error)}`)
     }
   }
 
   private createSsrfGuardStorageBridge(): SsrfGuardStorageBridge {
-    const redis = this.processInfrastructure?.redis;
-    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository;
+    const redis = this.processInfrastructure?.redis
+    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository
     const sharedAuditRepository = this.processInfrastructure?.dbRepositories?.auditEventRepository as
       | {
           appendSsrfGuardDecisionProjection?: (input: {
-            projection: SsrfDecisionProjection;
-            transaction_client?: unknown;
-          }) => Promise<SsrfDecisionProjection>;
+            projection: SsrfDecisionProjection
+            transaction_client?: unknown
+          }) => Promise<SsrfDecisionProjection>
         }
-      | undefined;
+      | undefined
     const sharedTemplateRepository = this.processInfrastructure?.dbRepositories?.templateRepository as
       | {
           persistTemplateInvalidationOutbox?: (input: {
-            signal: TemplateInvalidationSignal;
-            transaction_client?: unknown;
-          }) => Promise<void>;
+            signal: TemplateInvalidationSignal
+            transaction_client?: unknown
+          }) => Promise<void>
         }
-      | undefined;
-    const appendSsrfGuardDecisionProjection = sharedAuditRepository?.appendSsrfGuardDecisionProjection;
-    const persistTemplateInvalidationOutbox = sharedTemplateRepository?.persistTemplateInvalidationOutbox;
+      | undefined
+    const appendSsrfGuardDecisionProjection = sharedAuditRepository?.appendSsrfGuardDecisionProjection
+    const persistTemplateInvalidationOutbox = sharedTemplateRepository?.persistTemplateInvalidationOutbox
 
     const ssrfStorageRepositories = {
       ...(sharedIntegrationRepository
@@ -1284,10 +1302,10 @@ export class DataPlaneRepository {
               integration_id,
               transaction_client
             }: {
-              tenant_id: string;
-              workload_id: string;
-              integration_id: string;
-              transaction_client?: unknown;
+              tenant_id: string
+              workload_id: string
+              integration_id: string
+              transaction_client?: unknown
             }) =>
               sharedIntegrationRepository.getIntegrationTemplateForExecute({
                 tenant_id,
@@ -1303,31 +1321,37 @@ export class DataPlaneRepository {
               const cacheKey = this.buildRedisKey({
                 category: 'ssrf_dns_cache',
                 key: normalized_host
-              });
-              const payload = await redis.get(cacheKey);
+              })
+              const payload = await redis.get(cacheKey)
               if (!payload) {
-                return null;
+                return null
               }
-              return DnsResolutionCacheEntrySchema.parse(JSON.parse(payload) as unknown);
+              return DnsResolutionCacheEntrySchema.parse(JSON.parse(payload) as unknown)
             }
           }
         : {}),
       ...(redis && typeof redis.set === 'function'
         ? {
-            upsertDnsResolutionCache: async ({normalized_host, entry}: {normalized_host: string; entry: unknown}) => {
-              const parsedEntry = DnsResolutionCacheEntrySchema.parse(entry);
+            upsertDnsResolutionCache: async ({
+              normalized_host,
+              entry
+            }: {
+              normalized_host: string
+              entry: unknown
+            }) => {
+              const parsedEntry = DnsResolutionCacheEntrySchema.parse(entry)
               const cacheKey = this.buildRedisKey({
                 category: 'ssrf_dns_cache',
                 key: normalized_host
-              });
+              })
               await redis.set(cacheKey, JSON.stringify(parsedEntry), {
                 EX: parsedEntry.ttl_seconds
-              });
+              })
               return {
                 outcome: 'applied' as const,
                 applied: true,
                 entry: parsedEntry
-              };
+              }
             }
           }
         : {}),
@@ -1337,54 +1361,55 @@ export class DataPlaneRepository {
               normalized_host,
               observation
             }: {
-              normalized_host: string;
-              observation: unknown;
+              normalized_host: string
+              observation: unknown
             }) => {
-              const parsedObservation = DnsRebindingObservationSchema.parse(observation);
+              const parsedObservation = DnsRebindingObservationSchema.parse(observation)
               const rebindingKey = this.buildRedisKey({
                 category: 'ssrf_dns_rebinding',
                 key: normalized_host
-              });
-              const historySizeRaw = await redis.rPush(rebindingKey, JSON.stringify(parsedObservation));
+              })
+              const historySizeRaw = await redis.rPush(rebindingKey, JSON.stringify(parsedObservation))
               if (typeof redis.lTrim === 'function') {
-                await redis.lTrim(rebindingKey, -100, -1);
+                await redis.lTrim(rebindingKey, -100, -1)
               }
-              const historySize =
-                typeof historySizeRaw === 'number' && Number.isFinite(historySizeRaw) ? historySizeRaw : 0;
+              const historySize = typeof historySizeRaw === 'number' && Number.isFinite(historySizeRaw)
+                ? historySizeRaw
+                : 0
               return {
                 observation: parsedObservation,
                 history_size: Math.max(0, Math.min(100, historySize))
-              };
+              }
             }
           }
         : {}),
-      ...(appendSsrfGuardDecisionProjection !== undefined || (redis && typeof redis.rPush === 'function')
+      ...((appendSsrfGuardDecisionProjection !== undefined || (redis && typeof redis.rPush === 'function'))
         ? {
             appendSsrfGuardDecisionProjection: async ({
               projection,
               transaction_client
             }: {
-              projection: unknown;
-              transaction_client?: unknown;
+              projection: unknown
+              transaction_client?: unknown
             }) => {
-              const parsedProjection = SsrfDecisionProjectionSchema.parse(projection);
+              const parsedProjection = SsrfDecisionProjectionSchema.parse(projection)
               if (appendSsrfGuardDecisionProjection) {
                 const persisted = await appendSsrfGuardDecisionProjection({
                   projection: parsedProjection,
                   ...(transaction_client !== undefined ? {transaction_client} : {})
-                });
-                return SsrfDecisionProjectionSchema.parse(persisted);
+                })
+                return SsrfDecisionProjectionSchema.parse(persisted)
               }
 
               if (redis && typeof redis.rPush === 'function') {
-                const projectionOutboxKey = this.buildSsrfDecisionProjectionOutboxKey();
-                await redis.rPush(projectionOutboxKey, JSON.stringify(parsedProjection));
+                const projectionOutboxKey = this.buildSsrfDecisionProjectionOutboxKey()
+                await redis.rPush(projectionOutboxKey, JSON.stringify(parsedProjection))
                 if (typeof redis.lTrim === 'function') {
-                  await redis.lTrim(projectionOutboxKey, -1000, -1);
+                  await redis.lTrim(projectionOutboxKey, -1000, -1)
                 }
               }
 
-              return parsedProjection;
+              return parsedProjection
             }
           }
         : {}),
@@ -1394,8 +1419,8 @@ export class DataPlaneRepository {
               signal,
               transaction_client
             }: {
-              signal: unknown;
-              transaction_client?: unknown;
+              signal: unknown
+              transaction_client?: unknown
             }) =>
               persistTemplateInvalidationOutbox({
                 signal: TemplateInvalidationSignalSchema.parse(signal),
@@ -1406,62 +1431,62 @@ export class DataPlaneRepository {
       ...(redis && typeof redis.publish === 'function'
         ? {
             publishTemplateInvalidationSignal: async ({signal}: {signal: unknown}) => {
-              const parsedSignal = TemplateInvalidationSignalSchema.parse(signal);
-              const payload = JSON.stringify(parsedSignal);
-              const invalidationChannel = this.buildSsrfTemplateInvalidationChannel();
-              await redis.publish(invalidationChannel, payload);
+              const parsedSignal = TemplateInvalidationSignalSchema.parse(signal)
+              const payload = JSON.stringify(parsedSignal)
+              const invalidationChannel = this.buildSsrfTemplateInvalidationChannel()
+              await redis.publish(invalidationChannel, payload)
               if (typeof redis.rPush === 'function') {
-                const outboxKey = this.buildSsrfTemplateInvalidationOutboxKey();
-                await redis.rPush(outboxKey, payload);
+                const outboxKey = this.buildSsrfTemplateInvalidationOutboxKey()
+                await redis.rPush(outboxKey, payload)
                 if (typeof redis.lTrim === 'function') {
-                  await redis.lTrim(outboxKey, -1000, -1);
+                  await redis.lTrim(outboxKey, -1000, -1)
                 }
               }
             }
           }
         : {})
-    };
+    }
 
-    return createSsrfGuardStorageBridge_INCOMPLETE({
-      repositories: ssrfStorageRepositories,
-      ...(redis ? {clients: {redis}} : {})
-    });
+   return createSsrfGuardStorageBridge_INCOMPLETE({
+     repositories: ssrfStorageRepositories
+     , clients: redis ? { redis } : {}
+   })
   }
 
   public async loadSsrfActiveTemplateForExecuteShared({
     scope,
     transactionClient
   }: {
-    scope: StorageScope;
-    transactionClient?: Prisma.TransactionClient;
+    scope: StorageScope
+    transactionClient?: Prisma.TransactionClient
   }): Promise<OpenApiTemplate | null> {
     const template = await this.ssrfGuardStorageBridge.loadActiveTemplateForExecuteFromDb_INCOMPLETE({
       scope,
       ...(transactionClient ? {transaction_client: transactionClient} : {})
-    });
-    return template ? OpenApiTemplateSchema.parse(template) : null;
+    })
+    return template ? OpenApiTemplateSchema.parse(template) : null
   }
 
   public async readSsrfDnsResolutionCacheShared({
     normalizedHost,
     now = new Date()
   }: {
-    normalizedHost: string;
-    now?: Date;
+    normalizedHost: string
+    now?: Date
   }) {
     const cached = await this.ssrfGuardStorageBridge.readDnsResolutionCacheFromRedis_INCOMPLETE({
       normalized_host: normalizedHost
-    });
+    })
     if (!cached) {
-      return null;
+      return null
     }
 
-    const expiresAtEpochMs = cached.resolved_at_epoch_ms + cached.ttl_seconds * 1000;
+    const expiresAtEpochMs = cached.resolved_at_epoch_ms + cached.ttl_seconds * 1000
     if (expiresAtEpochMs <= now.getTime()) {
-      return null;
+      return null
     }
 
-    return cached;
+    return cached
   }
 
   public async writeSsrfDnsResolutionCacheShared({
@@ -1470,10 +1495,10 @@ export class DataPlaneRepository {
     now = new Date(),
     ttlSeconds = 60
   }: {
-    normalizedHost: string;
-    resolvedIps: string[];
-    now?: Date;
-    ttlSeconds?: number;
+    normalizedHost: string
+    resolvedIps: string[]
+    now?: Date
+    ttlSeconds?: number
   }) {
     return this.ssrfGuardStorageBridge.writeDnsResolutionCacheToRedisMock_INCOMPLETE({
       normalized_host: normalizedHost,
@@ -1482,7 +1507,7 @@ export class DataPlaneRepository {
         resolved_at_epoch_ms: now.getTime(),
         ttl_seconds: ttlSeconds
       }
-    });
+    })
   }
 
   public async appendSsrfDnsRebindingObservationShared({
@@ -1490,11 +1515,11 @@ export class DataPlaneRepository {
     resolvedIps,
     now = new Date()
   }: {
-    normalizedHost: string;
-    resolvedIps: string[];
-    now?: Date;
+    normalizedHost: string
+    resolvedIps: string[]
+    now?: Date
   }) {
-    const normalizedIps = this.normalizeIpSet(resolvedIps);
+    const normalizedIps = this.normalizeIpSet(resolvedIps)
     return this.ssrfGuardStorageBridge.appendDnsRebindingObservationToRedisMock_INCOMPLETE({
       normalized_host: normalizedHost,
       observation: {
@@ -1502,7 +1527,7 @@ export class DataPlaneRepository {
         resolved_ips: normalizedIps,
         observed_at_epoch_ms: now.getTime()
       }
-    });
+    })
   }
 
   public async appendSsrfDecisionProjectionShared({
@@ -1510,26 +1535,26 @@ export class DataPlaneRepository {
     transactionClient
   }: {
     projection: {
-      event_id: string;
-      timestamp: string;
-      tenant_id: string;
-      workload_id: string;
-      integration_id: string;
-      template_id: string;
-      template_version: number;
-      destination_host: string;
-      destination_port: number;
-      resolved_ips: string[];
-      decision: 'allowed' | 'denied';
-      reason_code: SsrfGuardErrorCode;
-      correlation_id: string;
-    };
-    transactionClient?: Prisma.TransactionClient;
+      event_id: string
+      timestamp: string
+      tenant_id: string
+      workload_id: string
+      integration_id: string
+      template_id: string
+      template_version: number
+      destination_host: string
+      destination_port: number
+      resolved_ips: string[]
+      decision: 'allowed' | 'denied'
+      reason_code: SsrfGuardErrorCode
+      correlation_id: string
+    }
+    transactionClient?: Prisma.TransactionClient
   }) {
     return this.ssrfGuardStorageBridge.appendSsrfDecisionProjectionToPostgresMock_INCOMPLETE({
       projection: SsrfDecisionProjectionSchema.parse(projection),
       ...(transactionClient ? {transaction_client: transactionClient} : {})
-    });
+    })
   }
 
   public async syncSsrfTemplateBindingShared({
@@ -1537,23 +1562,23 @@ export class DataPlaneRepository {
     template,
     now = new Date()
   }: {
-    scope: StorageScope;
-    template: OpenApiTemplate;
-    now?: Date;
+    scope: StorageScope
+    template: OpenApiTemplate
+    now?: Date
   }) {
-    const normalizedTemplate = OpenApiTemplateSchema.parse(template);
+    const normalizedTemplate = OpenApiTemplateSchema.parse(template)
     await this.ssrfGuardStorageBridge.persistActiveTemplateForExecuteInDbMock_INCOMPLETE({
       scope,
       template: normalizedTemplate
-    });
+    })
 
-    const scopeKey = this.buildSsrfScopeKey(scope);
-    const previousBinding = this.ssrfTemplateBindingsByScope.get(scopeKey) ?? null;
+    const scopeKey = this.buildSsrfScopeKey(scope)
+    const previousBinding = this.ssrfTemplateBindingsByScope.get(scopeKey) ?? null
     const nextBinding: SsrfTemplateBindingState = {
       template_id: normalizedTemplate.template_id,
       version: normalizedTemplate.version
-    };
-    this.ssrfTemplateBindingsByScope.set(scopeKey, nextBinding);
+    }
+    this.ssrfTemplateBindingsByScope.set(scopeKey, nextBinding)
 
     if (
       previousBinding &&
@@ -1566,25 +1591,66 @@ export class DataPlaneRepository {
           tenant_id: scope.tenant_id,
           updated_at: now.toISOString()
         }
-      });
-      return true;
+      })
+      return true
     }
 
-    return false;
+    return false
+  }
+
+  private createKeyManagementService({
+  secretKey,
+  secretKeyId
+}: {
+  secretKey?: Buffer
+  secretKeyId?: string
+}): EnvelopeKeyManagementService | null {
+    // Validate that both key and ID are provided together (or neither)
+    if ((secretKey && !secretKeyId) || (!secretKey && secretKeyId)) {
+      throw new Error('Both secretKey and secretKeyId must be provided together')
+    }
+
+    if (!secretKey || !secretKeyId) {
+      return null
+    }
+
+    // Convert Buffer to base64 string for AES GCM key management service
+    const keyBase64 = secretKey.toString('base64')
+    const kmsResult = createAesGcmKeyManagementService({
+      keys: {
+        [secretKeyId]: keyBase64
+      },
+      active_key_id: secretKeyId
+    })
+
+    if (!kmsResult.ok) {
+      const errorMsg = `Failed to create key management service: ${kmsResult.error.message}`
+      // Fail closed when shared infrastructure is enabled - secrets cannot be decrypted without KMS
+      if (this.processInfrastructure?.enabled) {
+        throw new Error(`[broker-api] ${errorMsg}`)
+      }
+      // In development/test without shared infrastructure, emit warning and continue
+      process.emitWarning(`[broker-api] ${errorMsg}`, {
+        code: 'BROKER_API_KMS_INIT_WARNING'
+      })
+      return null
+    }
+
+    return kmsResult.value
   }
 
   private createSharedCryptoStorageService(): CryptoStorageService_INCOMPLETE<Prisma.TransactionClient> | null {
-    const secretRepository = this.processInfrastructure?.dbRepositories?.secretRepository;
+    const secretRepository = this.processInfrastructure?.dbRepositories?.secretRepository
     if (!secretRepository) {
-      return null;
+      return null
     }
 
-    const redis = this.processInfrastructure?.redis;
+    const redis = this.processInfrastructure?.redis
     const rotationLockAdapter: RotationLockAdapter | null = redis
       ? createCryptoRedisRotationLockAdapter({
           keyPrefix: `${this.processInfrastructure?.redisKeyPrefix ?? 'broker-api:data-plane'}:crypto`
         })
-      : null;
+      : null
 
     return createCryptoStorageService_INCOMPLETE<Prisma.TransactionClient>({
       createManifestSigningKeyRecord: async (input, context) => {
@@ -1592,33 +1658,33 @@ export class DataPlaneRepository {
           const record = await secretRepository.createManifestSigningKeyRecord(
             input,
             this.toRepositoryContext(context?.transaction_client)
-          );
-          return cryptoOk(toCryptoManifestSigningKeyRecord(record));
+          )
+          return cryptoOk(toCryptoManifestSigningKeyRecord(record))
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'createManifestSigningKeyRecord',
             error
-          });
+          })
         }
       },
       getActiveManifestSigningKeyRecord: async context => {
         try {
           const record = await secretRepository.getActiveManifestSigningKeyRecord(
             this.toRepositoryContext(context?.transaction_client)
-          );
+          )
           if (!record) {
             return cryptoErr(
               'manifest_key_not_found',
               'getActiveManifestSigningKeyRecord: No active manifest signing key is configured'
-            );
+            )
           }
 
-          return cryptoOk(toCryptoManifestSigningKeyRecord(record));
+          return cryptoOk(toCryptoManifestSigningKeyRecord(record))
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'getActiveManifestSigningKeyRecord',
             error
-          });
+          })
         }
       },
       setActiveManifestSigningKey: async (input, context) => {
@@ -1626,55 +1692,55 @@ export class DataPlaneRepository {
           await secretRepository.setActiveManifestSigningKey(
             input,
             this.toRepositoryContext(context?.transaction_client)
-          );
-          return cryptoOk(null);
+          )
+          return cryptoOk(null)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'setActiveManifestSigningKey',
             error
-          });
+          })
         }
       },
       retireManifestSigningKey: async (input, context) => {
         try {
-          await secretRepository.retireManifestSigningKey(input, this.toRepositoryContext(context?.transaction_client));
-          return cryptoOk(null);
+          await secretRepository.retireManifestSigningKey(input, this.toRepositoryContext(context?.transaction_client))
+          return cryptoOk(null)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'retireManifestSigningKey',
             error
-          });
+          })
         }
       },
       revokeManifestSigningKey: async (input, context) => {
         try {
-          await secretRepository.revokeManifestSigningKey(input, this.toRepositoryContext(context?.transaction_client));
-          return cryptoOk(null);
+          await secretRepository.revokeManifestSigningKey(input, this.toRepositoryContext(context?.transaction_client))
+          return cryptoOk(null)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'revokeManifestSigningKey',
             error
-          });
+          })
         }
       },
       listManifestVerificationKeysWithEtag: async context => {
         try {
           const keyset = await secretRepository.listManifestVerificationKeysWithEtag(
             this.toRepositoryContext(context?.transaction_client)
-          );
+          )
           if (!keyset) {
             return cryptoErr(
               'manifest_key_not_found',
               'listManifestVerificationKeysWithEtag: No manifest keyset metadata is configured'
-            );
+            )
           }
 
-          return cryptoOk(keyset);
+          return cryptoOk(keyset)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'listManifestVerificationKeysWithEtag',
             error
-          });
+          })
         }
       },
       persistManifestKeysetMetadata: async (input, context) => {
@@ -1682,13 +1748,13 @@ export class DataPlaneRepository {
           await secretRepository.persistManifestKeysetMetadata(
             input,
             this.toRepositoryContext(context?.transaction_client)
-          );
-          return cryptoOk(null);
+          )
+          return cryptoOk(null)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'persistManifestKeysetMetadata',
             error
-          });
+          })
         }
       },
       getCryptoVerificationDefaultsByTenant: async (input, context) => {
@@ -1696,13 +1762,13 @@ export class DataPlaneRepository {
           const defaults = await secretRepository.getCryptoVerificationDefaultsByTenant(
             input,
             this.toRepositoryContext(context?.transaction_client)
-          );
-          return cryptoOk(defaults);
+          )
+          return cryptoOk(defaults)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'getCryptoVerificationDefaultsByTenant',
             error
-          });
+          })
         }
       },
       upsertCryptoVerificationDefaults: async (input, context) => {
@@ -1710,13 +1776,13 @@ export class DataPlaneRepository {
           const defaults = await secretRepository.upsertCryptoVerificationDefaults(
             input,
             this.toRepositoryContext(context?.transaction_client)
-          );
-          return cryptoOk(defaults);
+          )
+          return cryptoOk(defaults)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'upsertCryptoVerificationDefaults',
             error
-          });
+          })
         }
       },
       acquireCryptoRotationLock: async input => {
@@ -1724,7 +1790,7 @@ export class DataPlaneRepository {
           return cryptoErr(
             'invalid_input',
             'acquireCryptoRotationLock: Redis-backed crypto rotation lock adapter is not configured'
-          );
+          )
         }
 
         try {
@@ -1737,12 +1803,12 @@ export class DataPlaneRepository {
               }
             }
           });
-          return cryptoOk(lock);
+          return cryptoOk(lock)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'acquireCryptoRotationLock',
             error
-          });
+          })
         }
       },
       releaseCryptoRotationLock: async input => {
@@ -1750,7 +1816,7 @@ export class DataPlaneRepository {
           return cryptoErr(
             'invalid_input',
             'releaseCryptoRotationLock: Redis-backed crypto rotation lock adapter is not configured'
-          );
+          )
         }
 
         try {
@@ -1763,12 +1829,12 @@ export class DataPlaneRepository {
               }
             }
           });
-          return cryptoOk(released);
+          return cryptoOk(released)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'releaseCryptoRotationLock',
             error
-          });
+          })
         }
       },
       rotateManifestSigningKeysWithStore: async (input, context) => {
@@ -1777,16 +1843,16 @@ export class DataPlaneRepository {
           signing_alg: input.signing_alg,
           ...(input.new_kid ? {new_kid: input.new_kid} : {}),
           retain_previous_key_count: input.retain_previous_key_count
-        });
+        })
         if (!rotated.ok) {
-          return rotated;
+          return rotated
         }
 
-        const operationIso = nowIso();
-        const repositoryContext = this.toRepositoryContext(context?.transaction_client);
+        const operationIso = nowIso()
+        const repositoryContext = this.toRepositoryContext(context?.transaction_client)
 
         try {
-          const previouslyActive = await secretRepository.getActiveManifestSigningKeyRecord(repositoryContext);
+          const previouslyActive = await secretRepository.getActiveManifestSigningKeyRecord(repositoryContext)
 
           await secretRepository.createManifestSigningKeyRecord(
             {
@@ -1797,15 +1863,7 @@ export class DataPlaneRepository {
               created_at: operationIso
             },
             repositoryContext
-          );
-
-          await secretRepository.setActiveManifestSigningKey(
-            {
-              kid: rotated.value.active_signing_private_key.kid,
-              activated_at: operationIso
-            },
-            repositoryContext
-          );
+          )
 
           if (
             previouslyActive &&
@@ -1818,8 +1876,16 @@ export class DataPlaneRepository {
                 retired_at: operationIso
               },
               repositoryContext
-            );
+            )
           }
+
+          await secretRepository.setActiveManifestSigningKey(
+            {
+              kid: rotated.value.active_signing_private_key.kid,
+              activated_at: operationIso
+            },
+            repositoryContext
+          )
 
           await secretRepository.persistManifestKeysetMetadata(
             {
@@ -1828,30 +1894,30 @@ export class DataPlaneRepository {
               max_age_seconds: this.manifestTtlSeconds
             },
             repositoryContext
-          );
-          return cryptoOk(rotated.value);
+          )
+          return cryptoOk(rotated.value)
         } catch (error) {
           return toCryptoStoreFailure({
             method: 'rotateManifestSigningKeysWithStore',
             error
-          });
+          })
         }
       }
-    });
+    })
   }
 
   private async ensureSharedManifestSigningMaterial() {
-    const sharedCryptoStorage = this.cryptoStorageService;
+    const sharedCryptoStorage = this.cryptoStorageService
     if (!sharedCryptoStorage) {
-      return;
+      return
     }
-    const manifestSigningPrivateKey = this.getManifestSigningPrivateKey();
+    const manifestSigningPrivateKey = this.getManifestSigningPrivateKey()
 
-    const localPublicKey = publicKeyFromPrivateKey(manifestSigningPrivateKey);
+    const localPublicKey = publicKeyFromPrivateKey(manifestSigningPrivateKey)
 
-    const activeKeyResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE();
+    const activeKeyResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE()
     if (!activeKeyResult.ok && activeKeyResult.error.code !== 'manifest_key_not_found') {
-      throw new Error(`Unable to load active manifest signing key metadata: ${activeKeyResult.error.message}`);
+      throw new Error(`Unable to load active manifest signing key metadata: ${activeKeyResult.error.message}`)
     }
 
     if (!activeKeyResult.ok && activeKeyResult.error.code === 'manifest_key_not_found') {
@@ -1861,24 +1927,24 @@ export class DataPlaneRepository {
         public_jwk: localPublicKey,
         private_key_ref: privateKeyRefForKid(manifestSigningPrivateKey.kid),
         created_at: nowIso()
-      });
+      })
       if (!createResult.ok && createResult.error.code !== 'manifest_key_rotation_invalid') {
-        throw new Error(`Unable to create manifest signing key metadata: ${createResult.error.message}`);
+        throw new Error(`Unable to create manifest signing key metadata: ${createResult.error.message}`)
       }
 
       const setActiveResult = await sharedCryptoStorage.setActiveManifestSigningKey_INCOMPLETE({
         kid: manifestSigningPrivateKey.kid,
         activated_at: nowIso()
-      });
+      })
       if (!setActiveResult.ok && setActiveResult.error.code !== 'manifest_key_rotation_invalid') {
-        throw new Error(`Unable to activate manifest signing key metadata: ${setActiveResult.error.message}`);
+        throw new Error(`Unable to activate manifest signing key metadata: ${setActiveResult.error.message}`)
       }
 
-      const verifiedActiveKeyResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE();
+      const verifiedActiveKeyResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE()
       if (!verifiedActiveKeyResult.ok) {
         throw new Error(
           `Unable to verify active manifest signing key metadata after bootstrap: ${verifiedActiveKeyResult.error.message}`
-        );
+        )
       }
 
       if (
@@ -1890,13 +1956,13 @@ export class DataPlaneRepository {
       ) {
         throw new Error(
           'Bootstrap manifest signing key metadata does not match local signing key material after create/activate'
-        );
+        )
       }
     }
 
-    const keysetResult = await sharedCryptoStorage.listManifestVerificationKeysWithEtag_INCOMPLETE();
+    const keysetResult = await sharedCryptoStorage.listManifestVerificationKeysWithEtag_INCOMPLETE()
     if (!keysetResult.ok && keysetResult.error.code !== 'manifest_key_not_found') {
-      throw new Error(`Unable to load manifest verification keyset metadata: ${keysetResult.error.message}`);
+      throw new Error(`Unable to load manifest verification keyset metadata: ${keysetResult.error.message}`)
     }
 
     if (!keysetResult.ok && keysetResult.error.code === 'manifest_key_not_found') {
@@ -1904,210 +1970,216 @@ export class DataPlaneRepository {
         etag: etagForManifestKeys(this.getManifestVerificationKeys()),
         generated_at: nowIso(),
         max_age_seconds: this.manifestTtlSeconds
-      });
+      })
       if (!persistResult.ok) {
-        throw new Error(`Unable to persist manifest keyset metadata: ${persistResult.error.message}`);
+        throw new Error(`Unable to persist manifest keyset metadata: ${persistResult.error.message}`)
       }
     }
   }
 
   private async persistState() {
     if (!this.statePath) {
-      return;
+      return
     }
 
-    const payload = `${JSON.stringify(this.state, null, 2)}\n`;
-    const directoryPath = path.dirname(this.statePath);
-    const temporaryPath = `${this.statePath}.tmp`;
+    const payload = `${JSON.stringify(this.state, null, 2)}\n`
+    const directoryPath = path.dirname(this.statePath)
+    const temporaryPath = `${this.statePath}.tmp`
 
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- Repository path is a deliberate service configuration boundary.
-    await fs.mkdir(directoryPath, {recursive: true});
+    await fs.mkdir(directoryPath, {recursive: true})
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- Repository path is a deliberate service configuration boundary.
-    await fs.writeFile(temporaryPath, payload, 'utf8');
+    await fs.writeFile(temporaryPath, payload, 'utf8')
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- Repository path is a deliberate service configuration boundary.
-    await fs.rename(temporaryPath, this.statePath);
+    await fs.rename(temporaryPath, this.statePath)
   }
 
   private async withWriteLock<T>(operation: () => Promise<T> | T): Promise<T> {
     const next = this.writeChain.then(async () => {
-      const result = await operation();
-      await this.persistState();
-      return result;
-    });
+      const result = await operation()
+      await this.persistState()
+      return result
+    })
 
     this.writeChain = next.then(
       () => undefined,
       () => undefined
-    );
+    )
 
-    return next;
+    return next
   }
 
   private cleanupExpiredSessions(now = new Date()) {
-    const nowMs = now.getTime();
-    this.state.sessions = this.state.sessions.filter(session => new Date(session.expires_at).getTime() > nowMs);
+    const nowMs = now.getTime()
+    this.state.sessions = this.state.sessions.filter(session => new Date(session.expires_at).getTime() > nowMs)
   }
 
   private cleanupExpiredApprovals(now = new Date()) {
-    const nowMs = now.getTime();
+    const nowMs = now.getTime()
     for (const approval of this.state.approvals) {
       if (approval.status !== 'pending') {
-        continue;
+        continue
       }
 
       if (new Date(approval.expires_at).getTime() <= nowMs) {
-        approval.status = 'expired';
+        approval.status = 'expired'
       }
     }
   }
 
   private cleanupExpiredReplayKeys(now = new Date()) {
-    const nowMs = now.getTime();
+    const nowMs = now.getTime()
     for (const [key, expiresAtMs] of this.dpopReplayJtiExpiryByKey.entries()) {
       if (expiresAtMs <= nowMs) {
-        this.dpopReplayJtiExpiryByKey.delete(key);
+        this.dpopReplayJtiExpiryByKey.delete(key)
       }
     }
   }
 
   public getWorkloadBySanUri({sanUri}: {sanUri: string}): OpenApiWorkload | null {
-    const workload = this.state.workloads.find(item => item.mtls_san_uri === sanUri);
-    return workload ? clone(workload) : null;
+    const workload = this.state.workloads.find(item => item.mtls_san_uri === sanUri)
+    return workload ? clone(workload) : null
   }
 
   public async getWorkloadBySanUriShared({sanUri}: {sanUri: string}): Promise<OpenApiWorkload | null> {
-    const sharedWorkloadRepository = this.processInfrastructure?.dbRepositories?.workloadRepository;
+    const sharedWorkloadRepository = this.processInfrastructure?.dbRepositories?.workloadRepository
     if (!sharedWorkloadRepository) {
-      return this.getWorkloadBySanUri({sanUri});
+      return this.getWorkloadBySanUri({sanUri})
     }
 
     return sharedWorkloadRepository.getBySanUri({
       san_uri: sanUri
-    });
+    })
   }
 
   public getWorkloadById({workloadId}: {workloadId: string}): OpenApiWorkload | null {
-    const workload = this.state.workloads.find(item => item.workload_id === workloadId);
-    return workload ? clone(workload) : null;
+    const workload = this.state.workloads.find(item => item.workload_id === workloadId)
+    return workload ? clone(workload) : null
   }
 
   public isWorkloadDpopRequired({workloadId}: {workloadId: string}) {
-    return this.state.dpop_required_workload_ids.includes(workloadId);
+    return this.state.dpop_required_workload_ids.includes(workloadId)
   }
 
   public isTenantDpopRequired({tenantId}: {tenantId: string}) {
-    return this.state.dpop_required_tenant_ids.includes(tenantId);
+    return this.state.dpop_required_tenant_ids.includes(tenantId)
   }
 
   public getIntegrationByTenantAndId({
     tenantId,
     integrationId
   }: {
-    tenantId: string;
-    integrationId: string;
+    tenantId: string
+    integrationId: string
   }): OpenApiIntegration | null {
     const integration = this.state.integrations.find(
       item => item.integration_id === integrationId && item.tenant_id === tenantId
-    );
-    return integration ? clone(integration) : null;
+    )
+    return integration ? clone(integration) : null
   }
 
   public async getIntegrationByTenantAndIdShared({
     tenantId,
     integrationId
   }: {
-    tenantId: string;
-    integrationId: string;
+    tenantId: string
+    integrationId: string
   }): Promise<OpenApiIntegration | null> {
-    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository;
+    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository
     if (!sharedIntegrationRepository) {
       return this.getIntegrationByTenantAndId({
         tenantId,
         integrationId
-      });
+      })
     }
 
     return sharedIntegrationRepository.getById({
       integration_id: integrationId,
       tenant_id: tenantId
-    });
+    })
   }
 
   public listTenantIntegrations({tenantId}: {tenantId: string}): OpenApiIntegration[] {
-    return clone(this.state.integrations.filter(item => item.tenant_id === tenantId));
+    return clone(this.state.integrations.filter(item => item.tenant_id === tenantId))
   }
 
   public getLatestTemplateById({templateId}: {templateId: string}): OpenApiTemplate | null {
-    const versions = this.state.templates.filter(item => item.template_id === templateId);
+    const versions = this.state.templates.filter(item => item.template_id === templateId)
     if (versions.length === 0) {
-      return null;
+      return null
     }
 
     const highestVersion = versions.reduce(
       (maxVersion, item) => (item.version > maxVersion ? item.version : maxVersion),
       0
-    );
-    const template = versions.find(item => item.version === highestVersion);
-    return template ? clone(template) : null;
+    )
+    const template = versions.find(item => item.version === highestVersion)
+    return template ? clone(template) : null
   }
 
   public async getLatestTemplateByIdShared({
     tenantId,
     templateId
   }: {
-    tenantId: string;
-    templateId: string;
+    tenantId: string
+    templateId: string
   }): Promise<OpenApiTemplate | null> {
-    const sharedTemplateRepository = this.processInfrastructure?.dbRepositories?.templateRepository;
+    const sharedTemplateRepository = this.processInfrastructure?.dbRepositories?.templateRepository
     if (!sharedTemplateRepository) {
       return this.getLatestTemplateById({
         templateId
-      });
+      })
     }
 
     return sharedTemplateRepository.getLatestTemplateByTenantTemplateId({
       tenant_id: tenantId,
       template_id: templateId
-    });
+    })
   }
 
   public listTenantPolicies({tenantId}: {tenantId: string}): OpenApiPolicyRule[] {
-    return clone(this.state.policies.filter(item => item.scope.tenant_id === tenantId));
+    return clone(this.state.policies.filter(item => item.scope.tenant_id === tenantId))
   }
 
   public async listPolicyRulesForDescriptorShared({
     descriptor
   }: {
-    descriptor: CanonicalRequestDescriptor;
+    descriptor: CanonicalRequestDescriptor
   }): Promise<OpenApiPolicyRule[]> {
-    const sharedPolicyRepository = this.processInfrastructure?.dbRepositories?.policyRuleRepository;
+    const sharedPolicyRepository = this.processInfrastructure?.dbRepositories?.policyRuleRepository
     if (!sharedPolicyRepository) {
       return this.listTenantPolicies({
         tenantId: descriptor.tenant_id
-      });
+      })
     }
 
     return sharedPolicyRepository.listPolicyRulesForDescriptorScope({
       descriptor
-    });
+    })
   }
 
-  public async saveSession({session, scopes}: {session: SessionSaveInput; scopes: string[]}): Promise<SessionRecord> {
+  public async saveSession({
+    session,
+    scopes
+  }: {
+    session: SessionSaveInput
+    scopes: string[]
+  }): Promise<SessionRecord> {
     if (this.authStorageScope) {
       const authSessionRecord = toAuthSessionRecordWithScopes({
         session,
         scopes
-      });
+      })
       await this.authStorageScope.persistSessionRecord({
         session: authSessionRecord
-      });
+      })
       return toSessionRecord({
         ...authSessionRecord,
         scopes: authSessionScopes(authSessionRecord)
-      });
+      })
     }
 
-    const sharedSessionRepository = this.processInfrastructure?.dbRepositories?.sessionRepository;
+    const sharedSessionRepository = this.processInfrastructure?.dbRepositories?.sessionRepository
     if (sharedSessionRepository) {
       const upsertedSession = await sharedSessionRepository.upsertSession({
         sessionId: session.sessionId,
@@ -2118,7 +2190,7 @@ export class DataPlaneRepository {
         expiresAt: session.expiresAt,
         ...(session.dpopKeyThumbprint ? {dpopKeyThumbprint: session.dpopKeyThumbprint} : {}),
         scopes
-      });
+      })
 
       return toSessionRecord({
         sessionId: upsertedSession.sessionId,
@@ -2129,11 +2201,11 @@ export class DataPlaneRepository {
         expiresAt: upsertedSession.expiresAt,
         ...(upsertedSession.dpopKeyThumbprint ? {dpopKeyThumbprint: upsertedSession.dpopKeyThumbprint} : {}),
         scopes: upsertedSession.scopes
-      });
+      })
     }
 
     return this.withWriteLock(() => {
-      this.cleanupExpiredSessions();
+      this.cleanupExpiredSessions()
 
       const record = sessionRecordSchema.parse({
         session_id: session.sessionId,
@@ -2144,33 +2216,33 @@ export class DataPlaneRepository {
         expires_at: session.expiresAt,
         ...(session.dpopKeyThumbprint ? {dpop_jkt: session.dpopKeyThumbprint} : {}),
         scopes
-      });
+      })
 
-      this.state.sessions.push(record);
-      return clone(record);
-    });
+      this.state.sessions.push(record)
+      return clone(record)
+    })
   }
 
   public getSessionByTokenHash({tokenHash, now = new Date()}: {tokenHash: string; now?: Date}): SessionRecord | null {
-    this.cleanupExpiredSessions(now);
+    this.cleanupExpiredSessions(now)
 
-    const session = this.state.sessions.find(item => item.token_hash === tokenHash);
-    return session ? clone(session) : null;
+    const session = this.state.sessions.find(item => item.token_hash === tokenHash)
+    return session ? clone(session) : null
   }
 
   public async getSessionByTokenHashShared({
     tokenHash,
     now = new Date()
   }: {
-    tokenHash: string;
-    now?: Date;
+    tokenHash: string
+    now?: Date
   }): Promise<SessionRecord | null> {
     if (this.authStorageScope) {
       const session = await this.authStorageScope.getSessionRecordByTokenHash({
         tokenHash
-      });
+      })
       if (!session) {
-        return null;
+        return null
       }
 
       return toSessionRecord({
@@ -2182,22 +2254,22 @@ export class DataPlaneRepository {
         expiresAt: session.expiresAt,
         ...(session.dpopKeyThumbprint ? {dpopKeyThumbprint: session.dpopKeyThumbprint} : {}),
         scopes: authSessionScopes(session)
-      });
+      })
     }
 
-    const sharedSessionRepository = this.processInfrastructure?.dbRepositories?.sessionRepository;
+    const sharedSessionRepository = this.processInfrastructure?.dbRepositories?.sessionRepository
     if (!sharedSessionRepository) {
       return this.getSessionByTokenHash({
         tokenHash,
         now
-      });
+      })
     }
 
     const session = await sharedSessionRepository.getSessionByTokenHash({
       token_hash: tokenHash
-    });
+    })
     if (!session) {
-      return null;
+      return null
     }
 
     return toSessionRecord({
@@ -2209,7 +2281,7 @@ export class DataPlaneRepository {
       expiresAt: session.expiresAt,
       ...(session.dpopKeyThumbprint ? {dpopKeyThumbprint: session.dpopKeyThumbprint} : {}),
       scopes: session.scopes
-    });
+    })
   }
 
   public async createOrReuseApprovalRequest({
@@ -2218,45 +2290,45 @@ export class DataPlaneRepository {
     correlationId,
     now = new Date()
   }: {
-    descriptor: CanonicalRequestDescriptor;
-    summary: ApprovalRequest['summary'];
-    correlationId: string;
-    now?: Date;
+    descriptor: CanonicalRequestDescriptor
+    summary: ApprovalRequest['summary']
+    correlationId: string
+    now?: Date
   }): Promise<ApprovalRequest> {
-    const sharedApprovalRepository = this.processInfrastructure?.dbRepositories?.approvalRequestRepository;
+    const sharedApprovalRepository = this.processInfrastructure?.dbRepositories?.approvalRequestRepository
     if (sharedApprovalRepository) {
       const existingApproval = await sharedApprovalRepository.findOpenApprovalByCanonicalDescriptor({
         descriptor
-      });
+      })
       if (existingApproval) {
-        return existingApproval;
+        return existingApproval
       }
 
-      const expiresAt = new Date(now.getTime() + this.approvalTtlSeconds * 1000);
+      const expiresAt = new Date(now.getTime() + this.approvalTtlSeconds * 1000)
       return sharedApprovalRepository.createApprovalRequestFromCanonicalDescriptor({
         correlation_id: correlationId,
         expires_at: expiresAt.toISOString(),
         summary,
         canonical_descriptor: descriptor
-      });
+      })
     }
 
     return this.withWriteLock(() => {
-      this.cleanupExpiredApprovals(now);
+      this.cleanupExpiredApprovals(now)
 
-      const fingerprint = descriptorFingerprint(descriptor);
+      const fingerprint = descriptorFingerprint(descriptor)
       const existing = this.state.approvals.find(
         item =>
           item.status === 'pending' &&
           new Date(item.expires_at).getTime() > now.getTime() &&
           descriptorFingerprint(item.canonical_descriptor) === fingerprint
-      );
+      )
 
       if (existing) {
-        return clone(existing);
+        return clone(existing)
       }
 
-      const expiresAt = new Date(now.getTime() + this.approvalTtlSeconds * 1000);
+      const expiresAt = new Date(now.getTime() + this.approvalTtlSeconds * 1000)
       const approval = ApprovalRequestSchema.parse({
         approval_id: `appr_${randomUUID()}`,
         status: 'pending',
@@ -2264,22 +2336,132 @@ export class DataPlaneRepository {
         correlation_id: correlationId,
         summary,
         canonical_descriptor: descriptor
-      });
+      })
 
-      this.state.approvals.push(approval);
-      return clone(approval);
-    });
+      this.state.approvals.push(approval)
+      return clone(approval)
+    })
   }
 
   public getInjectedHeadersForIntegration({integrationId}: {integrationId: string}): OpenApiHeaderList {
     // eslint-disable-next-line security/detect-object-injection -- Integration ID indexes a bounded in-memory map populated from validated repository state.
-    const raw = this.state.integration_secret_headers[integrationId];
-    const parsed = OpenApiHeaderListSchema.safeParse(raw ?? []);
+    const raw = this.state.integration_secret_headers[integrationId]
+    const parsed = OpenApiHeaderListSchema.safeParse(raw ?? [])
     if (!parsed.success) {
-      return [];
+      return []
     }
 
-    return clone(parsed.data);
+    return clone(parsed.data)
+  }
+
+  public async getInjectedHeadersForIntegrationShared({
+    tenantId,
+    integrationId,
+    correlationId
+  }: {
+    tenantId: string
+    integrationId: string
+    correlationId?: string
+  }): Promise<OpenApiHeaderList> {
+    // Try to fetch from shared infrastructure first
+    const sharedInfrastructureEnabled = this.processInfrastructure?.enabled === true;
+    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository;
+    const sharedSecretRepository = this.processInfrastructure?.dbRepositories?.secretRepository;
+
+    if (!this.keyManagementService) {
+      if (sharedInfrastructureEnabled) {
+        throw new Error('Secret decryption key not configured for shared infrastructure mode');
+      }
+      return this.getInjectedHeadersForIntegration({integrationId});
+    }
+
+    if (!sharedIntegrationRepository || !sharedSecretRepository) {
+      if (sharedInfrastructureEnabled) {
+        throw new Error('Shared secret repositories are not configured in shared infrastructure mode');
+      }
+      return this.getInjectedHeadersForIntegration({integrationId});
+    }
+
+    try {
+      // Get the integration to find its secret_ref
+      const integration = await sharedIntegrationRepository.getById({
+        integration_id: integrationId,
+        tenant_id: tenantId
+      });
+
+      if (!integration || !integration.secret_ref) {
+        return this.getInjectedHeadersForIntegration({integrationId});
+      }
+
+      // Get the active secret envelope from the database
+      const secretEnvelope = await sharedSecretRepository.getActiveSecretEnvelope({
+        secret_ref: integration.secret_ref
+      });
+
+      if (!secretEnvelope) {
+        return this.getInjectedHeadersForIntegration({integrationId});
+      }
+
+      // Decrypt the secret using the key management service
+      // Convert DB envelope format to crypto envelope format (add version field)
+      const encryptedSecretMaterial = {
+        type: secretEnvelope.secret_type,
+        envelope: {
+          version: 1 as const,
+          key_id: secretEnvelope.envelope.key_id,
+          content_encryption_alg: secretEnvelope.envelope.content_encryption_alg,
+          key_encryption_alg: secretEnvelope.envelope.key_encryption_alg,
+          wrapped_data_key_b64: secretEnvelope.envelope.wrapped_data_key_b64,
+          iv_b64: secretEnvelope.envelope.iv_b64,
+          ciphertext_b64: secretEnvelope.envelope.ciphertext_b64,
+          auth_tag_b64: secretEnvelope.envelope.auth_tag_b64,
+          ...(secretEnvelope.envelope.aad_b64 ? {aad_b64: secretEnvelope.envelope.aad_b64} : {})
+        }
+      };
+
+      // Build AAD from tenant and integration context for additional verification
+      const expectedAad = buildEnvelopeAad({
+        tenant_id: tenantId,
+        integration_id: integrationId
+      });
+
+      const decryptedResult = await decryptSecretMaterial({
+        encrypted_secret_material: encryptedSecretMaterial,
+        key_management_service: this.keyManagementService,
+        expected_aad: expectedAad
+      });
+
+      if (!decryptedResult.ok) {
+        // Decryption failed - emit warning with error code for monitoring
+        process.emitWarning(
+          `[broker-api] Failed to decrypt secret${correlationId ? ` (correlation: ${correlationId})` : ''}: ${decryptedResult.error.code}`,
+          {
+            code: 'BROKER_API_SECRET_DECRYPT_WARNING'
+          }
+        );
+        if (sharedInfrastructureEnabled) {
+          throw new Error(`Secret decryption failed: ${decryptedResult.error.code}`);
+        }
+        return this.getInjectedHeadersForIntegration({integrationId});
+      }
+
+      // Convert decrypted secret to header format based on type
+      return [{name: 'Authorization', value: `Bearer ${decryptedResult.value.value}`}];
+    } catch (error) {
+      // Log error without leaking secrets
+      const errorMessage = error instanceof Error ? error.message : 'unknown error';
+      process.emitWarning(
+        `[broker-api] Error fetching secret${correlationId ? ` (correlation: ${correlationId})` : ''}: ${errorMessage}`,
+        {
+          code: 'BROKER_API_SECRET_FETCH_WARNING'
+        }
+      );
+      if (sharedInfrastructureEnabled) {
+        throw error instanceof Error ? error : new Error('Unknown shared secret retrieval error');
+      }
+
+      return this.getInjectedHeadersForIntegration({integrationId});
+    }
   }
 
   public incrementRateLimitCounter({
@@ -2288,27 +2470,27 @@ export class DataPlaneRepository {
     maxRequests,
     now = new Date()
   }: {
-    key: string;
-    intervalSeconds: number;
-    maxRequests: number;
-    now?: Date;
+    key: string
+    intervalSeconds: number
+    maxRequests: number
+    now?: Date
   }): {allowed: boolean; remaining: number; reset_at: string} {
-    const nowMs = now.getTime();
-    const existing = this.rateLimitCountersByKey.get(key);
-    const intervalMs = intervalSeconds * 1000;
+    const nowMs = now.getTime()
+    const existing = this.rateLimitCountersByKey.get(key)
+    const intervalMs = intervalSeconds * 1000
 
     if (!existing || existing.resetAtMs <= nowMs) {
-      const resetAtMs = nowMs + intervalMs;
+      const resetAtMs = nowMs + intervalMs
       this.rateLimitCountersByKey.set(key, {
         count: 1,
         resetAtMs
-      });
+      })
 
       return {
         allowed: true,
         remaining: Math.max(0, maxRequests - 1),
         reset_at: new Date(resetAtMs).toISOString()
-      };
+      }
     }
 
     if (existing.count >= maxRequests) {
@@ -2316,17 +2498,17 @@ export class DataPlaneRepository {
         allowed: false,
         remaining: 0,
         reset_at: new Date(existing.resetAtMs).toISOString()
-      };
+      }
     }
 
-    existing.count += 1;
-    this.rateLimitCountersByKey.set(key, existing);
+    existing.count += 1
+    this.rateLimitCountersByKey.set(key, existing)
 
     return {
       allowed: true,
       remaining: Math.max(0, maxRequests - existing.count),
       reset_at: new Date(existing.resetAtMs).toISOString()
-    };
+    }
   }
 
   public async incrementRateLimitCounterShared({
@@ -2335,40 +2517,40 @@ export class DataPlaneRepository {
     maxRequests,
     now = new Date()
   }: {
-    key: string;
-    intervalSeconds: number;
-    maxRequests: number;
-    now?: Date;
+    key: string
+    intervalSeconds: number
+    maxRequests: number
+    now?: Date
   }): Promise<{allowed: boolean; remaining: number; reset_at: string}> {
-    const redisClient = this.processInfrastructure?.redis;
+    const redisClient = this.processInfrastructure?.redis
     if (!redisClient) {
       return this.incrementRateLimitCounter({
         key,
         intervalSeconds,
         maxRequests,
         now
-      });
+      })
     }
 
-    const intervalMs = intervalSeconds * 1000;
+    const intervalMs = intervalSeconds * 1000
     const redisKey = this.buildRedisKey({
       category: 'rate_limit',
       key
-    });
+    })
 
-    const count = await redisClient.incr(redisKey);
-    let ttlMs = await redisClient.pTTL(redisKey);
+    const count = await redisClient.incr(redisKey)
+    let ttlMs = await redisClient.pTTL(redisKey)
     if (ttlMs < 0) {
-      await redisClient.pExpire(redisKey, intervalMs);
-      ttlMs = intervalMs;
+      await redisClient.pExpire(redisKey, intervalMs)
+      ttlMs = intervalMs
     }
 
-    const allowed = count <= maxRequests;
+    const allowed = count <= maxRequests
     return {
       allowed,
       remaining: allowed ? Math.max(0, maxRequests - count) : 0,
       reset_at: new Date(now.getTime() + ttlMs).toISOString()
-    };
+    }
   }
 
   public checkAndStoreDpopReplayJti({
@@ -2376,117 +2558,118 @@ export class DataPlaneRepository {
     expiresAt,
     now = new Date()
   }: {
-    key: string;
-    expiresAt: Date;
-    now?: Date;
+    key: string
+    expiresAt: Date
+    now?: Date
   }): boolean {
-    this.cleanupExpiredReplayKeys(now);
-    const expiresAtMs = expiresAt.getTime();
+    this.cleanupExpiredReplayKeys(now)
+    const expiresAtMs = expiresAt.getTime()
     if (this.dpopReplayJtiExpiryByKey.has(key)) {
-      return false;
+      return false
     }
 
-    this.dpopReplayJtiExpiryByKey.set(key, expiresAtMs);
-    return true;
+    this.dpopReplayJtiExpiryByKey.set(key, expiresAtMs)
+    return true
   }
 
   public getDpopReplayStore() {
     if (this.authStorageScope) {
-      return this.authStorageScope.createDpopReplayJtiStore();
+      return this.authStorageScope.createDpopReplayJtiStore()
     }
 
     return {
       checkAndStore: async (jti: string, expiresAt: Date) => {
-        const redisClient = this.processInfrastructure?.redis;
+        const redisClient = this.processInfrastructure?.redis
         if (!redisClient) {
           return this.checkAndStoreDpopReplayJti({
             key: jti,
             expiresAt
-          });
+          })
         }
 
-        const nowMs = Date.now();
-        const ttlMs = expiresAt.getTime() - nowMs;
+        const nowMs = Date.now()
+        const ttlMs = expiresAt.getTime() - nowMs
         if (ttlMs <= 0) {
-          return false;
+          return false
         }
 
         const redisKey = this.buildRedisKey({
           category: 'dpop',
           key: jti
-        });
+        })
 
         const result = await redisClient.set(redisKey, '1', {
           NX: true,
           PX: ttlMs
-        });
-        return result === 'OK';
+        })
+        return result === 'OK'
       }
-    };
+    }
   }
 
   public getManifestSigningPrivateKey(): ManifestSigningPrivateKey {
-    const activePrivateKeyRef = this.state.manifest_signing_active_private_key_ref;
+    const activePrivateKeyRef = this.state.manifest_signing_active_private_key_ref
     if (activePrivateKeyRef) {
       const activeKey = this.resolveManifestSigningPrivateKeyByReference({
         privateKeyRef: activePrivateKeyRef
-      });
+      })
       if (activeKey) {
-        return activeKey;
+        return activeKey
       }
     }
 
-    const legacyKey = this.state.manifest_signing_private_key;
+    const legacyKey = this.state.manifest_signing_private_key
     if (!legacyKey) {
-      throw new Error('Manifest signing key is not configured');
+      throw new Error('Manifest signing key is not configured')
     }
 
-    return clone(legacyKey);
+    return clone(legacyKey)
   }
 
   public async getManifestSigningPrivateKeyShared(): Promise<ManifestSigningPrivateKey> {
-    const sharedCryptoStorage = this.cryptoStorageService;
+    const sharedCryptoStorage = this.cryptoStorageService
     if (!sharedCryptoStorage) {
-      return this.getManifestSigningPrivateKey();
+      return this.getManifestSigningPrivateKey()
     }
 
-    const activeKeyResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE();
-
-    // If no active key in shared store, bootstrap local key
+    const activeKeyResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE()
+        // If no active key in shared store, bootstrap local key
     if (!activeKeyResult.ok && activeKeyResult.error.code === 'manifest_key_not_found') {
-      return this.syncLocalKeyToSharedStore();
+      return this.syncLocalKeyToSharedStore()
     }
 
     if (!activeKeyResult.ok) {
-      throw new Error(`Unable to load active manifest signing key metadata: ${activeKeyResult.error.message}`);
+      throw new Error(`Unable to load active manifest signing key metadata: ${activeKeyResult.error.message}`)
     }
 
     let localManifestSigningKey = this.resolveManifestSigningPrivateKeyByReference({
       privateKeyRef: activeKeyResult.value.private_key_ref
-    });
+    })
 
     if (!localManifestSigningKey) {
       const fallbackByKid = this.getLocalManifestSigningPrivateKeyByKid({
         kid: activeKeyResult.value.kid
-      });
+      })
       if (fallbackByKid) {
-        localManifestSigningKey = fallbackByKid;
+        localManifestSigningKey = fallbackByKid
       }
     }
 
     if (!localManifestSigningKey) {
-      const localActiveKey = this.getManifestSigningPrivateKey();
+      const localActiveKey = this.getManifestSigningPrivateKey()
       if (!this.processInfrastructure?.redis) {
         throw new Error(
           `Manifest signing key mismatch between broker-api state (${localActiveKey.kid}) and shared store (${activeKeyResult.value.kid})`
-        );
+        )
       }
 
-      // Sync local key to shared store instead of rotating
-      return this.syncLocalKeyToSharedStore();
+      return this.rotateManifestSigningPrivateKeyShared({
+        reason: `active_private_key_ref_unresolved:${activeKeyResult.value.private_key_ref}`,
+        retainPreviousKeyCount: defaultRetainedManifestPrivateKeys
+      })
     }
 
-    const localPublicKey = publicKeyFromPrivateKey(localManifestSigningKey);
+    const localPublicKey = publicKeyFromPrivateKey(localManifestSigningKey)
     if (activeKeyResult.value.kid !== localManifestSigningKey.kid) {
       if (!this.processInfrastructure?.redis) {
         throw new Error(
@@ -2494,8 +2677,10 @@ export class DataPlaneRepository {
         );
       }
 
-      // Sync local key to shared store instead of rotating
-      return this.syncLocalKeyToSharedStore();
+      return this.rotateManifestSigningPrivateKeyShared({
+        reason: `active_kid_mismatch:local=${localManifestSigningKey.kid}:shared=${activeKeyResult.value.kid}`,
+        retainPreviousKeyCount: defaultRetainedManifestPrivateKeys
+      });
     }
 
     if (
@@ -2510,11 +2695,13 @@ export class DataPlaneRepository {
         );
       }
 
-      // Sync local key to shared store instead of rotating
-      return this.syncLocalKeyToSharedStore();
+      return this.rotateManifestSigningPrivateKeyShared({
+        reason: `active_public_key_mismatch:kid=${localManifestSigningKey.kid}`,
+        retainPreviousKeyCount: defaultRetainedManifestPrivateKeys
+      });
     }
 
-    return localManifestSigningKey;
+    return localManifestSigningKey
   }
 
   /**
@@ -2523,13 +2710,13 @@ export class DataPlaneRepository {
    * Question: Is this needed? Is it still possible to have many workloads in a given tenant?
    */
   private async syncLocalKeyToSharedStore(): Promise<ManifestSigningPrivateKey> {
-    const sharedCryptoStorage = this.cryptoStorageService;
+    const sharedCryptoStorage = this.cryptoStorageService
     if (!sharedCryptoStorage) {
-      throw new Error('Cannot sync local key to shared store: crypto storage service is not available');
+      throw new Error('Cannot sync local key to shared store: crypto storage service is not available')
     }
 
-    const localKey = this.getManifestSigningPrivateKey();
-    const localPublicKey = publicKeyFromPrivateKey(localKey);
+    const localKey = this.getManifestSigningPrivateKey()
+    const localPublicKey = publicKeyFromPrivateKey(localKey)
 
     // Try to create the key record (will fail if already exists, which is fine)
     const createResult = await sharedCryptoStorage.createManifestSigningKeyRecord_INCOMPLETE({
@@ -2538,22 +2725,22 @@ export class DataPlaneRepository {
       public_jwk: localPublicKey,
       private_key_ref: privateKeyRefForKid(localKey.kid),
       created_at: nowIso()
-    });
+    })
 
     // Ignore "already exists" errors (manifest_key_rotation_invalid)
     if (!createResult.ok && createResult.error.code !== 'manifest_key_rotation_invalid') {
-      throw new Error(`Unable to create manifest signing key record: ${createResult.error.message}`);
+      throw new Error(`Unable to create manifest signing key record: ${createResult.error.message}`)
     }
 
     // Retire the current active key first (DB has unique constraint: only one active key allowed)
-    const currentActiveResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE();
+    const currentActiveResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE()
     if (currentActiveResult.ok && currentActiveResult.value.kid !== localKey.kid) {
       const retireResult = await sharedCryptoStorage.retireManifestSigningKey_INCOMPLETE({
         kid: currentActiveResult.value.kid,
         retired_at: nowIso()
-      });
+      })
       if (!retireResult.ok) {
-        throw new Error(`Unable to retire previous active key: ${retireResult.error.message}`);
+        throw new Error(`Unable to retire previous active key: ${retireResult.error.message}`)
       }
     }
 
@@ -2561,45 +2748,49 @@ export class DataPlaneRepository {
     const setActiveResult = await sharedCryptoStorage.setActiveManifestSigningKey_INCOMPLETE({
       kid: localKey.kid,
       activated_at: nowIso()
-    });
+    })
 
     if (!setActiveResult.ok) {
-      throw new Error(`Unable to activate manifest signing key: ${setActiveResult.error.message}`);
+      throw new Error(`Unable to activate manifest signing key: ${setActiveResult.error.message}`)
     }
 
-    return localKey;
+    return localKey
   }
 
   public getManifestVerificationKeys(): OpenApiManifestKeys {
-    return clone(this.state.manifest_keys ?? OpenApiManifestKeysSchema.parse({keys: []}));
+    return clone(this.state.manifest_keys ?? OpenApiManifestKeysSchema.parse({keys: []}))
   }
 
   public async getManifestVerificationKeysShared(): Promise<OpenApiManifestKeys> {
-    const sharedCryptoStorage = this.cryptoStorageService;
+    const sharedCryptoStorage = this.cryptoStorageService
     if (!sharedCryptoStorage) {
-      return this.getManifestVerificationKeys();
+      return this.getManifestVerificationKeys()
     }
 
-    const keysetResult = await sharedCryptoStorage.listManifestVerificationKeysWithEtag_INCOMPLETE();
+    const keysetResult = await sharedCryptoStorage.listManifestVerificationKeysWithEtag_INCOMPLETE()
     if (!keysetResult.ok) {
-      throw new Error(`Unable to load manifest verification keys: ${keysetResult.error.message}`);
+      throw new Error(`Unable to load manifest verification keys: ${keysetResult.error.message}`)
     }
 
-    return clone(keysetResult.value.manifest_keys);
+    return clone(keysetResult.value.manifest_keys)
   }
 
   public getManifestTtlSeconds() {
-    return this.manifestTtlSeconds;
+    return this.manifestTtlSeconds
   }
 
-  public listManifestTemplateRulesForTenant({tenantId}: {tenantId: string}): ManifestTemplateRule[] {
-    const integrations = this.listTenantIntegrations({tenantId}).filter(item => item.enabled);
-    const rules: ManifestTemplateRule[] = [];
+  public listManifestTemplateRulesForTenant({
+    tenantId
+  }: {
+    tenantId: string
+  }): ManifestTemplateRule[] {
+    const integrations = this.listTenantIntegrations({tenantId}).filter(item => item.enabled)
+    const rules: ManifestTemplateRule[] = []
 
     for (const integration of integrations) {
-      const template = this.getLatestTemplateById({templateId: integration.template_id});
+      const template = this.getLatestTemplateById({templateId: integration.template_id})
       if (!template) {
-        continue;
+        continue
       }
 
       rules.push({
@@ -2612,21 +2803,21 @@ export class DataPlaneRepository {
       });
     }
 
-    return rules;
+    return rules
   }
 
   public async listManifestTemplateRulesForTenantShared({
     tenantId
   }: {
-    tenantId: string;
+    tenantId: string
   }): Promise<ManifestTemplateRule[]> {
     const globalTemplateTenantId = 'global';
-    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository;
-    const sharedTemplateRepository = this.processInfrastructure?.dbRepositories?.templateRepository;
+    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository
+    const sharedTemplateRepository = this.processInfrastructure?.dbRepositories?.templateRepository
     if (!sharedIntegrationRepository || !sharedTemplateRepository) {
       return this.listManifestTemplateRulesForTenant({
         tenantId
-      });
+      })
     }
 
     const [integrations, tenantTemplates, globalTemplates] = await Promise.all([
@@ -2641,10 +2832,10 @@ export class DataPlaneRepository {
       })
     ]);
 
-    const enabledIntegrations = integrations.filter(item => item.enabled);
+    const enabledIntegrations = integrations.filter(item => item.enabled)
 
     if (enabledIntegrations.length === 0) {
-      return [];
+      return []
     }
 
     const templatesById = new Map<string, (typeof tenantTemplates)[number]>();
@@ -2654,11 +2845,11 @@ export class DataPlaneRepository {
     for (const template of tenantTemplates) {
       templatesById.set(template.template_id, template);
     }
-    const rules: ManifestTemplateRule[] = [];
+    const rules: ManifestTemplateRule[] = []
     for (const integration of enabledIntegrations) {
-      const template = templatesById.get(integration.template_id);
+      const template = templatesById.get(integration.template_id)
       if (!template) {
-        continue;
+        continue
       }
 
       rules.push({
@@ -2671,7 +2862,7 @@ export class DataPlaneRepository {
       });
     }
 
-    return rules;
+    return rules
   }
 
   public buildApprovalSummary({
@@ -2680,12 +2871,12 @@ export class DataPlaneRepository {
     riskTier,
     integrationId
   }: {
-    descriptor: CanonicalRequestDescriptor;
-    actionGroup: string;
-    riskTier: 'low' | 'medium' | 'high';
-    integrationId: string;
+    descriptor: CanonicalRequestDescriptor
+    actionGroup: string
+    riskTier: 'low' | 'medium' | 'high'
+    integrationId: string
   }): ApprovalRequest['summary'] {
-    const parsedUrl = new URL(descriptor.canonical_url);
+    const parsedUrl = new URL(descriptor.canonical_url)
     return {
       integration_id: integrationId,
       action_group: actionGroup,
@@ -2693,39 +2884,49 @@ export class DataPlaneRepository {
       destination_host: canonicalHostFromUrl(descriptor.canonical_url),
       method: descriptor.method,
       path: parsedUrl.pathname
-    };
+    }
   }
 
   public buildSessionScopes({requestedScopes}: {requestedScopes: string[] | undefined}): string[] {
     if (!requestedScopes || requestedScopes.length === 0) {
-      return ['execute', 'manifest.read'];
+      return ['execute', 'manifest.read']
     }
 
-    const uniqueScopes = [...new Set(requestedScopes.map(item => item.trim()).filter(Boolean))];
-    return uniqueScopes;
+    const uniqueScopes = [...new Set(requestedScopes.map(item => item.trim()).filter(Boolean))]
+    return uniqueScopes
   }
 
   public isSharedInfrastructureEnabled() {
-    return this.processInfrastructure?.enabled ?? false;
+    return this.processInfrastructure?.enabled ?? false
   }
 
   public isSsrfTemplateLookupBridgeWiredShared() {
-    return Boolean(this.processInfrastructure?.dbRepositories?.integrationRepository);
+    return Boolean(this.processInfrastructure?.dbRepositories?.integrationRepository)
   }
 
   public async withSharedTransaction<T>(operation: (client: Prisma.TransactionClient) => Promise<T>) {
     if (!this.processInfrastructure?.enabled) {
-      throw new Error('Shared transaction requested while infrastructure is disabled');
+      throw new Error('Shared transaction requested while infrastructure is disabled')
     }
 
-    return this.processInfrastructure.withTransaction(operation);
+    return this.processInfrastructure.withTransaction(operation)
   }
 
   public createEventId() {
-    return `evt_${randomUUID()}`;
+    return `evt_${randomUUID()}`
   }
 
   public getNowIso() {
-    return nowIso();
+    return nowIso()
+  }
+
+  /**
+   * Zeroize the secret key buffer on shutdown.
+   * This should be called during graceful shutdown to minimize in-memory secret exposure.
+   */
+  public destroy(): void {
+    if (this.secretKeyBuffer) {
+      this.secretKeyBuffer.fill(0)
+    }
   }
 }

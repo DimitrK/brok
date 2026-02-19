@@ -1,12 +1,12 @@
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it} from 'vitest'
 
-import {loadConfig} from '../config';
+import {loadConfig} from '../config'
 
 describe('broker-api config', () => {
   it('loads defaults from minimal env input', () => {
     const config = loadConfig({
       NODE_ENV: 'test'
-    });
+    })
 
     expect(config).toMatchObject({
       nodeEnv: 'test',
@@ -25,14 +25,14 @@ describe('broker-api config', () => {
         redisConnectTimeoutMs: 2_000,
         redisKeyPrefix: 'broker-api:data-plane'
       }
-    });
+    })
     expect(config.forwarder).toEqual({
       total_timeout_ms: 15_000,
       max_request_body_bytes: 2 * 1024 * 1024,
       max_response_bytes: 2 * 1024 * 1024
-    });
-    expect(config.tls).toBeUndefined();
-  });
+    })
+    expect(config.tls).toBeUndefined()
+  })
 
   it('parses explicit overrides and ignores unrelated env vars', () => {
     const config = loadConfig({
@@ -65,7 +65,7 @@ describe('broker-api config', () => {
       BROKER_API_TLS_REQUIRE_CLIENT_CERT: 'true',
       BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: 'true',
       UNRELATED_ENV: 'ignored'
-    } as NodeJS.ProcessEnv);
+    } as NodeJS.ProcessEnv)
 
     expect(config).toMatchObject({
       nodeEnv: 'development',
@@ -100,13 +100,13 @@ describe('broker-api config', () => {
         workloads: [],
         integrations: []
       }
-    });
+    })
     expect(config.forwarder).toEqual({
       total_timeout_ms: 1200,
       max_request_body_bytes: 4096,
       max_response_bytes: 8192
-    });
-  });
+    })
+  })
 
   it('rejects invalid initial state json', () => {
     expect(() =>
@@ -114,26 +114,28 @@ describe('broker-api config', () => {
         NODE_ENV: 'test',
         BROKER_API_INITIAL_STATE_JSON: '{invalid'
       })
-    ).toThrow('BROKER_API_INITIAL_STATE_JSON must be valid JSON');
-  });
+    ).toThrow('BROKER_API_INITIAL_STATE_JSON must be valid JSON')
+  })
 
   it('requires state path or initial state in production', () => {
     expect(() =>
       loadConfig({
         NODE_ENV: 'production',
         BROKER_API_DATABASE_URL: 'postgresql://broker:broker@127.0.0.1:5432/broker',
-        BROKER_API_REDIS_URL: 'redis://127.0.0.1:6379'
+        BROKER_API_REDIS_URL: 'redis://127.0.0.1:6379',
+        BROKER_API_SECRET_KEY_B64: 'yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8='
       })
-    ).toThrow('Production requires BROKER_API_STATE_PATH or BROKER_API_INITIAL_STATE_JSON');
+    ).toThrow('Production requires BROKER_API_STATE_PATH or BROKER_API_INITIAL_STATE_JSON')
 
     const withStatePath = loadConfig({
       NODE_ENV: 'production',
       BROKER_API_STATE_PATH: '/var/lib/broker-api/state.json',
       BROKER_API_DATABASE_URL: 'postgresql://broker:broker@127.0.0.1:5432/broker',
-      BROKER_API_REDIS_URL: 'redis://127.0.0.1:6379'
-    });
-    expect(withStatePath.statePath).toBe('/var/lib/broker-api/state.json');
-  });
+      BROKER_API_REDIS_URL: 'redis://127.0.0.1:6379',
+      BROKER_API_SECRET_KEY_B64: 'yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8='
+    })
+    expect(withStatePath.statePath).toBe('/var/lib/broker-api/state.json')
+  })
 
   it('requires database and redis urls when infrastructure is enabled', () => {
     expect(() =>
@@ -141,8 +143,8 @@ describe('broker-api config', () => {
         NODE_ENV: 'development',
         BROKER_API_INFRA_ENABLED: 'true'
       })
-    ).toThrow('BROKER_API_DATABASE_URL and BROKER_API_REDIS_URL are required when infrastructure is enabled');
-  });
+    ).toThrow('BROKER_API_DATABASE_URL and BROKER_API_REDIS_URL are required when infrastructure is enabled')
+  })
 
   it('requires TLS key/cert and client CA in mTLS mode when TLS is enabled', () => {
     expect(() =>
@@ -150,7 +152,7 @@ describe('broker-api config', () => {
         NODE_ENV: 'test',
         BROKER_API_TLS_ENABLED: 'true'
       })
-    ).toThrow('BROKER_API_TLS_KEY_PATH and BROKER_API_TLS_CERT_PATH are required when TLS is enabled');
+    ).toThrow('BROKER_API_TLS_KEY_PATH and BROKER_API_TLS_CERT_PATH are required when TLS is enabled')
 
     expect(() =>
       loadConfig({
@@ -160,8 +162,8 @@ describe('broker-api config', () => {
         BROKER_API_TLS_CERT_PATH: '/certs/server.crt',
         BROKER_API_TLS_REQUIRE_CLIENT_CERT: 'true'
       })
-    ).toThrow('BROKER_API_TLS_CLIENT_CA_PATH is required when TLS is configured to verify client certificates');
-  });
+    ).toThrow('BROKER_API_TLS_CLIENT_CA_PATH is required when TLS is configured to verify client certificates')
+  })
 
   it('does not require client cert verification by default in development TLS mode', () => {
     const config = loadConfig({
@@ -170,7 +172,7 @@ describe('broker-api config', () => {
       BROKER_API_TLS_ENABLED: 'true',
       BROKER_API_TLS_KEY_PATH: '/certs/server.key',
       BROKER_API_TLS_CERT_PATH: '/certs/server.crt'
-    });
+    })
 
     expect(config.tls).toMatchObject({
       enabled: true,
@@ -178,18 +180,19 @@ describe('broker-api config', () => {
       certPath: '/certs/server.crt',
       requireClientCert: false,
       rejectUnauthorizedClientCert: false
-    });
-    expect(config.tls?.clientCaPath).toBeUndefined();
-  });
+    })
+    expect(config.tls?.clientCaPath).toBeUndefined()
+  })
 
   it('defaults to empty CORS origins in production', () => {
     const config = loadConfig({
       NODE_ENV: 'production',
       BROKER_API_STATE_PATH: '/var/lib/broker-api/state.json',
       BROKER_API_DATABASE_URL: 'postgresql://broker:broker@127.0.0.1:5432/broker',
-      BROKER_API_REDIS_URL: 'redis://127.0.0.1:6379'
-    });
+      BROKER_API_REDIS_URL: 'redis://127.0.0.1:6379',
+      BROKER_API_SECRET_KEY_B64: 'yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8='
+    })
 
-    expect(config.corsAllowedOrigins).toEqual([]);
-  });
-});
+    expect(config.corsAllowedOrigins).toEqual([])
+  })
+})

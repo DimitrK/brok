@@ -36,7 +36,9 @@ const makeConfig = (): ServiceConfig => ({
     sessions: [],
     integration_secret_headers: {},
     dpop_required_workload_ids: []
-  }
+  },
+  secretKey: Buffer.alloc(32, 'a'),
+  secretKeyId: 'v1'
 })
 
 let activeApp: Awaited<ReturnType<typeof createBrokerApiApp>> | null = null

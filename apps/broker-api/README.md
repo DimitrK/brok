@@ -8,14 +8,14 @@ Data-plane service for protected outbound provider execution.
 
 1. mTLS workload identity verification (+ optional workload IP allowlist)
 2. Session token issuance and binding (`POST /v1/session`)
-3. Optional DPoP binding and replay protection
+3. Optional DPoP binding and replay protectio
 4. Execute pipeline (`POST /v1/execute`)
 5. Canonicalization + classification + policy decision + approvals
 6. SSRF protections + redirect deny + safe forwarding
 7. Audit emission for session/execute/manifest/policy decisions
 8. Signed manifest distribution (`GET /v1/workloads/{id}/manifest`)
 
-The service is implemented with NestJS on Express and uses a single-process Prisma client and Redis client when
+The service is implemented with NestJS on Express and uses a single-process Prisma client and Redis client whe
 infrastructure mode is enabled.
 
 ## Architecture (runtime)
@@ -56,7 +56,7 @@ All endpoint DTOs are defined by `packages/schemas/openapi.yaml`.
 
 ### `POST /v1/execute`
 
-- Purpose: execute protected-provider call through broker enforcement chain
+- Purpose: execute protected-provider call through broker enforcement chai
 - Auth: mTLS + `Authorization: Bearer <session_token>`
 - Optional/required header: `DPoP` (required when session is DPoP-bound or policy mandates DPoP)
 - Request body schema: `ExecuteRequest`
@@ -123,6 +123,25 @@ Production requires at least one of `BROKER_API_STATE_PATH` or `BROKER_API_INITI
 - `BROKER_API_REDIS_URL`: Redis connection URL (required when infra enabled)
 - `BROKER_API_REDIS_CONNECT_TIMEOUT_MS`
 - `BROKER_API_REDIS_KEY_PREFIX`
+
+### Secret decryption (integration secrets)
+- `BROKER_API_SECRET_KEY_B64`: Base64-encoded 32-byte AES key for decrypting integration secrets (required in production)
+- `BROKER_API_SECRET_KEY_ID`: Key identifier for the active encryption key (default: `v1`)
+
+The broker-api retrieves encrypted integration secrets from the database at runtime and decrypts them using the configured key. If no key is configured, it falls back to in-memory state (`integration_secret_headers` in the state file).
+
+**Key generation example:**
+```bash
+# Generate a 32-byte key and encode as base64
+openssl rand -32 | base64
+```
+
+**Note:** The same key must be configured in broker-admin-api (as `BROKER_ADMIN_API_SECRET_KEY_B64`) for secrets to be decryptable after being encrypted by the control plane.
+
+### Security behavior
+- **Production (infrastructure enabled):** If `BROKER_API_SECRET_KEY_B64` is not configured, the service will fail closed and throw an error when attempting to decrypt integration secrets. This prevents silent fallback to in-memory secrets in production.
+- **Development/Test:** If no secret key is configured, a random key is generated automatically for convenience. The service falls back to in-memory state for secrets if shared infrastructure repositories are not available.
+- **Shutdown:** During graceful shutdown, the secret key buffer is zeroized (filled with zeros) to minimize in-memory exposure of cryptographic material.
 
 ## How to start the server
 

@@ -23,7 +23,9 @@ const makeConfig = (): ServiceConfig => ({
     enabled: false,
     redisConnectTimeoutMs: 2_000,
     redisKeyPrefix: 'broker-api:test'
-  }
+  },
+  secretKey: Buffer.alloc(32, 'a'),
+  secretKeyId: 'v1'
 })
 
 describe('process infrastructure', () => {

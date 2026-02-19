@@ -1,4 +1,5 @@
 import {z} from 'zod'
+import {randomBytes} from 'node:crypto'
 
 const numberFromEnv = z.preprocess(value => {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -83,6 +84,22 @@ const parseCorsAllowedOrigins = ({
   return origins
 }
 
+const parseSecretKey = ({encodedKey, requireConfiguredKey}: {encodedKey?: string; requireConfiguredKey: boolean}) => {
+  if (encodedKey) {
+    const decoded = Buffer.from(encodedKey, 'base64');
+    if (decoded.length !== 32) {
+      throw new Error('BROKER_API_SECRET_KEY_B64 must decode to exactly 32 bytes');
+    }
+    return decoded;
+  }
+
+  if (requireConfiguredKey) {
+    throw new Error('BROKER_API_SECRET_KEY_B64 is required when production shared infrastructure is enabled');
+  }
+
+  return randomBytes(32);
+};
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -90,15 +107,19 @@ const envSchema = z
     BROKER_API_PORT: numberFromEnv.default(8081),
     BROKER_API_PUBLIC_BASE_URL: z.string().url().default('https://broker.example'),
     BROKER_API_MAX_BODY_BYTES: numberFromEnv.default(1024 * 1024),
-    BROKER_API_SESSION_DEFAULT_TTL_SECONDS: z.preprocess(
-      value => (typeof value === 'string' && value.trim().length > 0 ? Number.parseInt(value, 10) : value),
-      z.number().int().gte(60).lte(3600)
-    ).default(900),
+    BROKER_API_SESSION_DEFAULT_TTL_SECONDS: z
+      .preprocess(
+        value => (typeof value === 'string' && value.trim().length > 0 ? Number.parseInt(value, 10) : value),
+        z.number().int().gte(60).lte(3600)
+      )
+      .default(900),
     BROKER_API_APPROVAL_TTL_SECONDS: numberFromEnv.default(300),
-    BROKER_API_MANIFEST_TTL_SECONDS: z.preprocess(
-      value => (typeof value === 'string' && value.trim().length > 0 ? Number.parseInt(value, 10) : value),
-      z.number().int().gte(30).lte(300)
-    ).default(300),
+    BROKER_API_MANIFEST_TTL_SECONDS: z
+      .preprocess(
+        value => (typeof value === 'string' && value.trim().length > 0 ? Number.parseInt(value, 10) : value),
+        z.number().int().gte(30).lte(300)
+      )
+      .default(300),
     BROKER_API_DPOP_MAX_SKEW_SECONDS: numberFromEnv.default(300),
     BROKER_API_FORWARDER_TOTAL_TIMEOUT_MS: numberFromEnv.default(15_000),
     BROKER_API_FORWARDER_MAX_REQUEST_BODY_BYTES: numberFromEnv.default(2 * 1024 * 1024),
@@ -118,9 +139,11 @@ const envSchema = z
     BROKER_API_TLS_CERT_PATH: optionalString,
     BROKER_API_TLS_CLIENT_CA_PATH: optionalString,
     BROKER_API_TLS_REQUIRE_CLIENT_CERT: booleanFromEnv.optional(),
-    BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: booleanFromEnv.optional()
+    BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: booleanFromEnv.optional(),
+    BROKER_API_SECRET_KEY_B64: optionalString,
+    BROKER_API_SECRET_KEY_ID: z.string().trim().min(1).default('v1')
   })
-  .strict()
+  .strict();
 
 export type ServiceConfig = {
   nodeEnv: 'development' | 'test' | 'production'
@@ -157,6 +180,8 @@ export type ServiceConfig = {
     requireClientCert: boolean
     rejectUnauthorizedClientCert: boolean
   }
+  secretKey: Buffer
+  secretKeyId: string
 }
 
 const toEnvInput = (env: NodeJS.ProcessEnv) => ({
@@ -187,7 +212,9 @@ const toEnvInput = (env: NodeJS.ProcessEnv) => ({
   BROKER_API_TLS_CERT_PATH: env.BROKER_API_TLS_CERT_PATH,
   BROKER_API_TLS_CLIENT_CA_PATH: env.BROKER_API_TLS_CLIENT_CA_PATH,
   BROKER_API_TLS_REQUIRE_CLIENT_CERT: env.BROKER_API_TLS_REQUIRE_CLIENT_CERT,
-  BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: env.BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT
+  BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: env.BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT,
+  BROKER_API_SECRET_KEY_B64: env.BROKER_API_SECRET_KEY_B64,
+  BROKER_API_SECRET_KEY_ID: env.BROKER_API_SECRET_KEY_ID
 })
 
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig => {
@@ -206,6 +233,12 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig 
   if (infrastructureEnabled && (!parsed.BROKER_API_DATABASE_URL || !parsed.BROKER_API_REDIS_URL)) {
     throw new Error('BROKER_API_DATABASE_URL and BROKER_API_REDIS_URL are required when infrastructure is enabled')
   }
+
+  const secretKey = parseSecretKey({
+    encodedKey: parsed.BROKER_API_SECRET_KEY_B64,
+    requireConfiguredKey: parsed.NODE_ENV === 'production' && infrastructureEnabled
+  });
+
   const tlsRequireClientCert = parsed.BROKER_API_TLS_REQUIRE_CLIENT_CERT ?? parsed.NODE_ENV !== 'development'
   const tlsRejectUnauthorizedClientCert =
     parsed.BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT ?? parsed.NODE_ENV !== 'development'
@@ -256,6 +289,8 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig 
       : {}),
     ...(statePath ? {statePath} : {}),
     ...(initialState ? {initialState} : {}),
+    secretKey,
+    secretKeyId: parsed.BROKER_API_SECRET_KEY_ID,
     ...(parsed.BROKER_API_TLS_ENABLED
       ? {
           tls: {
@@ -268,5 +303,5 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig 
           }
         }
       : {})
-  }
+  };
 }

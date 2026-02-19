@@ -56,7 +56,9 @@ const makeEnabledConfig = (): ServiceConfig => ({
     redisUrl: 'redis://127.0.0.1:6379',
     redisConnectTimeoutMs: 2_000,
     redisKeyPrefix: 'broker-api:test'
-  }
+  },
+  secretKey: Buffer.alloc(32, 'a'),
+  secretKeyId: 'v1'
 })
 
 beforeEach(() => {

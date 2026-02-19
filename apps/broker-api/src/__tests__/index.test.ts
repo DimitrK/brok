@@ -45,6 +45,47 @@ type ServerContext = {
   auditService: ReturnType<typeof createAuditService>;
 };
 
+const createMockSecretRepository = () => {
+  type ManifestSigningKeyRecordMock = {
+    kid: string;
+    alg: string;
+    public_jwk: unknown;
+    private_key_ref: string;
+    status: 'active';
+    created_at: string;
+  };
+  type ManifestSigningKeyCreateInput = {
+    kid?: string;
+    alg?: string;
+    public_jwk?: unknown;
+    private_key_ref?: string;
+  };
+
+  let activeKey: ManifestSigningKeyRecordMock | null = null;
+  return {
+    getActiveSecretEnvelope: vi.fn(() => Promise.resolve(null)),
+    getActiveManifestSigningKeyRecord: vi.fn(() => Promise.resolve(activeKey)),
+    createManifestSigningKeyRecord: vi.fn((input: ManifestSigningKeyCreateInput) => {
+      activeKey = {
+        kid: input.kid || 'test-key',
+        alg: input.alg || 'ES256',
+        public_jwk: input.public_jwk,
+        private_key_ref: input.private_key_ref || 'ref://test-key',
+        status: 'active',
+        created_at: new Date().toISOString()
+      };
+      return Promise.resolve(activeKey);
+    }),
+    setActiveManifestSigningKey: vi.fn(() => Promise.resolve(undefined)),
+    retireManifestSigningKey: vi.fn(() => Promise.resolve(undefined)),
+    revokeManifestSigningKey: vi.fn(() => Promise.resolve(undefined)),
+    listManifestVerificationKeysWithEtag: vi.fn(() => Promise.resolve({keys: [], etag: 'test'})),
+    persistManifestKeysetMetadata: vi.fn(() => Promise.resolve(undefined)),
+    getCryptoVerificationDefaultsByTenant: vi.fn(() => Promise.resolve(null)),
+    upsertCryptoVerificationDefaults: vi.fn(() => Promise.resolve(undefined))
+  };
+};
+
 const makeConfig = (): ServiceConfig => ({
   nodeEnv: 'test',
   host: '127.0.0.1',
@@ -66,6 +107,8 @@ const makeConfig = (): ServiceConfig => ({
     redisConnectTimeoutMs: 2_000,
     redisKeyPrefix: 'broker-api:test'
   },
+  secretKey: Buffer.alloc(32, 'a'),
+  secretKeyId: 'v1',
   expectedSanUriPrefix: 'spiffe://broker/tenants/'
 });
 
@@ -359,18 +402,24 @@ const createContext = async ({
   state = createBaseState(),
   fetchImpl,
   dnsResolver,
-  processInfrastructure
+  processInfrastructure,
+  secretKey,
+  secretKeyId
 }: {
   state?: unknown;
   fetchImpl?: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
   dnsResolver?: (input: {hostname: string}) => Promise<string[]> | string[];
   processInfrastructure?: ProcessInfrastructure;
+  secretKey?: Buffer;
+  secretKeyId?: string;
 } = {}): Promise<ServerContext> => {
   const repository = await DataPlaneRepository.create({
     initialState: state,
     approvalTtlSeconds: 300,
     manifestTtlSeconds: 600,
-    ...(processInfrastructure ? {processInfrastructure} : {})
+    ...(processInfrastructure ? {processInfrastructure} : {}),
+    ...(secretKey ? {secretKey} : {}),
+    ...(secretKeyId ? {secretKeyId} : {})
   });
 
   const auditStore = createInMemoryAuditStore();
@@ -822,11 +871,29 @@ describe('broker-api', () => {
           del: redisDel,
           eval: redisEval
         } as never,
-        dbRepositories: null,
+        dbRepositories: {
+          integrationRepository: {
+            getById: vi.fn(() => Promise.resolve(createBaseState().integrations[0])),
+            getIntegrationTemplateForExecute: vi.fn(() =>
+              Promise.resolve({
+                workload_enabled: true,
+                integration_enabled: true,
+                executable: true,
+                execution_status: 'executable',
+                template: createBaseState().templates[0],
+                template_id: 'tpl_openai_safe',
+                template_version: 1
+              })
+            )
+          },
+          secretRepository: createMockSecretRepository()
+        } as never,
         redisKeyPrefix: 'broker-api:test',
         withTransaction: async operation => operation({} as never),
         close: () => Promise.resolve()
-      }
+      },
+      secretKey: Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64'),
+      secretKeyId: 'v1'
     });
 
     const sessionResponse = await context.request({
@@ -851,6 +918,7 @@ describe('broker-api', () => {
         }
       }
     });
+
     expect(firstExecute.status).toBe(200);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(redisSet).toHaveBeenCalled();
@@ -1024,36 +1092,27 @@ describe('broker-api', () => {
         } as never,
         dbRepositories: {
           integrationRepository: {
-            getById: vi.fn(() =>
-              Promise.resolve({
-                integration_id: 'i_1',
-                tenant_id: 't_1',
-                provider: 'openai',
-                name: 'OpenAI Integration',
-                template_id: 'tpl_openai_safe',
-                enabled: true
-              })
-            ),
+            getById: vi.fn(() => Promise.resolve(createBaseState().integrations[0])),
             getIntegrationTemplateForExecute: vi.fn(() =>
               Promise.resolve({
                 workload_enabled: true,
                 integration_enabled: true,
                 executable: true,
                 execution_status: 'executable',
-                template: {
-                  ...createBaseState().templates[0],
-                  version: 1
-                },
+                template: createBaseState().templates[0],
                 template_id: 'tpl_openai_safe',
                 template_version: 1
               })
             )
-          }
+          },
+          secretRepository: createMockSecretRepository()
         } as never,
         redisKeyPrefix: 'broker-api:test',
         withTransaction: async operation => operation({} as never),
         close: () => Promise.resolve()
-      }
+      },
+      secretKey: Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64'),
+      secretKeyId: 'v1'
     });
 
     const sessionResponse = await context.request({
@@ -1134,20 +1193,20 @@ describe('broker-api', () => {
                 integration_enabled: true,
                 executable: false,
                 execution_status: 'integration_disabled',
-                template: {
-                  ...createBaseState().templates[0],
-                  version: 1
-                },
+                template: createBaseState().templates[0],
                 template_id: 'tpl_openai_safe',
                 template_version: 1
               })
             )
-          }
+          },
+          secretRepository: createMockSecretRepository()
         } as never,
         redisKeyPrefix: 'broker-api:test',
         withTransaction: async operation => operation({} as never),
         close: () => Promise.resolve()
-      }
+      },
+      secretKey: Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64'),
+      secretKeyId: 'v1'
     });
 
     const sessionResponse = await context.request({
