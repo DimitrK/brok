@@ -3,3 +3,4 @@ node_modules
 .turbo
 .pnpm-store
 pnpm-lock.yaml
+*.md
