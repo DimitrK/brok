@@ -1,12 +1,15 @@
 const DEFAULT_SENSITIVE_SUBSTRINGS = [
   'token',
   'secret',
+  'api_key',
+  'apikey',
   'authorization',
   'cookie',
   'dpop',
   'privatekey',
   'private_key',
   'ciphertext',
+  'authtag',
   'auth_tag',
   'body',
   'body_base64'
@@ -60,10 +63,13 @@ const sanitizeInternal = ({
   if (
     typeof value === 'string' ||
     typeof value === 'number' ||
-    typeof value === 'boolean' ||
-    typeof value === 'bigint'
+    typeof value === 'boolean'
   ) {
     return value;
+  }
+
+  if (typeof value === 'bigint') {
+    return value.toString();
   }
 
   if (typeof value === 'symbol') {
@@ -71,7 +77,7 @@ const sanitizeInternal = ({
   }
 
   if (value instanceof Date) {
-    return value.toISOString();
+    return Number.isNaN(value.getTime()) ? '[INVALID_DATE]' : value.toISOString();
   }
 
   if (value instanceof Error) {

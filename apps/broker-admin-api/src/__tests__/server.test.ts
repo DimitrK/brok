@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os'
 import path from 'node:path'
 import {Readable} from 'node:stream'
 
+import type {StructuredLogger} from '@broker-interceptor/logging'
 import {OpenApiAdminOAuthStartResponseSchema, type OpenApiTemplate} from '@broker-interceptor/schemas'
 import {afterEach, describe, expect, it, vi} from 'vitest'
 
@@ -247,10 +248,12 @@ const invokeHandler = async ({
 
 const createContext = async ({
   statePath,
-  config = makeConfig()
+  config = makeConfig(),
+  logger
 }: {
   statePath?: string
   config?: ServiceConfig
+  logger?: StructuredLogger
 } = {}): Promise<ServerContext> => {
   const repository = await ControlPlaneRepository.create({
     ...(statePath ? {statePath} : {}),
@@ -291,7 +294,8 @@ const createContext = async ({
   const handler = createAdminApiRequestHandler({
     config,
     repository,
-    dependencyBridge
+    dependencyBridge,
+    ...(logger ? {logger} : {})
   })
 
   return {
@@ -300,6 +304,15 @@ const createContext = async ({
     dependencyBridge
   }
 }
+
+const createMockLogger = (): StructuredLogger => ({
+  log: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn()
+})
 
 const createUnsignedJwt = (payload: Record<string, unknown>) => {
   const header = {
@@ -437,6 +450,43 @@ const buildApprovalFixtureState = () => {
 }
 
 describe('broker-admin-api server routes', () => {
+  it('logs request route without query parameters', async () => {
+    const logger = createMockLogger()
+    const context = await createContext({logger})
+
+    const response = await context.request({
+      method: 'GET',
+      path: '/healthz?api_key=secret-value',
+      token: ''
+    })
+
+    expect(response.status).toBe(200)
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'request.received',
+        route: '/healthz'
+      })
+    )
+  })
+
+  it('logs successful admin authentication outcomes', async () => {
+    const logger = createMockLogger()
+    const context = await createContext({logger})
+
+    const response = await context.request({
+      method: 'GET',
+      path: '/v1/admin/auth/session'
+    })
+
+    expect(response.status).toBe(200)
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'auth.admin.verified',
+        component: 'server.auth'
+      })
+    )
+  })
+
   it('serves health checks and rejects unauthenticated admin calls', async () => {
     const context = await createContext()
 

@@ -4,6 +4,7 @@ import {Readable} from 'node:stream';
 import type {TLSSocket} from 'node:tls';
 
 import {createAuditService, createInMemoryAuditStore} from '@broker-interceptor/audit';
+import type {StructuredLogger} from '@broker-interceptor/logging';
 import {OpenApiManifestSchema} from '@broker-interceptor/schemas';
 import {calculateJwkThumbprint} from '@broker-interceptor/auth';
 import {exportJWK, generateKeyPair, SignJWT, type JWK} from 'jose';
@@ -408,7 +409,8 @@ const createContext = async ({
   dnsResolver,
   processInfrastructure,
   secretKey,
-  secretKeyId
+  secretKeyId,
+  logger
 }: {
   state?: unknown;
   fetchImpl?: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
@@ -416,6 +418,7 @@ const createContext = async ({
   processInfrastructure?: ProcessInfrastructure;
   secretKey?: Buffer;
   secretKeyId?: string;
+  logger?: StructuredLogger;
 } = {}): Promise<ServerContext> => {
   const repository = await DataPlaneRepository.create({
     initialState: state,
@@ -434,6 +437,7 @@ const createContext = async ({
     config: makeConfig(),
     repository,
     auditService,
+    ...(logger ? {logger} : {}),
     ...(fetchImpl ? {fetchImpl} : {}),
     dnsResolver: effectiveDnsResolver
   });
@@ -445,6 +449,15 @@ const createContext = async ({
   };
 };
 
+const createMockLogger = (): StructuredLogger => ({
+  log: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn()
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -452,6 +465,84 @@ afterEach(() => {
 describe('broker-api', () => {
   it('exports app name', () => {
     expect(appName).toBe('broker-api');
+  });
+
+  it('logs request route without query parameters', async () => {
+    const logger = createMockLogger();
+    const context = await createContext({logger});
+
+    const response = await context.request({
+      method: 'GET',
+      path: '/healthz?api_key=secret-value'
+    });
+
+    expect(response.status).toBe(200);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'request.received',
+        route: '/healthz'
+      })
+    );
+  });
+
+  it('logs mTLS authentication outcomes', async () => {
+    const logger = createMockLogger();
+    const context = await createContext({logger});
+
+    const successResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+    expect(successResponse.status).toBe(200);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'auth.mtls.verified'
+      })
+    );
+
+    const deniedResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      },
+      tls: {
+        authorized: false
+      }
+    });
+
+    expect(deniedResponse.status).toBe(401);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'auth.mtls.denied',
+        reason_code: 'mtls_required'
+      })
+    );
+  });
+
+  it('logs session authentication denials with reason codes', async () => {
+    const logger = createMockLogger();
+    const context = await createContext({logger});
+
+    const response = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      body: executeRequestBody
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({error: 'session_missing'});
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'auth.session.denied',
+        reason_code: 'session_missing'
+      })
+    );
   });
 
   it('rejects data-plane requests without mTLS', async () => {
@@ -1249,7 +1340,98 @@ describe('broker-api', () => {
     expect(listPayloads.some(value => value.includes('"reason_code":"resolved_ip_denied_private_range"'))).toBe(true);
   });
 
-  it('fails closed when SSRF template bridge is wired but returns no executable template', async () => {
+  it('falls back to shared tenant/global template lookup when execute bridge returns non-executable', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ok: true}), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json'
+          }
+        })
+      )
+    );
+    const getLatestTemplateByTenantTemplateId = vi.fn(({tenant_id}: {tenant_id: string}) =>
+      Promise.resolve(tenant_id === 'global' ? createBaseState().templates[0] : null)
+    );
+
+    const context = await createContext({
+      fetchImpl,
+      processInfrastructure: {
+        enabled: true,
+        prisma: {} as never,
+        redis: null,
+        dbRepositories: {
+          integrationRepository: {
+            getById: vi.fn(() =>
+              Promise.resolve({
+                integration_id: 'i_1',
+                tenant_id: 't_1',
+                provider: 'openai',
+                name: 'OpenAI Integration',
+                template_id: 'tpl_openai_safe',
+                enabled: true
+              })
+            ),
+            getIntegrationTemplateForExecute: vi.fn(() =>
+              Promise.resolve({
+                workload_enabled: true,
+                integration_enabled: true,
+                executable: false,
+                execution_status: 'integration_disabled',
+                template: createBaseState().templates[0],
+                template_id: 'tpl_openai_safe',
+                template_version: 1
+              })
+            )
+          },
+          templateRepository: {
+            getLatestTemplateByTenantTemplateId
+          },
+          secretRepository: createMockSecretRepository()
+        } as never,
+        redisKeyPrefix: 'broker-api:test',
+        withTransaction: async operation => operation({} as never),
+        close: () => Promise.resolve()
+      },
+      secretKey: Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64'),
+      secretKeyId: 'v1'
+    });
+
+    const sessionResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+    const token = (sessionResponse.body as {session_token: string}).session_token;
+
+    const executeResponse = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      token,
+      body: executeRequestBody
+    });
+
+    expect(executeResponse.status).toBe(200);
+    expect(executeResponse.body).toMatchObject({
+      status: 'executed'
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(getLatestTemplateByTenantTemplateId).toHaveBeenNthCalledWith(1, {
+      tenant_id: 't_1',
+      template_id: 'tpl_openai_safe'
+    });
+    expect(getLatestTemplateByTenantTemplateId).toHaveBeenNthCalledWith(2, {
+      tenant_id: 'global',
+      template_id: 'tpl_openai_safe'
+    });
+  });
+
+  it('fails closed when template is missing in execute bridge and shared tenant/global lookups', async () => {
+    const getLatestTemplateByTenantTemplateId = vi.fn(() => Promise.resolve(null));
     const context = await createContext({
       processInfrastructure: {
         enabled: true,
@@ -1278,6 +1460,9 @@ describe('broker-api', () => {
                 template_version: 1
               })
             )
+          },
+          templateRepository: {
+            getLatestTemplateByTenantTemplateId
           },
           secretRepository: createMockSecretRepository()
         } as never,
@@ -1308,6 +1493,14 @@ describe('broker-api', () => {
 
     expect(executeResponse.status).toBe(400);
     expect(executeResponse.body).toMatchObject({error: 'template_not_found'});
+    expect(getLatestTemplateByTenantTemplateId).toHaveBeenNthCalledWith(1, {
+      tenant_id: 't_1',
+      template_id: 'tpl_openai_safe'
+    });
+    expect(getLatestTemplateByTenantTemplateId).toHaveBeenNthCalledWith(2, {
+      tenant_id: 'global',
+      template_id: 'tpl_openai_safe'
+    });
   });
 
   it('serves signed manifests for the authenticated workload', async () => {

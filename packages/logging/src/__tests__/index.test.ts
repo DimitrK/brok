@@ -252,7 +252,9 @@ describe('@broker-interceptor/logging', () => {
     const circular: Record<string, unknown> = {
       plain: 'ok',
       created_at: new Date('2026-01-01T00:00:00.000Z'),
+      invalid_created_at: new Date('invalid'),
       symbol: Symbol('s'),
+      usage_count: BigInt(7),
       payload: ['a', {token_value: 'abc'}],
       maybe_error: new Error('failure'),
       execute: () => 'result'
@@ -267,6 +269,8 @@ describe('@broker-interceptor/logging', () => {
     const sanitized = sanitizeForLog({
       value: {
         customSecretLabel: 'sensitive',
+        'x-api-key': 'api-key-secret',
+        'auth-tag': 'tag-secret',
         circular,
         tooDeep
       },
@@ -274,10 +278,14 @@ describe('@broker-interceptor/logging', () => {
     }) as Record<string, unknown>;
 
     expect(sanitized.customSecretLabel).toBe('[REDACTED]');
+    expect(sanitized['x-api-key']).toBe('[REDACTED]');
+    expect(sanitized['auth-tag']).toBe('[REDACTED]');
     const circularSanitized = sanitized.circular as Record<string, unknown>;
     expect(circularSanitized.self).toBe('[CIRCULAR]');
     expect(circularSanitized.symbol).toBe('Symbol(s)');
     expect(circularSanitized.execute).toBe('[FUNCTION]');
+    expect(circularSanitized.invalid_created_at).toBe('[INVALID_DATE]');
+    expect(circularSanitized.usage_count).toBe('7');
 
     const payloadSanitized = circularSanitized.payload as unknown[];
     expect((payloadSanitized[1] as Record<string, unknown>).token_value).toBe('[REDACTED]');
@@ -320,6 +328,27 @@ describe('@broker-interceptor/logging', () => {
         component: 'test'
       });
     }).not.toThrow();
+  });
+
+  it('drops invalid log events without throwing', () => {
+    const writerBuffer = createBufferedWriter();
+    const logger = createStructuredLogger({
+      service: 'broker-api',
+      env: 'test',
+      level: 'debug',
+      writer: writerBuffer.writer
+    });
+
+    expect(() => {
+      logger.log({
+        level: 'info',
+        event: '',
+        component: 'test'
+      } as unknown as never);
+    }).not.toThrow();
+
+    expect(writerBuffer.stdout).toHaveLength(0);
+    expect(writerBuffer.stderr).toHaveLength(0);
   });
 
   it('uses default writer when no custom writer is provided', () => {

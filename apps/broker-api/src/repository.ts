@@ -2155,8 +2155,16 @@ export class DataPlaneRepository {
       })
     }
 
-    return sharedTemplateRepository.getLatestTemplateByTenantTemplateId({
+    const tenantTemplate = await sharedTemplateRepository.getLatestTemplateByTenantTemplateId({
       tenant_id: tenantId,
+      template_id: templateId
+    })
+    if (tenantTemplate) {
+      return tenantTemplate
+    }
+
+    return sharedTemplateRepository.getLatestTemplateByTenantTemplateId({
+      tenant_id: 'global',
       template_id: templateId
     })
   }

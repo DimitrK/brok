@@ -163,7 +163,12 @@ export const createStructuredLogger = (options: StructuredLoggerOptions): Struct
   };
 
   const log = (rawInput: LogEventInput) => {
-    const input = LogEventInputSchema.parse(rawInput);
+    const parsedInput = LogEventInputSchema.safeParse(rawInput);
+    if (!parsedInput.success) {
+      return;
+    }
+
+    const input = parsedInput.data;
     if (!shouldEmit({configuredLevel: parsedOptions.level, eventLevel: input.level})) {
       return;
     }

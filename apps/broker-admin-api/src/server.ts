@@ -525,6 +525,16 @@ const parseUrl = (request: IncomingMessage) => {
   }
 };
 
+const sanitizeRouteForLog = ({rawUrl}: {rawUrl: string | undefined}) => {
+  if (!rawUrl) {
+    return '/';
+  }
+
+  const routeWithoutQuery = rawUrl.split('?', 1)[0] ?? '';
+  const routeWithoutFragment = routeWithoutQuery.split('#', 1)[0] ?? '';
+  return routeWithoutFragment.length > 0 ? routeWithoutFragment : '/';
+};
+
 const requireWorkloadTenantScope = async ({
   repository,
   principal,
@@ -559,6 +569,26 @@ export const createAdminApiRequestHandler = ({
   dependencyBridge,
   logger = createNoopLogger()
 }: CreateAdminApiServerInput) => {
+  const logAdminAuthVerified = ({
+    principal,
+    context
+  }: {
+    principal: AdminPrincipal
+    context: 'oauth_callback' | 'request'
+  }) => {
+    logger.info({
+      event: 'auth.admin.verified',
+      component: 'server.auth',
+      message: 'Admin authentication succeeded',
+      metadata: {
+        auth_mode: principal.authContext.mode,
+        role_count: principal.roles.length,
+        tenant_count: principal.tenantIds?.length ?? 0,
+        context
+      }
+    })
+  }
+
   const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     const correlationId = extractCorrelationId(request);
     const requestId = randomUUID();
@@ -580,7 +610,7 @@ export const createAdminApiRequestHandler = ({
           event: 'request.received',
           component: 'http.server',
           message: 'Request received',
-          route: request.url ?? '/',
+          route: sanitizeRouteForLog({rawUrl: request.url}),
           method: requestMethod
         });
 
@@ -745,6 +775,7 @@ export const createAdminApiRequestHandler = ({
         const principal = await dependencyBridge.resolveAdminIdentityFromToken({
           principal: principalForIdentityResolution
         });
+        logAdminAuthVerified({principal, context: 'oauth_callback'})
         if (principal.tenantIds && principal.tenantIds.length === 1) {
           setLogContextFields({
             tenant_id: principal.tenantIds[0]
@@ -794,6 +825,7 @@ export const createAdminApiRequestHandler = ({
       const principal = await dependencyBridge.resolveAdminIdentityFromToken({
         principal: authenticatedPrincipal
       });
+      logAdminAuthVerified({principal, context: 'request'})
       if (principal.tenantIds && principal.tenantIds.length === 1) {
         setLogContextFields({
           tenant_id: principal.tenantIds[0]

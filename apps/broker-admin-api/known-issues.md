@@ -1,3 +1,4 @@
+## Issue 1:
 Found the issue: admin‑api writes templates under the global tenant, but broker‑api only looks for templates under the
 workload’s tenant. That makes the manifest builder see zero templates and throw manifest_no_rules.
 
@@ -18,7 +19,8 @@ can. It should be a small change in repository.ts:2558-2603 to load templates fo
 
 Bottom line: Ability to use global and per-tenant custom templates
 
-=== Error thrown
+## Issue 2:
+ Error thrown
 
 ```
 [Nest] 1  - 02/17/2026, 1:02:31 AM     LOG [NestApplication] Nest application successfully started +2ms
@@ -30,14 +32,16 @@ Bottom line: Ability to use global and per-tenant custom templates
     at async /app/node_modules/.pnpm/@nestjs+core@11.1.13_@nestjs+common@11.1.13_reflect-metadata@0.2.2_rxjs@7.8.2__@nestjs+platfo_wc5csu2smgbknvnoiud7blcgb4/node_modules/@nestjs/core/router/router-proxy.js:9:17
 ```
 
-=== Observability. No logs, nothing to identify failures. An error usually carries `correlation_id` yet there are no
+## Issue 3: 
+Observability. No logs, nothing to identify failures. An error usually carries `correlation_id` yet there are no
 logs to correlate whatsoever.
 
 ```
 '{"status":500,"body":"{\\"error\\":\\"internal_error\\",\\"message\\":\\"Unexpected internal error\\",\\"correlation_id\\":\\"e313cd75-b702-432b-bd02-e35802e81647\\"}"}'
 ```
 
-=== Pathgroup id returned in manifest instead of the regexp In the screenshot there is the template I configured.
+## Issue 4:
+Pathgroup id returned in manifest instead of the regexp In the screenshot there is the template I configured.
 
 Here is the actual manifest response I am getting for this template:
 
@@ -55,3 +59,7 @@ curl -X POST http://localhost:3000/chat \
 
 Two issues: broker-api sends group_id instead of path_patterns interceptor-node matcher only supports globs, not regex
 (like ^/v1/chat/completions$)
+
+
+## Issue 5:
+ There is no nest service here nor in broker-api. The route paths are matched with regexp and the logic applied per regexp match + Method. This needs to be rewritten using nest + express conventions
