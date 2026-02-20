@@ -484,6 +484,31 @@ const reportPersistenceWarning = ({
   });
 };
 
+const appendSsrfDecisionProjectionBestEffort = async ({
+  repository,
+  projection,
+  logger,
+  correlationId,
+  stage
+}: {
+  repository: DataPlaneRepository;
+  projection: Parameters<DataPlaneRepository['appendSsrfDecisionProjectionShared']>[0]['projection'];
+  logger: StructuredLogger;
+  correlationId: string;
+  stage: string;
+}) => {
+  try {
+    await repository.appendSsrfDecisionProjectionShared({projection});
+  } catch (error) {
+    reportPersistenceWarning({
+      logger,
+      stage,
+      correlationId,
+      error
+    });
+  }
+};
+
 export type CreateBrokerApiServerInput = {
   config: ServiceConfig;
   repository: DataPlaneRepository;
@@ -1204,7 +1229,8 @@ export const createBrokerApiRequestHandler = ({
             });
             if (!ssrfResult.ok) {
               const destination = parseDestinationFromRequestUrl(canonicalized.value.descriptor.canonical_url);
-              await repository.appendSsrfDecisionProjectionShared({
+              await appendSsrfDecisionProjectionBestEffort({
+                repository,
                 projection: {
                   event_id: `ssrf_${randomUUID()}`,
                   timestamp: now().toISOString(),
@@ -1219,7 +1245,10 @@ export const createBrokerApiRequestHandler = ({
                   decision: 'denied',
                   reason_code: ssrfResult.error.code,
                   correlation_id: correlationId
-                }
+                },
+                logger,
+                correlationId,
+                stage: 'ssrf_decision_projection_denied'
               });
 
               executeAuditRecorded = true;
@@ -1256,7 +1285,8 @@ export const createBrokerApiRequestHandler = ({
               throw badRequest(ssrfResult.error.code, ssrfResult.error.message);
             }
 
-            await repository.appendSsrfDecisionProjectionShared({
+            await appendSsrfDecisionProjectionBestEffort({
+              repository,
               projection: {
                 event_id: `ssrf_${randomUUID()}`,
                 timestamp: now().toISOString(),
@@ -1273,7 +1303,10 @@ export const createBrokerApiRequestHandler = ({
                   ? 'dns_resolution_required'
                   : 'invalid_input',
                 correlation_id: correlationId
-              }
+              },
+              logger,
+              correlationId,
+              stage: 'ssrf_decision_projection_allowed'
             });
 
             const idempotencyKey = executeRequest.client_context?.idempotency_key?.trim();

@@ -64,6 +64,8 @@ type DbFixture = {
     enrollmentTokenRepository: {
       issueEnrollmentToken: ReturnType<typeof vi.fn>;
       consumeEnrollmentTokenOnce: ReturnType<typeof vi.fn>;
+      hasConsumedEnrollmentTokenForWorkload: ReturnType<typeof vi.fn>;
+      invalidateActiveEnrollmentTokens: ReturnType<typeof vi.fn>;
     };
     integrationRepository: {
       listByTenant: ReturnType<typeof vi.fn>;
@@ -372,7 +374,9 @@ const makeFixture = ({
     },
     enrollmentTokenRepository: {
       issueEnrollmentToken: vi.fn(async () => undefined),
-      consumeEnrollmentTokenOnce: vi.fn(async () => undefined)
+      consumeEnrollmentTokenOnce: vi.fn(async () => undefined),
+      hasConsumedEnrollmentTokenForWorkload: vi.fn(async () => false),
+      invalidateActiveEnrollmentTokens: vi.fn(async () => 0)
     },
     integrationRepository: {
       listByTenant: vi.fn(async () => [integration]),
@@ -676,15 +680,26 @@ describe('control plane repository db wiring', () => {
     expect(activeDbFixture.repositories.enrollmentTokenRepository.issueEnrollmentToken).toHaveBeenCalledTimes(1);
     expect(activeDbFixture.authRedisStores.enrollmentTokenStore.issueEnrollmentToken).toHaveBeenCalledTimes(1);
 
+    const rotatedToken = await repository.issueWorkloadEnrollmentToken({
+      workloadId: workload.workload_id,
+      rotationMode: 'if_absent'
+    });
+    expect(rotatedToken.enrollmentToken.length).toBeGreaterThan(0);
+    expect(activeDbFixture.repositories.enrollmentTokenRepository.hasConsumedEnrollmentTokenForWorkload).toHaveBeenCalledTimes(1);
+    expect(activeDbFixture.repositories.enrollmentTokenRepository.invalidateActiveEnrollmentTokens).toHaveBeenCalledTimes(1);
+    expect(activeDbFixture.repositories.enrollmentTokenRepository.issueEnrollmentToken).toHaveBeenCalledTimes(2);
+    expect(activeDbFixture.authRedisStores.enrollmentTokenStore.issueEnrollmentToken).toHaveBeenCalledTimes(2);
+
     await expect(
       repository.consumeEnrollmentToken({
         workloadId: workload.workload_id,
-        enrollmentToken: createdWorkload.enrollmentToken
+        enrollmentToken: rotatedToken.enrollmentToken
       })
     ).resolves.toMatchObject({
       workload_id: workload.workload_id
     });
     expect(activeDbFixture.repositories.enrollmentTokenRepository.consumeEnrollmentTokenOnce).toHaveBeenCalledTimes(1);
+    expect(activeDbFixture.repositories.enrollmentTokenRepository.invalidateActiveEnrollmentTokens).toHaveBeenCalledTimes(2);
     expect(activeDbFixture.authRedisStores.enrollmentTokenStore.consumeEnrollmentTokenByHash).toHaveBeenCalledTimes(1);
 
     expect(await repository.listIntegrations({tenantId: tenant.tenant_id})).toHaveLength(1);

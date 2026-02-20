@@ -4,6 +4,11 @@ import {Readable} from 'node:stream';
 import type {TLSSocket} from 'node:tls';
 
 import {createAuditService, createInMemoryAuditStore} from '@broker-interceptor/audit';
+import {
+  buildEnvelopeAad,
+  createAesGcmKeyManagementService,
+  encryptSecretMaterial
+} from '@broker-interceptor/crypto';
 import type {StructuredLogger} from '@broker-interceptor/logging';
 import {OpenApiManifestSchema} from '@broker-interceptor/schemas';
 import {calculateJwkThumbprint} from '@broker-interceptor/auth';
@@ -295,6 +300,41 @@ const buildDpopProof = async ({
   }
 
   return {jwt, jkt, keyPair: effectiveKeyPair};
+};
+
+const encryptApiKeyEnvelope = async ({
+  secretKey,
+  keyId,
+  aadContext
+}: {
+  secretKey: Buffer;
+  keyId: string;
+  aadContext: Readonly<Record<string, string>>;
+}) => {
+  const kms = createAesGcmKeyManagementService({
+    active_key_id: keyId,
+    keys: {
+      [keyId]: secretKey.toString('base64')
+    }
+  });
+  if (!kms.ok) {
+    throw new Error(`failed to initialize test KMS: ${kms.error.message}`);
+  }
+
+  const encrypted = await encryptSecretMaterial({
+    secret_material: {
+      type: 'api_key',
+      value: 'provider-secret'
+    },
+    key_management_service: kms.value,
+    requested_key_id: keyId,
+    aad: buildEnvelopeAad(aadContext)
+  });
+  if (!encrypted.ok) {
+    throw new Error(`failed to encrypt test secret envelope: ${encrypted.error.message}`);
+  }
+
+  return encrypted.value.envelope;
 };
 
 const invokeHandler = async ({
@@ -620,6 +660,370 @@ describe('broker-api', () => {
 
     expect(auditResult.value.events.some(event => event.event_type === 'policy_decision')).toBe(true);
     expect(auditResult.value.events.some(event => event.event_type === 'execute')).toBe(true);
+  });
+
+  it('keeps successful execute responses when ssrf projection persistence fails', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ok: true}), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json'
+          }
+        })
+      )
+    );
+    const logger = createMockLogger();
+    const appendSsrfGuardDecisionProjection = vi.fn(() => Promise.reject(new Error('projection write failed')));
+
+    const context = await createContext({
+      fetchImpl,
+      logger,
+      processInfrastructure: {
+        enabled: true,
+        prisma: {} as never,
+        redis: null,
+        dbRepositories: {
+          integrationRepository: {
+            getById: vi.fn(() => Promise.resolve(createBaseState().integrations[0])),
+            getIntegrationTemplateForExecute: vi.fn(() =>
+              Promise.resolve({
+                workload_enabled: true,
+                integration_enabled: true,
+                executable: true,
+                execution_status: 'executable',
+                template: createBaseState().templates[0],
+                template_id: 'tpl_openai_safe',
+                template_version: 1
+              })
+            )
+          },
+          auditEventRepository: {
+            appendSsrfGuardDecisionProjection
+          },
+          secretRepository: createMockSecretRepository()
+        } as never,
+        redisKeyPrefix: 'broker-api:test',
+        withTransaction: async operation => operation({} as never),
+        close: () => Promise.resolve()
+      },
+      secretKey: Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64'),
+      secretKeyId: 'v1'
+    });
+
+    const sessionResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+    const token = (sessionResponse.body as {session_token: string}).session_token;
+
+    const executeResponse = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      token,
+      body: executeRequestBody
+    });
+
+    expect(executeResponse.status).toBe(200);
+    expect(executeResponse.body).toMatchObject({status: 'executed'});
+    expect(appendSsrfGuardDecisionProjection).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'repository.persistence.warning'
+      })
+    );
+  });
+
+  it('keeps ssrf rejection semantics when ssrf projection persistence fails', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ok: true}), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json'
+          }
+        })
+      )
+    );
+    const dnsResolver = vi.fn(() => Promise.resolve(['10.0.0.8']));
+    const logger = createMockLogger();
+    const appendSsrfGuardDecisionProjection = vi.fn(() => Promise.reject(new Error('projection write failed')));
+
+    const context = await createContext({
+      fetchImpl,
+      dnsResolver,
+      logger,
+      processInfrastructure: {
+        enabled: true,
+        prisma: {} as never,
+        redis: null,
+        dbRepositories: {
+          integrationRepository: {
+            getById: vi.fn(() => Promise.resolve(createBaseState().integrations[0])),
+            getIntegrationTemplateForExecute: vi.fn(() =>
+              Promise.resolve({
+                workload_enabled: true,
+                integration_enabled: true,
+                executable: true,
+                execution_status: 'executable',
+                template: createBaseState().templates[0],
+                template_id: 'tpl_openai_safe',
+                template_version: 1
+              })
+            )
+          },
+          auditEventRepository: {
+            appendSsrfGuardDecisionProjection
+          },
+          secretRepository: createMockSecretRepository()
+        } as never,
+        redisKeyPrefix: 'broker-api:test',
+        withTransaction: async operation => operation({} as never),
+        close: () => Promise.resolve()
+      },
+      secretKey: Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64'),
+      secretKeyId: 'v1'
+    });
+
+    const sessionResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+    const token = (sessionResponse.body as {session_token: string}).session_token;
+
+    const executeResponse = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      token,
+      body: executeRequestBody
+    });
+
+    expect(executeResponse.status).toBe(400);
+    expect(executeResponse.body).toMatchObject({error: 'resolved_ip_denied_private_range'});
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(appendSsrfGuardDecisionProjection).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'repository.persistence.warning'
+      })
+    );
+  });
+
+  it('executes when shared secret envelope AAD includes secret_type', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ok: true}), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json'
+          }
+        })
+      )
+    );
+    const secretKey = Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64');
+    const secretKeyId = 'v1';
+    const envelope = await encryptApiKeyEnvelope({
+      secretKey,
+      keyId: secretKeyId,
+      aadContext: {
+        tenant_id: 't_1',
+        integration_id: 'i_1',
+        secret_type: 'api_key'
+      }
+    });
+    const secretRepositoryBase = createMockSecretRepository();
+    const secretRepository = {
+      ...secretRepositoryBase,
+      getActiveSecretEnvelope: vi.fn(() =>
+        Promise.resolve({
+          secret_ref: 'sec_1',
+          tenant_id: 't_1',
+          integration_id: 'i_1',
+          secret_type: 'api_key',
+          version: 1,
+          envelope: {
+            key_id: envelope.key_id,
+            content_encryption_alg: envelope.content_encryption_alg,
+            key_encryption_alg: envelope.key_encryption_alg,
+            wrapped_data_key_b64: envelope.wrapped_data_key_b64,
+            iv_b64: envelope.iv_b64,
+            ciphertext_b64: envelope.ciphertext_b64,
+            auth_tag_b64: envelope.auth_tag_b64,
+            ...(envelope.aad_b64 ? {aad_b64: envelope.aad_b64} : {})
+          },
+          created_at: new Date().toISOString()
+        })
+      )
+    };
+
+    const context = await createContext({
+      fetchImpl,
+      processInfrastructure: {
+        enabled: true,
+        prisma: {} as never,
+        redis: null,
+        dbRepositories: {
+          integrationRepository: {
+            getById: vi.fn(() =>
+              Promise.resolve({
+                ...createBaseState().integrations[0],
+                secret_ref: 'sec_1'
+              })
+            ),
+            getIntegrationTemplateForExecute: vi.fn(() =>
+              Promise.resolve({
+                workload_enabled: true,
+                integration_enabled: true,
+                executable: true,
+                execution_status: 'executable',
+                template: createBaseState().templates[0],
+                template_id: 'tpl_openai_safe',
+                template_version: 1
+              })
+            )
+          },
+          secretRepository
+        } as never,
+        redisKeyPrefix: 'broker-api:test',
+        withTransaction: async operation => operation({} as never),
+        close: () => Promise.resolve()
+      },
+      secretKey,
+      secretKeyId
+    });
+
+    const sessionResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+    const token = (sessionResponse.body as {session_token: string}).session_token;
+
+    const executeResponse = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      token,
+      body: executeRequestBody
+    });
+
+    expect(executeResponse.status).toBe(200);
+    expect(executeResponse.body).toMatchObject({status: 'executed'});
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when shared secret envelope AAD omits secret_type', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ok: true}), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json'
+          }
+        })
+      )
+    );
+    const secretKey = Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64');
+    const secretKeyId = 'v1';
+    const envelope = await encryptApiKeyEnvelope({
+      secretKey,
+      keyId: secretKeyId,
+      aadContext: {
+        tenant_id: 't_1',
+        integration_id: 'i_1'
+      }
+    });
+    const secretRepositoryBase = createMockSecretRepository();
+    const secretRepository = {
+      ...secretRepositoryBase,
+      getActiveSecretEnvelope: vi.fn(() =>
+        Promise.resolve({
+          secret_ref: 'sec_1',
+          tenant_id: 't_1',
+          integration_id: 'i_1',
+          secret_type: 'api_key',
+          version: 1,
+          envelope: {
+            key_id: envelope.key_id,
+            content_encryption_alg: envelope.content_encryption_alg,
+            key_encryption_alg: envelope.key_encryption_alg,
+            wrapped_data_key_b64: envelope.wrapped_data_key_b64,
+            iv_b64: envelope.iv_b64,
+            ciphertext_b64: envelope.ciphertext_b64,
+            auth_tag_b64: envelope.auth_tag_b64,
+            ...(envelope.aad_b64 ? {aad_b64: envelope.aad_b64} : {})
+          },
+          created_at: new Date().toISOString()
+        })
+      )
+    };
+
+    const context = await createContext({
+      fetchImpl,
+      processInfrastructure: {
+        enabled: true,
+        prisma: {} as never,
+        redis: null,
+        dbRepositories: {
+          integrationRepository: {
+            getById: vi.fn(() =>
+              Promise.resolve({
+                ...createBaseState().integrations[0],
+                secret_ref: 'sec_1'
+              })
+            ),
+            getIntegrationTemplateForExecute: vi.fn(() =>
+              Promise.resolve({
+                workload_enabled: true,
+                integration_enabled: true,
+                executable: true,
+                execution_status: 'executable',
+                template: createBaseState().templates[0],
+                template_id: 'tpl_openai_safe',
+                template_version: 1
+              })
+            )
+          },
+          secretRepository
+        } as never,
+        redisKeyPrefix: 'broker-api:test',
+        withTransaction: async operation => operation({} as never),
+        close: () => Promise.resolve()
+      },
+      secretKey,
+      secretKeyId
+    });
+
+    const sessionResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+    const token = (sessionResponse.body as {session_token: string}).session_token;
+
+    const executeResponse = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      token,
+      body: executeRequestBody
+    });
+
+    expect(executeResponse.status).toBe(503);
+    expect(executeResponse.body).toMatchObject({error: 'integration_secret_unavailable'});
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('enforces DPoP on bound sessions', async () => {

@@ -66,6 +66,7 @@ const createDbClientStub = (overrides: DatabaseClientOverrides = {}): DatabaseCl
     enrollmentToken: {
       create: notImplemented(),
       findUnique: notImplemented(),
+      findFirst: notImplemented(),
       updateMany: notImplemented()
     },
     workloadSession: {
@@ -2279,6 +2280,65 @@ describe('EnrollmentTokenRepository', () => {
       })
     ).rejects.toMatchObject({
       code: 'not_found'
+    })
+  })
+
+  it('checks whether a workload has any consumed enrollment token', async () => {
+    const findFirst = vi
+      .fn()
+      .mockResolvedValueOnce({
+        tokenHash: 'a'.repeat(64)
+      })
+      .mockResolvedValueOnce(null)
+    const repository = new EnrollmentTokenRepository(
+      createDbClientStub({
+        enrollmentToken: {
+          findFirst
+        }
+      })
+    )
+
+    await expect(
+      repository.hasConsumedEnrollmentTokenForWorkload({
+        workload_id: 'w_1'
+      })
+    ).resolves.toBe(true)
+
+    await expect(
+      repository.hasConsumedEnrollmentTokenForWorkload({
+        workload_id: 'w_2'
+      })
+    ).resolves.toBe(false)
+  })
+
+  it('invalidates active enrollment tokens for a workload', async () => {
+    const updateMany = vi.fn(() => Promise.resolve({count: 2}))
+    const repository = new EnrollmentTokenRepository(
+      createDbClientStub({
+        enrollmentToken: {
+          updateMany
+        }
+      })
+    )
+
+    await expect(
+      repository.invalidateActiveEnrollmentTokens({
+        workload_id: 'w_1',
+        now: '2026-02-10T00:00:00.000Z'
+      })
+    ).resolves.toBe(2)
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        workloadId: 'w_1',
+        usedAt: null,
+        expiresAt: {
+          gt: new Date('2026-02-10T00:00:00.000Z')
+        }
+      },
+      data: {
+        usedAt: new Date('2026-02-10T00:00:00.000Z')
+      }
     })
   })
 })

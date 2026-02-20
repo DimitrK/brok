@@ -209,6 +209,12 @@ export type OpenApiWorkloadCreateRequest = z.infer<typeof OpenApiWorkloadCreateR
 export const OpenApiWorkloadCreateResponseSchema = z.object({"workload_id": z.string(), "enrollment_token": z.string(), "mtls_ca_pem": z.string()}).strict()
 export type OpenApiWorkloadCreateResponse = z.infer<typeof OpenApiWorkloadCreateResponseSchema>
 
+export const OpenApiWorkloadEnrollmentTokenIssueRequestSchema = z.object({"rotation_mode": z.enum(["if_absent", "always"])}).strict()
+export type OpenApiWorkloadEnrollmentTokenIssueRequest = z.infer<typeof OpenApiWorkloadEnrollmentTokenIssueRequestSchema>
+
+export const OpenApiWorkloadEnrollmentTokenIssueResponseSchema = z.object({"enrollment_token": z.string(), "expires_at": z.string().datetime({offset: true})}).strict()
+export type OpenApiWorkloadEnrollmentTokenIssueResponse = z.infer<typeof OpenApiWorkloadEnrollmentTokenIssueResponseSchema>
+
 export const OpenApiWorkloadEnrollRequestSchema = z.object({"enrollment_token": z.string(), "csr_pem": z.string(), "requested_ttl_seconds": z.number().int()}).strict()
 export type OpenApiWorkloadEnrollRequest = z.infer<typeof OpenApiWorkloadEnrollRequestSchema>
 
@@ -291,6 +297,8 @@ export const schemaRegistry = {
   OpenApiWorkloadSchema: OpenApiWorkloadSchema,
   OpenApiWorkloadCreateRequestSchema: OpenApiWorkloadCreateRequestSchema,
   OpenApiWorkloadCreateResponseSchema: OpenApiWorkloadCreateResponseSchema,
+  OpenApiWorkloadEnrollmentTokenIssueRequestSchema: OpenApiWorkloadEnrollmentTokenIssueRequestSchema,
+  OpenApiWorkloadEnrollmentTokenIssueResponseSchema: OpenApiWorkloadEnrollmentTokenIssueResponseSchema,
   OpenApiWorkloadEnrollRequestSchema: OpenApiWorkloadEnrollRequestSchema,
   OpenApiWorkloadEnrollResponseSchema: OpenApiWorkloadEnrollResponseSchema,
   OpenApiWorkloadListResponseSchema: OpenApiWorkloadListResponseSchema,

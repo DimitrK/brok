@@ -1,7 +1,8 @@
-import React, {useCallback, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 
 import {BrokerAdminApiClient} from '../../api/client';
+import {ApiClientError} from '../../api/errors';
 import {ErrorNotice} from '../../components/ErrorNotice';
 import {Panel} from '../../components/Panel';
 import {ToggleSwitch} from '../../components/ToggleSwitch';
@@ -15,6 +16,8 @@ const toIpAllowlist = (raw: string) => {
 
   return entries.length > 0 ? entries : undefined;
 };
+
+const enrollmentTokenRotationConfirmationReasonCode = 'enrollment_token_rotation_confirmation_required';
 
 type WorkloadsPanelProps = {
   api: BrokerAdminApiClient;
@@ -31,6 +34,8 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
 
   const [enrollWorkloadId, setEnrollWorkloadId] = useState('');
   const [enrollmentToken, setEnrollmentToken] = useState('');
+  const [enrollmentTokenExpiresAt, setEnrollmentTokenExpiresAt] = useState('');
+  const [enrollmentTokenRotationRequiresConfirmation, setEnrollmentTokenRotationRequiresConfirmation] = useState(false);
   const [csrPem, setCsrPem] = useState('');
   const [requestedTtlSeconds, setRequestedTtlSeconds] = useState('3600');
 
@@ -60,8 +65,13 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
       setIpAllowlist('');
       setShowCreateForm(false);
       if (data?.workload_id) {
+        setEnrollmentToken('');
+        setEnrollmentTokenExpiresAt('');
+        setEnrollmentTokenRotationRequiresConfirmation(false);
+        setCsrPem('');
+        issueEnrollmentTokenMutation.reset();
+        enrollMutation.reset();
         setEnrollWorkloadId(data.workload_id);
-        setEnrollmentToken(data.enrollment_token);
       }
       await queryClient.invalidateQueries({queryKey: ['workloads', selectedTenantId]});
     }
@@ -92,6 +102,60 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
         }
       })
   });
+
+  const issueEnrollmentTokenMutation = useMutation({
+    mutationFn: (input: {workloadId: string; rotationMode: 'if_absent' | 'always'}) =>
+      api.issueWorkloadEnrollmentToken({
+        workloadId: input.workloadId,
+        payload: {
+          rotation_mode: input.rotationMode
+        }
+      })
+  });
+  const issueEnrollmentTokenMutate = issueEnrollmentTokenMutation.mutate;
+  const resetEnrollmentDraft = useCallback(() => {
+    setEnrollmentToken('');
+    setEnrollmentTokenExpiresAt('');
+    setEnrollmentTokenRotationRequiresConfirmation(false);
+    setCsrPem('');
+    issueEnrollmentTokenMutation.reset();
+    enrollMutation.reset();
+  }, [enrollMutation, issueEnrollmentTokenMutation]);
+  const selectWorkloadForEnrollment = useCallback(
+    (workloadId: string) => {
+      if (workloadId === enrollWorkloadId) {
+        return;
+      }
+      resetEnrollmentDraft();
+      setEnrollWorkloadId(workloadId);
+    },
+    [enrollWorkloadId, resetEnrollmentDraft]
+  );
+
+  useEffect(() => {
+    if (!enrollWorkloadId) {
+      return;
+    }
+
+    issueEnrollmentTokenMutate(
+      {workloadId: enrollWorkloadId, rotationMode: 'if_absent'},
+      {
+        onSuccess: payload => {
+          setEnrollmentToken(payload?.enrollment_token ?? '');
+          setEnrollmentTokenExpiresAt(payload?.expires_at ?? '');
+          setEnrollmentTokenRotationRequiresConfirmation(false);
+        },
+        onError: error => {
+          if (
+            error instanceof ApiClientError &&
+            error.reason === enrollmentTokenRotationConfirmationReasonCode
+          ) {
+            setEnrollmentTokenRotationRequiresConfirmation(true);
+          }
+        }
+      }
+    );
+  }, [enrollWorkloadId, issueEnrollmentTokenMutate]);
 
   const csrGenerationCommands = useMemo(() => {
     if (!selectedWorkload) {
@@ -131,6 +195,29 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   }, []);
+
+  const issueEnrollmentTokenError =
+    issueEnrollmentTokenMutation.error instanceof ApiClientError &&
+    issueEnrollmentTokenMutation.error.reason === enrollmentTokenRotationConfirmationReasonCode
+      ? null
+      : issueEnrollmentTokenMutation.error;
+
+  const issueEnrollmentToken = (rotationMode: 'if_absent' | 'always') => {
+    if (!enrollWorkloadId) {
+      return;
+    }
+
+    issueEnrollmentTokenMutation.mutate(
+      {workloadId: enrollWorkloadId, rotationMode},
+      {
+        onSuccess: payload => {
+          setEnrollmentToken(payload?.enrollment_token ?? '');
+          setEnrollmentTokenExpiresAt(payload?.expires_at ?? '');
+          setEnrollmentTokenRotationRequiresConfirmation(false);
+        }
+      }
+    );
+  };
 
   return (
     <Panel
@@ -210,7 +297,7 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
               <tr
                 key={workload.workload_id}
                 className={`interactive-row${enrollWorkloadId === workload.workload_id ? ' selected-row' : ''}`}
-                onClick={() => setEnrollWorkloadId(workload.workload_id)}
+                onClick={() => selectWorkloadForEnrollment(workload.workload_id)}
               >
                 <td>{workload.workload_id}</td>
                 <td>{workload.name}</td>
@@ -253,7 +340,7 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
 
         <label className="field">
           <span>Workload ID</span>
-          <select value={enrollWorkloadId} onChange={event => setEnrollWorkloadId(event.currentTarget.value)}>
+          <select value={enrollWorkloadId} onChange={event => selectWorkloadForEnrollment(event.currentTarget.value)}>
             <option value="">Select workload</option>
             {(workloadsQuery.data?.workloads ?? []).map(workload => (
               <option key={workload.workload_id} value={workload.workload_id}>
@@ -275,8 +362,32 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
 
         <label className="field">
           <span>Enrollment token</span>
-          <input value={enrollmentToken} onChange={event => setEnrollmentToken(event.currentTarget.value)} />
+          <input
+            value={enrollmentToken}
+            readOnly
+            placeholder={selectedWorkload ? 'Token will be issued for selected workload' : 'Select workload first'}
+          />
         </label>
+
+        <div className="row-actions">
+          <button
+            type="button"
+            disabled={!enrollWorkloadId || issueEnrollmentTokenMutation.isPending}
+            onClick={() => issueEnrollmentToken('always')}
+          >
+            {enrollmentTokenRotationRequiresConfirmation ? 'Issue new enrollment token' : 'Rotate enrollment token'}
+          </button>
+        </div>
+
+        {enrollmentTokenRotationRequiresConfirmation ? (
+          <p className="helper-text">
+            This workload already completed a certificate enrollment. Click the button above to issue a new token and
+            rotate the enrollment flow.
+          </p>
+        ) : null}
+        {enrollmentTokenExpiresAt ? (
+          <p className="helper-text">Enrollment token expires at: {enrollmentTokenExpiresAt}</p>
+        ) : null}
 
         <label className="field">
           <span>Requested TTL seconds</span>
@@ -297,12 +408,15 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
           />
         </label>
 
-        <button type="submit" disabled={enrollMutation.isPending}>
+        <button
+          type="submit"
+          disabled={enrollMutation.isPending || issueEnrollmentTokenMutation.isPending || !enrollmentToken}
+        >
           Submit CSR
         </button>
       </form>
 
-      <ErrorNotice error={enrollMutation.error} />
+      <ErrorNotice error={issueEnrollmentTokenError ?? enrollMutation.error} />
       {enrollMutation.data ? (
         <div className="enrollment-result">
           <h4>Enrollment Successful</h4>

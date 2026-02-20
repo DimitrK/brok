@@ -430,6 +430,24 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    WorkloadEnrollmentTokenIssueRequest:
+      type: object
+      required: [rotation_mode]
+      properties:
+        rotation_mode:
+          type: string
+          enum: [if_absent, always]
+      additionalProperties: false
+    WorkloadEnrollmentTokenIssueResponse:
+      type: object
+      required: [enrollment_token, expires_at]
+      properties:
+        enrollment_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      additionalProperties: false
     WorkloadUpdateRequest:
       type: object
       properties:
@@ -1394,6 +1412,42 @@ paths:
                 $ref: '#/components/schemas/WorkloadEnrollResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/workloads/{workloadId}/enrollment-token:
+    post:
+      summary: Issue enrollment token for existing workload
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: workloadId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkloadEnrollmentTokenIssueRequest'
+      responses:
+        '200':
+          description: Enrollment token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkloadEnrollmentTokenIssueResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Rotation confirmation required
           content:
             application/json:
               schema:

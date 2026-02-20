@@ -263,6 +263,23 @@ export const ConsumeEnrollmentTokenInputSchema = z
   .strict();
 export type ConsumeEnrollmentTokenInput = z.infer<typeof ConsumeEnrollmentTokenInputSchema>;
 
+export const HasConsumedEnrollmentTokenForWorkloadInputSchema = z
+  .object({
+    workload_id: z.string().min(1)
+  })
+  .strict();
+export type HasConsumedEnrollmentTokenForWorkloadInput = z.infer<
+  typeof HasConsumedEnrollmentTokenForWorkloadInputSchema
+>;
+
+export const InvalidateActiveEnrollmentTokensInputSchema = z
+  .object({
+    workload_id: z.string().min(1),
+    now: z.iso.datetime({offset: true})
+  })
+  .strict();
+export type InvalidateActiveEnrollmentTokensInput = z.infer<typeof InvalidateActiveEnrollmentTokensInputSchema>;
+
 export const SecretEnvelopeSchema = z
   .object({
     key_id: z

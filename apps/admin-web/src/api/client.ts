@@ -38,6 +38,8 @@ import {
   OpenApiWorkloadCreateResponseSchema,
   OpenApiWorkloadEnrollRequestSchema,
   OpenApiWorkloadEnrollResponseSchema,
+  OpenApiWorkloadEnrollmentTokenIssueRequestSchema,
+  OpenApiWorkloadEnrollmentTokenIssueResponseSchema,
   OpenApiWorkloadListResponseSchema,
   OpenApiWorkloadSchema,
   OpenApiWorkloadUpdateRequestSchema,
@@ -424,6 +426,18 @@ export class BrokerAdminApiClient {
       bodySchema: OpenApiWorkloadEnrollRequestSchema,
       body: payload,
       responseSchema: OpenApiWorkloadEnrollResponseSchema,
+      signal
+    });
+  }
+
+  public async issueWorkloadEnrollmentToken(input: {workloadId: string; payload: unknown; signal?: AbortSignal}) {
+    const {workloadId, payload, signal} = input;
+    return this.request({
+      method: 'POST',
+      path: `/v1/workloads/${encodeURIComponent(workloadId)}/enrollment-token`,
+      bodySchema: OpenApiWorkloadEnrollmentTokenIssueRequestSchema,
+      body: payload,
+      responseSchema: OpenApiWorkloadEnrollmentTokenIssueResponseSchema,
       signal
     });
   }

@@ -214,6 +214,32 @@ describe('BrokerAdminApiClient', () => {
     expect(options?.method).toBe('PATCH');
   });
 
+  it('issues enrollment token for an existing workload', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      jsonResponse(200, {
+        enrollment_token: 'tok_new_1',
+        expires_at: '2026-02-20T12:00:00.000Z'
+      })
+    );
+
+    const api = new BrokerAdminApiClient({
+      baseUrl,
+      getToken: () => 'owner-token'
+    });
+
+    const response = await api.issueWorkloadEnrollmentToken({
+      workloadId: 'w_1',
+      payload: {
+        rotation_mode: 'always'
+      }
+    });
+
+    expect(response?.enrollment_token).toBe('tok_new_1');
+    expect(toRequestUrl(fetchSpy.mock.calls[0]?.[0])).toContain('/v1/workloads/w_1/enrollment-token');
+    const [, options] = fetchSpy.mock.calls[0] ?? [];
+    expect(options?.method).toBe('POST');
+  });
+
   it('approves and denies admin access requests', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')

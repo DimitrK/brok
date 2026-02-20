@@ -49,6 +49,8 @@ import {
   OpenApiWorkloadCreateResponseSchema,
   OpenApiWorkloadEnrollRequestSchema,
   OpenApiWorkloadEnrollResponseSchema,
+  OpenApiWorkloadEnrollmentTokenIssueRequestSchema,
+  OpenApiWorkloadEnrollmentTokenIssueResponseSchema,
   OpenApiWorkloadListResponseSchema,
   OpenApiWorkloadSchema,
   OpenApiWorkloadUpdateRequestSchema
@@ -70,6 +72,7 @@ import {extractCorrelationId, parseJsonBody, parseQuery, sendError, sendJson, se
 
 const tenantWorkloadsPathPattern = /^\/v1\/tenants\/([^/]+)\/workloads$/u;
 const workloadEnrollPathPattern = /^\/v1\/workloads\/([^/]+)\/enroll$/u;
+const workloadEnrollmentTokenPathPattern = /^\/v1\/workloads\/([^/]+)\/enrollment-token$/u;
 const workloadPathPattern = /^\/v1\/workloads\/([^/]+)$/u;
 const tenantIntegrationsPathPattern = /^\/v1\/tenants\/([^/]+)\/integrations$/u;
 const integrationPathPattern = /^\/v1\/integrations\/([^/]+)$/u;
@@ -1278,6 +1281,58 @@ export const createAdminApiRequestHandler = ({
               tenantId: updated.tenant_id,
               workloadId: updated.workload_id,
               message: `Workload ${updated.workload_id} updated`
+            })
+          });
+          return;
+        }
+      }
+
+      {
+        const match = pathname.match(workloadEnrollmentTokenPathPattern);
+        if (match && method === 'POST') {
+          requireAnyRole({principal, allowed: [...writeAccessRoles]});
+
+          const workloadId = decodePathParam(match[1]);
+          const workload = await requireWorkloadTenantScope({repository, principal, workloadId});
+
+          const body = await parseJsonBody({
+            request,
+            schema: OpenApiWorkloadEnrollmentTokenIssueRequestSchema,
+            maxBodyBytes: config.maxBodyBytes,
+            required: true
+          });
+
+          const issued = await repository.issueWorkloadEnrollmentToken({
+            workloadId,
+            rotationMode: body.rotation_mode
+          });
+
+          const payload = OpenApiWorkloadEnrollmentTokenIssueResponseSchema.parse({
+            enrollment_token: issued.enrollmentToken,
+            expires_at: issued.expiresAt
+          });
+
+          sendJson({
+            response,
+            status: 200,
+            correlationId,
+            payload
+          });
+
+          appendAuditEventNonBlocking({
+            logger,
+            dependencyBridge,
+            correlationId,
+            event: repository.createAdminAuditEvent({
+              actor: principal,
+              correlationId,
+              action: 'workload.enrollment_token.issue',
+              tenantId: workload.tenant_id,
+              workloadId,
+              message: `Enrollment token issued for workload ${workloadId}`,
+              metadata: {
+                rotation_mode: body.rotation_mode
+              }
             })
           });
           return;

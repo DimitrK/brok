@@ -62,6 +62,7 @@ const createDbClientStub = (): DatabaseClient => ({
   enrollmentToken: {
     create: notImplemented(),
     findUnique: notImplemented(),
+    findFirst: notImplemented(),
     updateMany: notImplemented()
   },
   workloadSession: {

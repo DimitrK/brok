@@ -161,6 +161,56 @@ describe('control plane repository', () => {
     expect(await repository.listPolicies()).toHaveLength(0);
   });
 
+  it('rotates enrollment tokens for existing workloads with explicit confirmation semantics', async () => {
+    const repository = await ControlPlaneRepository.create({
+      manifestKeys: {keys: []},
+      enrollmentTokenTtlSeconds: 600
+    });
+
+    const tenant = await repository.createTenant({name: 'Tenant C'});
+    const created = await repository.createWorkload({
+      tenantId: tenant.tenant_id,
+      name: 'workload-rotate'
+    });
+
+    const issuedBeforeEnrollment = await repository.issueWorkloadEnrollmentToken({
+      workloadId: created.workload.workload_id,
+      rotationMode: 'if_absent'
+    });
+    expect(issuedBeforeEnrollment.enrollmentToken).toBeTypeOf('string');
+    expect(issuedBeforeEnrollment.enrollmentToken).not.toBe(created.enrollmentToken);
+
+    await expect(
+      repository.consumeEnrollmentToken({
+        workloadId: created.workload.workload_id,
+        enrollmentToken: created.enrollmentToken
+      })
+    ).rejects.toMatchObject({code: 'enrollment_token_used'});
+
+    await expect(
+      repository.consumeEnrollmentToken({
+        workloadId: created.workload.workload_id,
+        enrollmentToken: issuedBeforeEnrollment.enrollmentToken
+      })
+    ).resolves.toMatchObject({
+      workload_id: created.workload.workload_id
+    });
+
+    await expect(
+      repository.issueWorkloadEnrollmentToken({
+        workloadId: created.workload.workload_id,
+        rotationMode: 'if_absent'
+      })
+    ).rejects.toMatchObject({code: 'enrollment_token_rotation_confirmation_required'});
+
+    const forcedRotationToken = await repository.issueWorkloadEnrollmentToken({
+      workloadId: created.workload.workload_id,
+      rotationMode: 'always'
+    });
+    expect(forcedRotationToken.enrollmentToken.length).toBeGreaterThan(10);
+    expect(new Date(forcedRotationToken.expiresAt).toISOString()).toBe(forcedRotationToken.expiresAt);
+  });
+
   it('loads approval state from disk and enforces approval transitions', async () => {
     const statePath = await makeTempStatePath();
     const now = Date.now();

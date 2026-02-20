@@ -30,6 +30,7 @@ import {
   OpenApiTemplateSchema,
   OpenApiTenantSummarySchema,
   OpenApiWorkloadSchema,
+  type OpenApiWorkloadEnrollmentTokenIssueRequest,
   type OpenApiApprovalDecisionRequest,
   type OpenApiAdminAccessRequestStatus,
   type OpenApiAdminRole,
@@ -178,6 +179,14 @@ const clone = <T>(value: T): T => structuredClone(value);
 
 const addSeconds = (value: Date, seconds: number) => new Date(value.getTime() + seconds * 1000);
 
+const hasConsumedEnrollmentToken = ({
+  workloadId,
+  records
+}: {
+  workloadId: string;
+  records: Array<z.infer<typeof enrollmentTokenRecordSchema>>;
+}) => records.some(item => item.workload_id === workloadId && Boolean(item.used_at));
+
 const GLOBAL_TEMPLATE_TENANT_ID = 'global';
 const GLOBAL_TEMPLATE_TENANT_NAME = 'Global Templates';
 
@@ -198,7 +207,11 @@ type EnrollmentTokenConsumeInput = {
 type EnrollmentTokenRepositoryWithIssueConsume = {
   issueEnrollmentToken: (input: EnrollmentTokenIssueInput) => Promise<unknown>;
   consumeEnrollmentTokenOnce: (input: EnrollmentTokenConsumeInput) => Promise<unknown>;
+  hasConsumedEnrollmentTokenForWorkload: (input: {workload_id: string}) => Promise<boolean>;
+  invalidateActiveEnrollmentTokens: (input: {workload_id: string; now: string}) => Promise<number>;
 };
+
+type WorkloadEnrollmentTokenRotationMode = OpenApiWorkloadEnrollmentTokenIssueRequest['rotation_mode'];
 
 export type RepositoryAdminIdentity = {
   identity_id: string;
@@ -1246,6 +1259,132 @@ export class ControlPlaneRepository {
     });
   }
 
+  public async issueWorkloadEnrollmentToken({
+    workloadId,
+    rotationMode,
+    now = new Date()
+  }: {
+    workloadId: string;
+    rotationMode: WorkloadEnrollmentTokenRotationMode;
+    now?: Date;
+  }): Promise<{enrollmentToken: string; expiresAt: string}> {
+    if (this.isDbEnabled()) {
+      try {
+        const prisma = this.processInfrastructure?.prisma;
+        if (!prisma) {
+          throw serviceUnavailable('db_unavailable', 'Database client is unavailable');
+        }
+
+        const workload = await this.getWorkload({workloadId});
+        const nowIso = now.toISOString();
+        const expiresAt = addSeconds(now, this.enrollmentTokenTtlSeconds);
+        const enrollmentToken = createOpaqueToken();
+        const enrollmentTokenHash = hashToken(enrollmentToken);
+
+        await runInTransactionForAdmin(prisma, async transactionClient => {
+          const repositories = createDbRepositoriesForAdmin(transactionClient);
+
+          if (rotationMode === 'if_absent') {
+            const hasConsumedToken =
+              await repositories.enrollmentTokenRepository.hasConsumedEnrollmentTokenForWorkload({
+                workload_id: workloadId
+              });
+            if (hasConsumedToken) {
+              throw conflict(
+                'enrollment_token_rotation_confirmation_required',
+                'Workload has previous certificate enrollment; explicit token rotation is required'
+              );
+            }
+          }
+
+          await repositories.enrollmentTokenRepository.invalidateActiveEnrollmentTokens({
+            workload_id: workloadId,
+            now: nowIso
+          });
+
+          await repositories.enrollmentTokenRepository.issueEnrollmentToken({
+            token_hash: enrollmentTokenHash,
+            workload_id: workloadId,
+            tenant_id: workload.tenant_id,
+            expires_at: expiresAt.toISOString(),
+            created_at: nowIso
+          });
+        });
+
+        if (this.authEnrollmentTokenStorageScope) {
+          try {
+            await this.authEnrollmentTokenStorageScope.issueEnrollmentTokenRecord({
+              record: {
+                tokenHash: enrollmentTokenHash,
+                workloadId,
+                expiresAt: expiresAt.toISOString()
+              }
+            });
+          } catch (error) {
+            logRedisEnrollmentCacheFailure({
+              logger: this.logger,
+              operation: 'issue',
+              error
+            });
+          }
+        }
+
+        return {
+          enrollmentToken,
+          expiresAt: expiresAt.toISOString()
+        };
+      } catch (error) {
+        return mapDbRepositoryError(error);
+      }
+    }
+
+    return this.withWriteLock(() => {
+      this.findWorkload(workloadId);
+
+      if (
+        rotationMode === 'if_absent' &&
+        hasConsumedEnrollmentToken({
+          workloadId,
+          records: this.state.enrollment_tokens
+        })
+      ) {
+        throw conflict(
+          'enrollment_token_rotation_confirmation_required',
+          'Workload has previous certificate enrollment; explicit token rotation is required'
+        );
+      }
+
+      const nowIso = now.toISOString();
+      for (const tokenRecord of this.state.enrollment_tokens) {
+        if (tokenRecord.workload_id !== workloadId || tokenRecord.used_at) {
+          continue;
+        }
+
+        if (new Date(tokenRecord.expires_at).getTime() <= now.getTime()) {
+          continue;
+        }
+
+        tokenRecord.used_at = nowIso;
+      }
+
+      const expiresAt = addSeconds(now, this.enrollmentTokenTtlSeconds);
+      const enrollmentToken = createOpaqueToken();
+      const enrollmentTokenHash = hashToken(enrollmentToken);
+      this.state.enrollment_tokens.push(
+        enrollmentTokenRecordSchema.parse({
+          token_hash: enrollmentTokenHash,
+          workload_id: workloadId,
+          expires_at: expiresAt.toISOString()
+        })
+      );
+
+      return {
+        enrollmentToken,
+        expiresAt: expiresAt.toISOString()
+      };
+    });
+  }
+
   public async updateWorkload({workloadId, enabled, ipAllowlist}: UpdateWorkloadInput) {
     if (this.isDbEnabled()) {
       try {
@@ -1337,6 +1476,11 @@ export class ControlPlaneRepository {
 
             throw error;
           }
+
+          await repositories.enrollmentTokenRepository.invalidateActiveEnrollmentTokens({
+            workload_id: workloadId,
+            now: nowIso
+          });
         });
 
         if (this.authEnrollmentTokenStorageScope) {
@@ -1378,7 +1522,19 @@ export class ControlPlaneRepository {
         throw badRequest('enrollment_token_expired', 'Enrollment token has expired');
       }
 
-      tokenRecord.used_at = now.toISOString();
+      const nowIso = now.toISOString();
+      tokenRecord.used_at = nowIso;
+      for (const record of this.state.enrollment_tokens) {
+        if (record.workload_id !== workloadId || record.used_at) {
+          continue;
+        }
+
+        if (new Date(record.expires_at).getTime() <= now.getTime()) {
+          continue;
+        }
+
+        record.used_at = nowIso;
+      }
       return clone(workload);
     });
   }

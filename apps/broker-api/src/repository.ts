@@ -2465,16 +2465,14 @@ export class DataPlaneRepository {
         }
       };
 
-      // Build AAD from tenant and integration context for additional verification
-      const expectedAad = buildEnvelopeAad({
-        tenant_id: tenantId,
-        integration_id: integrationId
-      });
-
       const decryptedResult = await decryptSecretMaterial({
         encrypted_secret_material: encryptedSecretMaterial,
         key_management_service: this.keyManagementService,
-        expected_aad: expectedAad
+        expected_aad: buildEnvelopeAad({
+        tenant_id: tenantId,
+        integration_id: integrationId,
+        secret_type: secretEnvelope.secret_type
+        })
       });
 
       if (!decryptedResult.ok) {

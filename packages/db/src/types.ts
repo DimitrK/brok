@@ -294,6 +294,7 @@ export type DatabaseClient = {
   enrollmentToken: {
     create: DbMethod<EnrollmentTokenRow>
     findUnique: DbMethod<EnrollmentTokenRow | null>
+    findFirst: DbMethod<EnrollmentTokenRow | null>
     updateMany: DbMethod<{count: number}>
   }
   workloadSession: {

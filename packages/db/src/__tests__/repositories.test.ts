@@ -59,6 +59,7 @@ const createDbClientStub = (overrides: DatabaseClientOverrides = {}): DatabaseCl
     enrollmentToken: {
       create: notImplemented(),
       findUnique: notImplemented(),
+      findFirst: notImplemented(),
       updateMany: notImplemented()
     },
     workloadSession: {

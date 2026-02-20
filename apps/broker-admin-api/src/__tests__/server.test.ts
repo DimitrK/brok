@@ -1042,6 +1042,17 @@ describe('broker-admin-api server routes', () => {
     expect(workloadBody.workload_id).toMatch(/^w_/u)
     expect(workloadBody.enrollment_token.length).toBeGreaterThan(10)
 
+    const issueEnrollmentTokenBeforeEnrollment = await context.request({
+      method: 'POST',
+      path: `/v1/workloads/${workloadBody.workload_id}/enrollment-token`,
+      body: {
+        rotation_mode: 'if_absent'
+      }
+    })
+    expect(issueEnrollmentTokenBeforeEnrollment.status).toBe(200)
+    const issuedTokenBeforeEnrollment = issueEnrollmentTokenBeforeEnrollment.body as {enrollment_token: string}
+    expect(issuedTokenBeforeEnrollment.enrollment_token.length).toBeGreaterThan(10)
+
     const listWorkloads = await context.request({
       method: 'GET',
       path: `/v1/tenants/${tenantId}/workloads`
@@ -1076,7 +1087,7 @@ describe('broker-admin-api server routes', () => {
       method: 'POST',
       path: `/v1/workloads/${workloadBody.workload_id}/enroll`,
       body: {
-        enrollment_token: workloadBody.enrollment_token,
+        enrollment_token: issuedTokenBeforeEnrollment.enrollment_token,
         csr_pem: '-----BEGIN CERTIFICATE REQUEST-----\nZm9v\n-----END CERTIFICATE REQUEST-----',
         requested_ttl_seconds: 300
       }
@@ -1085,6 +1096,30 @@ describe('broker-admin-api server routes', () => {
     const enrollmentPayload = enrollWorkload.body as {client_cert_pem: string}
     expect(typeof enrollmentPayload.client_cert_pem).toBe('string')
     expect(enrollmentPayload.client_cert_pem).toContain('BEGIN CERTIFICATE')
+
+    const issueEnrollmentTokenRequiresConfirmation = await context.request({
+      method: 'POST',
+      path: `/v1/workloads/${workloadBody.workload_id}/enrollment-token`,
+      body: {
+        rotation_mode: 'if_absent'
+      }
+    })
+    expect(issueEnrollmentTokenRequiresConfirmation.status).toBe(409)
+    expect(issueEnrollmentTokenRequiresConfirmation.body).toMatchObject({
+      error: 'enrollment_token_rotation_confirmation_required'
+    })
+
+    const issueEnrollmentTokenForced = await context.request({
+      method: 'POST',
+      path: `/v1/workloads/${workloadBody.workload_id}/enrollment-token`,
+      body: {
+        rotation_mode: 'always'
+      }
+    })
+    expect(issueEnrollmentTokenForced.status).toBe(200)
+    const issuedTokenPayload = issueEnrollmentTokenForced.body as {enrollment_token: string; expires_at: string}
+    expect(issuedTokenPayload.enrollment_token.length).toBeGreaterThan(10)
+    expect(new Date(issuedTokenPayload.expires_at).toISOString()).toBe(issuedTokenPayload.expires_at)
 
     const createIntegration = await context.request({
       method: 'POST',
@@ -1154,6 +1189,80 @@ describe('broker-admin-api server routes', () => {
     const manifest = await context.request({method: 'GET', path: '/v1/keys/manifest'})
     expect(manifest.status).toBe(200)
     expect(manifest.headers.etag).toBeTruthy()
+  })
+
+  it('invalidates previous active enrollment tokens when rotating for the same workload', async () => {
+    const context = await createContext()
+
+    const createTenant = await context.request({
+      method: 'POST',
+      path: '/v1/tenants',
+      body: {name: 'Tenant Rotation'}
+    })
+    const tenantId = (createTenant.body as {tenant_id: string}).tenant_id
+
+    const createWorkload = await context.request({
+      method: 'POST',
+      path: `/v1/tenants/${tenantId}/workloads`,
+      body: {
+        name: 'workload-rotation',
+        enrollment_mode: 'broker_ca'
+      }
+    })
+    const workloadBody = createWorkload.body as {workload_id: string}
+
+    vi.spyOn(context.dependencyBridge, 'validateEnrollmentCsrWithAuthPackage').mockResolvedValue(undefined)
+    vi.spyOn(context.dependencyBridge, 'issueWorkloadCertificateWithAuthPackage').mockResolvedValue({
+      clientCertPem: '-----BEGIN CERTIFICATE-----\nCLIENT\n-----END CERTIFICATE-----',
+      caChainPem: TEST_CA_PEM,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    })
+
+    const firstTokenResponse = await context.request({
+      method: 'POST',
+      path: `/v1/workloads/${workloadBody.workload_id}/enrollment-token`,
+      body: {
+        rotation_mode: 'always'
+      }
+    })
+    expect(firstTokenResponse.status).toBe(200)
+    const firstToken = (firstTokenResponse.body as {enrollment_token: string}).enrollment_token
+
+    const secondTokenResponse = await context.request({
+      method: 'POST',
+      path: `/v1/workloads/${workloadBody.workload_id}/enrollment-token`,
+      body: {
+        rotation_mode: 'always'
+      }
+    })
+    expect(secondTokenResponse.status).toBe(200)
+    const secondToken = (secondTokenResponse.body as {enrollment_token: string}).enrollment_token
+    expect(secondToken).not.toBe(firstToken)
+
+    const enrollWithInvalidatedToken = await context.request({
+      method: 'POST',
+      path: `/v1/workloads/${workloadBody.workload_id}/enroll`,
+      body: {
+        enrollment_token: firstToken,
+        csr_pem: '-----BEGIN CERTIFICATE REQUEST-----\nZm9v\n-----END CERTIFICATE REQUEST-----',
+        requested_ttl_seconds: 300
+      }
+    })
+    expect(enrollWithInvalidatedToken.status).toBe(409)
+    expect(enrollWithInvalidatedToken.body).toMatchObject({
+      error: 'enrollment_token_used'
+    })
+
+    const enrollWithLatestToken = await context.request({
+      method: 'POST',
+      path: `/v1/workloads/${workloadBody.workload_id}/enroll`,
+      body: {
+        enrollment_token: secondToken,
+        csr_pem: '-----BEGIN CERTIFICATE REQUEST-----\nZm9v\n-----END CERTIFICATE REQUEST-----',
+        requested_ttl_seconds: 300
+      }
+    })
+    expect(enrollWithLatestToken.status).toBe(200)
   })
 
   it('enforces role and tenant filter restrictions for non-owner principals', async () => {

@@ -1,9 +1,13 @@
 import {
   ConsumeEnrollmentTokenInputSchema,
   EnrollmentTokenRecordSchema,
+  HasConsumedEnrollmentTokenForWorkloadInputSchema,
+  InvalidateActiveEnrollmentTokensInputSchema,
   IssueEnrollmentTokenInputSchema,
   type ConsumeEnrollmentTokenInput,
   type EnrollmentTokenRecord,
+  type HasConsumedEnrollmentTokenForWorkloadInput,
+  type InvalidateActiveEnrollmentTokensInput,
   type IssueEnrollmentTokenInput
 } from '../contracts.js'
 import {DbRepositoryError, mapDatabaseError} from '../errors.js'
@@ -137,6 +141,72 @@ export class EnrollmentTokenRepository {
       }
 
       return toEnrollmentTokenRecord(record)
+    } catch (error) {
+      return mapDatabaseError(error)
+    }
+  }
+
+  public async hasConsumedEnrollmentTokenForWorkload(
+    rawInput: HasConsumedEnrollmentTokenForWorkloadInput,
+    context?: RepositoryOperationContext
+  ): Promise<boolean> {
+    const input = HasConsumedEnrollmentTokenForWorkloadInputSchema.parse(rawInput)
+
+    try {
+      const dbClient = resolveRepositoryDbClient(this.db, context, [
+        {
+          model: 'enrollmentToken',
+          method: 'findFirst'
+        }
+      ])
+
+      const record = await dbClient.enrollmentToken.findFirst({
+        where: {
+          workloadId: input.workload_id,
+          usedAt: {
+            not: null
+          }
+        },
+        select: {
+          tokenHash: true
+        }
+      })
+
+      return Boolean(record)
+    } catch (error) {
+      return mapDatabaseError(error)
+    }
+  }
+
+  public async invalidateActiveEnrollmentTokens(
+    rawInput: InvalidateActiveEnrollmentTokensInput,
+    context?: RepositoryOperationContext
+  ): Promise<number> {
+    const input = InvalidateActiveEnrollmentTokensInputSchema.parse(rawInput)
+
+    try {
+      const dbClient = resolveRepositoryDbClient(this.db, context, [
+        {
+          model: 'enrollmentToken',
+          method: 'updateMany'
+        }
+      ])
+
+      const now = new Date(input.now)
+      const updated = await dbClient.enrollmentToken.updateMany({
+        where: {
+          workloadId: input.workload_id,
+          usedAt: null,
+          expiresAt: {
+            gt: now
+          }
+        },
+        data: {
+          usedAt: now
+        }
+      })
+
+      return updated.count
     } catch (error) {
       return mapDatabaseError(error)
     }
