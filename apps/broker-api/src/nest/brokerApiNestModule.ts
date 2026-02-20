@@ -5,6 +5,7 @@ import type {Request, Response} from 'express'
 
 import type {AuditService} from '@broker-interceptor/audit'
 import type {FetchLike} from '@broker-interceptor/forwarder'
+import type {StructuredLogger} from '@broker-interceptor/logging'
 import type {DnsResolver} from '@broker-interceptor/ssrf-guard'
 
 import type {ServiceConfig} from '../config'
@@ -15,6 +16,7 @@ import {
   BROKER_API_CONFIG,
   BROKER_API_DNS_RESOLVER,
   BROKER_API_FETCH_IMPL,
+  BROKER_API_LOGGER,
   BROKER_API_NOW,
   BROKER_API_REPOSITORY,
   BROKER_API_REQUEST_HANDLER
@@ -26,6 +28,7 @@ export type BrokerApiNestModuleOptions = {
   config: ServiceConfig
   repository: DataPlaneRepository
   auditService: AuditService
+  logger: StructuredLogger
   fetchImpl?: FetchLike
   dnsResolver?: DnsResolver
   now?: () => Date
@@ -68,6 +71,10 @@ export class BrokerApiNestModule {
           useValue: options.auditService
         },
         {
+          provide: BROKER_API_LOGGER,
+          useValue: options.logger
+        },
+        {
           provide: BROKER_API_FETCH_IMPL,
           useValue: options.fetchImpl
         },
@@ -85,6 +92,7 @@ export class BrokerApiNestModule {
             BROKER_API_CONFIG,
             BROKER_API_REPOSITORY,
             BROKER_API_AUDIT_SERVICE,
+            BROKER_API_LOGGER,
             BROKER_API_FETCH_IMPL,
             BROKER_API_DNS_RESOLVER,
             BROKER_API_NOW
@@ -93,6 +101,7 @@ export class BrokerApiNestModule {
             config: ServiceConfig,
             repository: DataPlaneRepository,
             auditService: AuditService,
+            logger: StructuredLogger,
             fetchImpl: FetchLike | undefined,
             dnsResolver: DnsResolver | undefined,
             now: (() => Date) | undefined
@@ -101,6 +110,7 @@ export class BrokerApiNestModule {
               config,
               repository,
               auditService,
+              logger,
               ...(fetchImpl ? {fetchImpl} : {}),
               ...(dnsResolver ? {dnsResolver} : {}),
               ...(now ? {now} : {})

@@ -8,6 +8,10 @@ const makeConfig = (): ServiceConfig => ({
   host: '127.0.0.1',
   port: 0,
   maxBodyBytes: 1024 * 1024,
+  logging: {
+    level: 'silent',
+    redactExtraKeys: []
+  },
   secretKey: Buffer.alloc(32, 9),
   secretKeyId: 'kid-app-integration-test',
   auth: {

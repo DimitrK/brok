@@ -31,6 +31,10 @@ describe('broker-api config', () => {
       max_request_body_bytes: 2 * 1024 * 1024,
       max_response_bytes: 2 * 1024 * 1024
     })
+    expect(config.logging).toEqual({
+      level: 'silent',
+      redactExtraKeys: []
+    })
     expect(config.tls).toBeUndefined()
   })
 
@@ -105,6 +109,10 @@ describe('broker-api config', () => {
       total_timeout_ms: 1200,
       max_request_body_bytes: 4096,
       max_response_bytes: 8192
+    })
+    expect(config.logging).toEqual({
+      level: 'info',
+      redactExtraKeys: []
     })
   })
 
@@ -194,5 +202,19 @@ describe('broker-api config', () => {
     })
 
     expect(config.corsAllowedOrigins).toEqual([])
+  })
+
+  it('parses logging configuration overrides', () => {
+    const config = loadConfig({
+      NODE_ENV: 'development',
+      BROKER_API_INFRA_ENABLED: 'false',
+      BROKER_API_LOG_LEVEL: 'debug',
+      BROKER_API_LOG_REDACT_EXTRA_KEYS: 'foo,bar , baz'
+    })
+
+    expect(config.logging).toEqual({
+      level: 'debug',
+      redactExtraKeys: ['foo', 'bar', 'baz']
+    })
   })
 })

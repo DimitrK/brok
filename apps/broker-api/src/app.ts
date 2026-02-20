@@ -14,6 +14,7 @@ import {
 } from '@broker-interceptor/audit'
 import {createAuditRedisCacheAdapter, type RedisScanClient} from '@broker-interceptor/db'
 import type {FetchLike} from '@broker-interceptor/forwarder'
+import {createStructuredLogger} from '@broker-interceptor/logging'
 import type {DnsResolver} from '@broker-interceptor/ssrf-guard'
 
 import type {ServiceConfig} from './config'
@@ -98,6 +99,12 @@ export const createBrokerApiApp = async ({
   try {
     infrastructure = await createProcessInfrastructure({config})
     const processInfrastructure = infrastructure
+    const logger = createStructuredLogger({
+      service: 'broker-api',
+      env: config.nodeEnv,
+      level: config.logging.level,
+      extraSensitiveKeys: config.logging.redactExtraKeys
+    })
     const repository = await DataPlaneRepository.create({
       ...(config.statePath ? {statePath: config.statePath} : {}),
       ...(config.initialState ? {initialState: config.initialState} : {}),
@@ -105,7 +112,8 @@ export const createBrokerApiApp = async ({
       manifestTtlSeconds: config.manifestTtlSeconds,
       processInfrastructure,
       ...(config.secretKey ? {secretKey: config.secretKey} : {}),
-      ...(config.secretKeyId ? {secretKeyId: config.secretKeyId} : {})
+      ...(config.secretKeyId ? {secretKeyId: config.secretKeyId} : {}),
+      logger
     })
 
     const sharedAuditRepository = processInfrastructure.dbRepositories?.auditEventRepository
@@ -196,6 +204,7 @@ export const createBrokerApiApp = async ({
         config,
         repository,
         auditService,
+        logger,
         ...(fetchImpl ? {fetchImpl} : {}),
         ...(dnsResolver ? {dnsResolver} : {}),
         ...(now ? {now} : {})

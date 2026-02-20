@@ -5,6 +5,7 @@ import express from 'express';
 import {NestFactory} from '@nestjs/core';
 import {ExpressAdapter} from '@nestjs/platform-express';
 import {createVaultExternalCaProvider, type ExternalCaEnrollmentProvider} from '@broker-interceptor/auth';
+import {createStructuredLogger} from '@broker-interceptor/logging';
 
 import {AdminAuthenticator} from './auth';
 import {CertificateIssuer} from './certificateIssuer';
@@ -33,11 +34,18 @@ export const createAdminApiApp = async ({config}: {config: ServiceConfig}) => {
   const infrastructure = await createProcessInfrastructure({config});
 
   try {
+    const logger = createStructuredLogger({
+      service: 'broker-admin-api',
+      env: config.nodeEnv,
+      level: config.logging.level,
+      extraSensitiveKeys: config.logging.redactExtraKeys
+    });
     const repository = await ControlPlaneRepository.create({
       statePath: config.statePath,
       manifestKeys: config.manifestKeys,
       enrollmentTokenTtlSeconds: config.enrollmentTokenTtlSeconds,
-      processInfrastructure: infrastructure
+      processInfrastructure: infrastructure,
+      logger
     });
 
     const authenticator = new AdminAuthenticator(config.auth);
@@ -69,7 +77,8 @@ export const createAdminApiApp = async ({config}: {config: ServiceConfig}) => {
       AdminApiNestModule.register({
         config,
         repository,
-        dependencyBridge
+        dependencyBridge,
+        logger
       }),
       new ExpressAdapter(expressApp),
       {

@@ -53,6 +53,8 @@ describe('index entrypoint', () => {
   it('logs startup failures and exits with code 1', async () => {
     const startupError = new Error('startup failed')
     const createAdminApiApp = vi.fn().mockRejectedValue(startupError)
+    const fatal = vi.fn()
+    const createStructuredLogger = vi.fn(() => ({fatal}))
 
     vi.doMock('../app', () => ({
       createAdminApiApp
@@ -60,15 +62,30 @@ describe('index entrypoint', () => {
     vi.doMock('../config', () => ({
       loadConfig: vi.fn().mockReturnValue({})
     }))
+    vi.doMock('@broker-interceptor/logging', () => ({
+      createStructuredLogger
+    }))
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 
     await import('../index')
     await flushMicrotasks()
 
     expect(createAdminApiApp).toHaveBeenCalledTimes(1)
-    expect(consoleErrorSpy).toHaveBeenCalledWith(startupError)
+    expect(createStructuredLogger).toHaveBeenCalledWith({
+      service: 'broker-admin-api',
+      env: 'test',
+      level: 'error'
+    })
+    expect(fatal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'process.startup.failed',
+        reason_code: 'startup_failed',
+        metadata: {
+          error: startupError
+        }
+      })
+    )
     expect(exitSpy).toHaveBeenCalledWith(1)
   })
 })

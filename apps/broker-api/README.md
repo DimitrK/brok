@@ -82,6 +82,17 @@ All endpoint DTOs are defined by `packages/schemas/openapi.yaml`.
 - `BROKER_API_EXPECTED_SAN_URI_PREFIX`: optional SAN URI prefix check
 - `BROKER_API_CORS_ALLOWED_ORIGINS`: comma-separated allowed origins (defaults to `http://localhost:4173` outside production; defaults to empty in production)
 
+### Logging
+
+- `BROKER_API_LOG_LEVEL`: `debug|info|warn|error|fatal|silent` (default `info`, default `silent` in `test`)
+- `BROKER_API_LOG_REDACT_EXTRA_KEYS`: optional comma-separated additional sensitive key names to redact in log metadata
+
+Logging behavior:
+- structured JSON logs on stdout/stderr
+- request lifecycle logs include `correlation_id` and generated `request_id`
+- top-level envelope is stable (`ts`, `level`, `service`, `env`, `event`, `component`, correlation/request ids)
+- logger failures are non-blocking and never fail request handling
+
 ### TLS / mTLS listener
 
 - `BROKER_API_TLS_ENABLED`: enable HTTPS listener for broker-api

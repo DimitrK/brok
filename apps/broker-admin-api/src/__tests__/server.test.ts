@@ -71,6 +71,10 @@ const makeConfig = (): ServiceConfig => ({
   host: '127.0.0.1',
   port: 0,
   maxBodyBytes: 1024 * 1024,
+  logging: {
+    level: 'silent',
+    redactExtraKeys: []
+  },
   secretKey: Buffer.alloc(32, 7),
   secretKeyId: 'kid-test',
   auth: {

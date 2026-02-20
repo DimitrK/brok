@@ -2,6 +2,8 @@ import 'reflect-metadata'
 
 import {fileURLToPath} from 'node:url'
 
+import {createStructuredLogger} from '@broker-interceptor/logging'
+
 import {createBrokerApiApp} from './app'
 import {loadConfig} from './config'
 
@@ -48,7 +50,21 @@ const isMainModule = (() => {
 
 if (isMainModule) {
   void main().catch(error => {
-    console.error(error)
+    const env = process.env.NODE_ENV === 'production' ? 'production' : process.env.NODE_ENV === 'test' ? 'test' : 'development'
+    const startupLogger = createStructuredLogger({
+      service: appName,
+      env,
+      level: 'error'
+    })
+    startupLogger.fatal({
+      event: 'process.startup.failed',
+      component: 'process.entrypoint',
+      message: 'Broker API startup failed',
+      reason_code: 'startup_failed',
+      metadata: {
+        error
+      }
+    })
     process.exit(1)
   })
 }

@@ -17,6 +17,9 @@ export type IntegrationWrite = z.infer<typeof IntegrationWriteSchema>
 export const IntegrationSchema = z.object({"integration_id": z.string(), "tenant_id": z.string(), "provider": z.string(), "name": z.string(), "template_id": z.string(), "enabled": z.boolean(), "secret_ref": z.string().nullable().optional(), "secret_version": z.number().int().gte(1).nullable().optional(), "last_rotated_at": z.string().datetime({offset: true}).nullable().optional()}).strict()
 export type Integration = z.infer<typeof IntegrationSchema>
 
+export const LogEventSchema = z.object({"ts": z.string().datetime({offset: true}), "level": z.enum(["debug", "info", "warn", "error", "fatal"]), "service": z.string().min(1), "env": z.string().min(1), "event": z.string().min(1), "component": z.string().min(1), "message": z.string().min(1).optional(), "correlation_id": z.string().min(1).max(128), "request_id": z.string().min(1).max(128), "tenant_id": z.string().min(1).optional(), "workload_id": z.string().min(1).optional(), "integration_id": z.string().min(1).optional(), "reason_code": z.string().min(1).optional(), "duration_ms": z.number().int().gte(0).optional(), "status_code": z.number().int().gte(100).lte(599).optional(), "route": z.string().min(1).optional(), "method": z.string().min(1).optional(), "metadata": z.object({}).loose().optional()}).strict()
+export type LogEvent = z.infer<typeof LogEventSchema>
+
 export const ManifestKeysSchema = z.object({"keys": z.array(z.object({"kid": z.string(), "kty": z.enum(["OKP", "EC"]), "crv": z.enum(["Ed25519", "P-256"]).optional(), "x": z.string().optional(), "y": z.string().optional(), "alg": z.enum(["EdDSA", "ES256"]), "use": z.enum(["sig"])}).strict())}).strict()
 export type ManifestKeys = z.infer<typeof ManifestKeysSchema>
 
@@ -224,6 +227,7 @@ export const schemaRegistry = {
   CanonicalRequestDescriptorSchema: CanonicalRequestDescriptorSchema,
   IntegrationWriteSchema: IntegrationWriteSchema,
   IntegrationSchema: IntegrationSchema,
+  LogEventSchema: LogEventSchema,
   ManifestKeysSchema: ManifestKeysSchema,
   ManifestSchema: ManifestSchema,
   PolicyConstraintsSchema: PolicyConstraintsSchema,

@@ -1,5 +1,6 @@
 import {z} from 'zod'
 import {randomBytes} from 'node:crypto'
+import {LogLevelSchema, type LogLevel} from '@broker-interceptor/logging'
 
 const numberFromEnv = z.preprocess(value => {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -84,6 +85,17 @@ const parseCorsAllowedOrigins = ({
   return origins
 }
 
+const parseCommaSeparatedKeys = (raw: string | undefined) => {
+  if (!raw) {
+    return []
+  }
+
+  return raw
+    .split(',')
+    .map(value => value.trim())
+    .filter(value => value.length > 0)
+}
+
 const parseSecretKey = ({encodedKey, requireConfiguredKey}: {encodedKey?: string; requireConfiguredKey: boolean}) => {
   if (encodedKey) {
     const decoded = Buffer.from(encodedKey, 'base64');
@@ -141,7 +153,9 @@ const envSchema = z
     BROKER_API_TLS_REQUIRE_CLIENT_CERT: booleanFromEnv.optional(),
     BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: booleanFromEnv.optional(),
     BROKER_API_SECRET_KEY_B64: optionalString,
-    BROKER_API_SECRET_KEY_ID: z.string().trim().min(1).default('v1')
+    BROKER_API_SECRET_KEY_ID: z.string().trim().min(1).default('v1'),
+    BROKER_API_LOG_LEVEL: LogLevelSchema.optional(),
+    BROKER_API_LOG_REDACT_EXTRA_KEYS: optionalString
   })
   .strict();
 
@@ -182,6 +196,10 @@ export type ServiceConfig = {
   }
   secretKey: Buffer
   secretKeyId: string
+  logging: {
+    level: LogLevel
+    redactExtraKeys: string[]
+  }
 }
 
 const toEnvInput = (env: NodeJS.ProcessEnv) => ({
@@ -214,7 +232,9 @@ const toEnvInput = (env: NodeJS.ProcessEnv) => ({
   BROKER_API_TLS_REQUIRE_CLIENT_CERT: env.BROKER_API_TLS_REQUIRE_CLIENT_CERT,
   BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT: env.BROKER_API_TLS_REJECT_UNAUTHORIZED_CLIENT_CERT,
   BROKER_API_SECRET_KEY_B64: env.BROKER_API_SECRET_KEY_B64,
-  BROKER_API_SECRET_KEY_ID: env.BROKER_API_SECRET_KEY_ID
+  BROKER_API_SECRET_KEY_ID: env.BROKER_API_SECRET_KEY_ID,
+  BROKER_API_LOG_LEVEL: env.BROKER_API_LOG_LEVEL,
+  BROKER_API_LOG_REDACT_EXTRA_KEYS: env.BROKER_API_LOG_REDACT_EXTRA_KEYS
 })
 
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig => {
@@ -260,6 +280,9 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     envVarName: 'BROKER_API_CORS_ALLOWED_ORIGINS'
   })
 
+  const loggingLevel = parsed.BROKER_API_LOG_LEVEL ?? (parsed.NODE_ENV === 'test' ? 'silent' : 'info')
+  const loggingRedactExtraKeys = parseCommaSeparatedKeys(parsed.BROKER_API_LOG_REDACT_EXTRA_KEYS)
+
   return {
     nodeEnv: parsed.NODE_ENV,
     host: parsed.BROKER_API_HOST,
@@ -291,6 +314,10 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig 
     ...(initialState ? {initialState} : {}),
     secretKey,
     secretKeyId: parsed.BROKER_API_SECRET_KEY_ID,
+    logging: {
+      level: loggingLevel,
+      redactExtraKeys: loggingRedactExtraKeys
+    },
     ...(parsed.BROKER_API_TLS_ENABLED
       ? {
           tls: {

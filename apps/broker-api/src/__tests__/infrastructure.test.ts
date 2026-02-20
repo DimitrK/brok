@@ -9,6 +9,10 @@ const makeConfig = (): ServiceConfig => ({
   port: 0,
   publicBaseUrl: 'https://broker.example',
   maxBodyBytes: 1024 * 1024,
+  logging: {
+    level: 'silent',
+    redactExtraKeys: []
+  },
   sessionDefaultTtlSeconds: 900,
   approvalTtlSeconds: 300,
   manifestTtlSeconds: 600,

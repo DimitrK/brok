@@ -85,6 +85,8 @@ describe('broker-api index entrypoint', () => {
   it('logs and exits when startup fails in entry mode', async () => {
     const startupError = new Error('broker startup failed')
     const createBrokerApiApp = vi.fn().mockRejectedValue(startupError)
+    const fatal = vi.fn()
+    const createStructuredLogger = vi.fn(() => ({fatal}))
 
     vi.doMock('../app', () => ({
       createBrokerApiApp
@@ -95,17 +97,32 @@ describe('broker-api index entrypoint', () => {
     vi.doMock('node:url', () => ({
       fileURLToPath: vi.fn(() => '/virtual/failing-entry.js')
     }))
+    vi.doMock('@broker-interceptor/logging', () => ({
+      createStructuredLogger
+    }))
 
     process.argv[1] = '/virtual/failing-entry.js'
 
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 
     await import('../index')
     await flushMicrotasks()
 
     expect(createBrokerApiApp).toHaveBeenCalledTimes(1)
-    expect(consoleErrorSpy).toHaveBeenCalledWith(startupError)
+    expect(createStructuredLogger).toHaveBeenCalledWith({
+      service: 'broker-api',
+      env: 'test',
+      level: 'error'
+    })
+    expect(fatal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'process.startup.failed',
+        reason_code: 'startup_failed',
+        metadata: {
+          error: startupError
+        }
+      })
+    )
     expect(exitSpy).toHaveBeenCalledWith(1)
   })
 })

@@ -18,6 +18,12 @@ import {
 import {canonicalizeExecuteRequest} from '@broker-interceptor/canonicalizer';
 import {signManifest, UnsignedManifestSchema} from '@broker-interceptor/crypto';
 import {forwardExecuteRequest, type FetchLike} from '@broker-interceptor/forwarder';
+import {
+  createNoopLogger,
+  runWithLogContext,
+  setLogContextFields,
+  type StructuredLogger
+} from '@broker-interceptor/logging';
 import {classifyPathGroup, evaluatePolicyDecision} from '@broker-interceptor/policy-engine';
 import {
   OpenApiAuditEventSchema,
@@ -445,21 +451,26 @@ const parseDestinationFromRequestUrl = (rawUrl: string) => {
 };
 
 const reportPersistenceWarning = ({
+  logger,
   stage,
   correlationId,
   error
 }: {
+  logger: StructuredLogger;
   stage: string;
   correlationId: string;
   error: unknown;
 }) => {
   const reasonCode = isAppError(error) ? error.code : error instanceof Error ? error.name : 'unknown_error';
-  process.emitWarning(`[broker-api] non-blocking persistence operation failed (${stage})`, {
-    code: 'BROKER_API_PERSISTENCE_WARNING',
-    detail: JSON.stringify({
-      correlation_id: correlationId,
-      reason_code: reasonCode
-    })
+  logger.warn({
+    event: 'repository.persistence.warning',
+    component: 'repository.persistence',
+    message: `Non-blocking persistence operation failed (${stage})`,
+    correlation_id: correlationId,
+    reason_code: reasonCode,
+    metadata: {
+      warning_code: 'BROKER_API_PERSISTENCE_WARNING'
+    }
   });
 };
 
@@ -467,6 +478,7 @@ export type CreateBrokerApiServerInput = {
   config: ServiceConfig;
   repository: DataPlaneRepository;
   auditService: AuditService;
+  logger?: StructuredLogger;
   fetchImpl?: FetchLike;
   dnsResolver?: DnsResolver;
   now?: () => Date;
@@ -476,6 +488,7 @@ export const createBrokerApiRequestHandler = ({
   config,
   repository,
   auditService,
+  logger = createNoopLogger(),
   fetchImpl,
   dnsResolver,
   now = () => new Date()
@@ -489,25 +502,49 @@ export const createBrokerApiRequestHandler = ({
 
   const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     const correlationId = extractCorrelationId(request);
-    let method = request.method ?? 'GET';
-    let pathname = '/';
-    let mtlsContext: MtlsAuthContext | null = null;
-    let executeAuditRecorded = false;
+    const requestId = randomUUID();
+    const startedAtMs = now().getTime();
+    const requestMethod = request.method ?? 'GET';
 
-    try {
-      method = request.method ?? 'GET';
-      const url = parseUrl(request);
-      pathname = url.pathname;
+    return runWithLogContext(
+      {
+        correlation_id: correlationId,
+        request_id: requestId,
+        method: requestMethod
+      },
+      async () => {
+        let method = requestMethod;
+        let pathname = '/';
+        let mtlsContext: MtlsAuthContext | null = null;
+        let executeAuditRecorded = false;
+        let responseReasonCode: string | undefined;
 
-      if (method === 'GET' && pathname === '/healthz') {
-        sendJson({
-          response,
-          status: 200,
-          correlationId,
-          payload: {status: 'ok'}
+        logger.info({
+          event: 'request.received',
+          component: 'http.server',
+          message: 'Request received',
+          route: request.url ?? '/',
+          method: requestMethod
         });
-        return;
-      }
+
+        try {
+          method = requestMethod;
+          const url = parseUrl(request);
+          pathname = url.pathname;
+          setLogContextFields({
+            route: pathname,
+            method
+          });
+
+          if (method === 'GET' && pathname === '/healthz') {
+            sendJson({
+              response,
+              status: 200,
+              correlationId,
+              payload: {status: 'ok'}
+            });
+            return;
+          }
 
       // Public endpoint for manifest signing keys (requires mTLS but not session)
       if (method === 'GET' && pathname === '/v1/keys/manifest') {
@@ -539,8 +576,17 @@ export const createBrokerApiRequestHandler = ({
         ...(config.expectedSanUriPrefix ? {expectedSanUriPrefix: config.expectedSanUriPrefix} : {})
       });
       mtlsContext = mtls;
+      setLogContextFields({
+        tenant_id: mtls.tenant_id,
+        workload_id: mtls.workload_id
+      });
 
       if (method === 'POST' && pathname === '/v1/session') {
+        logger.info({
+          event: 'session.issue.start',
+          component: 'server.session',
+          message: 'Session issuance started'
+        });
         const body = await parseJsonBody({
           request,
           schema: OpenApiSessionRequestSchema,
@@ -672,10 +718,20 @@ export const createBrokerApiRequestHandler = ({
           correlationId,
           payload
         });
+        logger.info({
+          event: 'session.issue.success',
+          component: 'server.session',
+          message: 'Session issued'
+        });
         return;
       }
 
       if (method === 'POST' && pathname === '/v1/execute') {
+        logger.info({
+          event: 'execute.start',
+          component: 'server.execute',
+          message: 'Execute pipeline started'
+        });
         try {
           await requireSessionContext({
             request,
@@ -720,6 +776,9 @@ export const createBrokerApiRequestHandler = ({
         if (!integration.enabled) {
           throw badRequest('integration_disabled', 'Integration is disabled');
         }
+        setLogContextFields({
+          integration_id: integration.integration_id
+        });
 
         const ssrfStorageScope = {
           tenant_id: mtls.tenant_id,
@@ -734,6 +793,7 @@ export const createBrokerApiRequestHandler = ({
             });
           } catch (error) {
             reportPersistenceWarning({
+              logger,
               stage: 'ssrf_template_lookup',
               correlationId,
               error
@@ -806,6 +866,16 @@ export const createBrokerApiRequestHandler = ({
             return {allowed: outcome.allowed};
           }
         });
+        logger.info({
+          event: 'policy.decision',
+          component: 'server.execute',
+          message: `Policy decision: ${decision.decision}`,
+          reason_code: decision.reason_code,
+          metadata: {
+            decision: decision.decision,
+            action_group: decision.action_group
+          }
+        });
 
         executeAuditRecorded = true;
         await appendAuditEvent({
@@ -847,6 +917,12 @@ export const createBrokerApiRequestHandler = ({
         });
 
         if (decision.decision === 'denied') {
+          logger.warn({
+            event: 'execute.denied',
+            component: 'server.execute',
+            message: 'Execution denied by policy',
+            reason_code: decision.reason_code
+          });
           executeAuditRecorded = true;
           await appendAuditEvent({
             auditService,
@@ -882,6 +958,12 @@ export const createBrokerApiRequestHandler = ({
         }
 
         if (decision.decision === 'throttled') {
+          logger.warn({
+            event: 'execute.throttled',
+            component: 'server.execute',
+            message: 'Execution throttled by policy',
+            reason_code: decision.reason_code
+          });
           executeAuditRecorded = true;
           await appendAuditEvent({
             auditService,
@@ -918,6 +1000,12 @@ export const createBrokerApiRequestHandler = ({
         }
 
         if (decision.decision === 'approval_required') {
+          logger.warn({
+            event: 'execute.approval_required',
+            component: 'server.execute',
+            message: 'Execution requires approval',
+            reason_code: decision.reason_code
+          });
           const summary = repository.buildApprovalSummary({
             descriptor: canonicalized.value.descriptor,
             actionGroup: decision.action_group,
@@ -1386,6 +1474,12 @@ export const createBrokerApiRequestHandler = ({
             correlationId,
             payload
           });
+          logger.info({
+            event: 'execute.completed',
+            component: 'server.execute',
+            message: 'Execution completed',
+            status_code: payload.upstream.status_code
+          });
           return;
         } catch (error) {
           if (
@@ -1403,6 +1497,7 @@ export const createBrokerApiRequestHandler = ({
               forwarderPersistenceContext.finalized = failResult.updated;
             } catch (storeError) {
               reportPersistenceWarning({
+                logger,
                 stage: 'forwarder_idempotency_fail_finalize',
                 correlationId,
                 error: storeError
@@ -1419,6 +1514,7 @@ export const createBrokerApiRequestHandler = ({
               });
             } catch (storeError) {
               reportPersistenceWarning({
+                logger,
                 stage: 'forwarder_execution_lock_release',
                 correlationId,
                 error: storeError
@@ -1504,6 +1600,11 @@ export const createBrokerApiRequestHandler = ({
           }
 
           const payload = OpenApiManifestSchema.parse(signedManifest.value);
+          logger.info({
+            event: 'manifest.issued',
+            component: 'server.manifest',
+            message: 'Manifest issued'
+          });
 
           await appendAuditEvent({
             auditService,
@@ -1542,76 +1643,124 @@ export const createBrokerApiRequestHandler = ({
       }
 
       throw badRequest('route_not_found', `Unsupported route ${method} ${pathname}`);
-    } catch (error) {
-      if (isAppError(error)) {
-        if (method === 'POST' && pathname === '/v1/execute' && mtlsContext && !executeAuditRecorded) {
-          try {
-            await appendAuditEvent({
-              auditService,
-              event: buildAuditEvent({
-                repository,
-                correlationId,
-                tenantId: mtlsContext.tenant_id,
-                event: {
-                  workload_id: mtlsContext.workload_id,
-                  integration_id: null,
-                  event_type: 'execute',
-                  decision: 'denied',
-                  action_group: null,
-                  risk_tier: null,
-                  destination: null,
-                  latency_ms: null,
-                  upstream_status_code: null,
-                  canonical_descriptor: null,
-                  message: `Execution rejected before forwarding: ${error.code}`,
-                  metadata: {
-                    reason_code: error.code
-                  }
-                }
-              })
+        } catch (error) {
+          if (isAppError(error)) {
+            responseReasonCode = error.code;
+            logger.warn({
+              event: 'request.rejected',
+              component: 'http.server',
+              message: `Request rejected: ${error.code}`,
+              reason_code: error.code,
+              route: pathname,
+              method
             });
-            executeAuditRecorded = true;
-          } catch (auditError) {
-            if (isAppError(auditError)) {
-              sendError({
-                response,
-                status: auditError.status,
-                error: auditError.code,
-                message: auditError.message,
-                correlationId
-              });
-              return;
+
+            if (method === 'POST' && pathname === '/v1/execute' && mtlsContext && !executeAuditRecorded) {
+              try {
+                await appendAuditEvent({
+                  auditService,
+                  event: buildAuditEvent({
+                    repository,
+                    correlationId,
+                    tenantId: mtlsContext.tenant_id,
+                    event: {
+                      workload_id: mtlsContext.workload_id,
+                      integration_id: null,
+                      event_type: 'execute',
+                      decision: 'denied',
+                      action_group: null,
+                      risk_tier: null,
+                      destination: null,
+                      latency_ms: null,
+                      upstream_status_code: null,
+                      canonical_descriptor: null,
+                      message: `Execution rejected before forwarding: ${error.code}`,
+                      metadata: {
+                        reason_code: error.code
+                      }
+                    }
+                  })
+                });
+                executeAuditRecorded = true;
+              } catch (auditError) {
+                if (isAppError(auditError)) {
+                  responseReasonCode = auditError.code;
+                  sendError({
+                    response,
+                    status: auditError.status,
+                    error: auditError.code,
+                    message: auditError.message,
+                    correlationId
+                  });
+                  return;
+                }
+
+                responseReasonCode = 'internal_error';
+                sendError({
+                  response,
+                  status: 500,
+                  error: 'internal_error',
+                  message: 'Unexpected internal error',
+                  correlationId
+                });
+                return;
+              }
             }
 
             sendError({
               response,
-              status: 500,
-              error: 'internal_error',
-              message: 'Unexpected internal error',
+              status: error.status,
+              error: error.code,
+              message: error.message,
               correlationId
             });
             return;
           }
+
+          responseReasonCode = 'internal_error';
+          logger.error({
+            event: 'request.failed',
+            component: 'http.server',
+            message: 'Unexpected internal error',
+            reason_code: 'internal_error',
+            route: pathname,
+            method,
+            metadata: {
+              error
+            }
+          });
+
+          sendError({
+            response,
+            status: 500,
+            error: 'internal_error',
+            message: 'Unexpected internal error',
+            correlationId
+          });
+        } finally {
+          const durationMs = Math.max(0, now().getTime() - startedAtMs);
+          const statusCode = response.statusCode;
+          const baseLog = {
+            event: 'request.completed',
+            component: 'http.server',
+            message: 'Request completed',
+            route: pathname,
+            method,
+            status_code: statusCode,
+            duration_ms: durationMs,
+            ...(responseReasonCode ? {reason_code: responseReasonCode} : {})
+          };
+
+          if (statusCode >= 500) {
+            logger.error(baseLog);
+          } else if (statusCode >= 400) {
+            logger.warn(baseLog);
+          } else {
+            logger.info(baseLog);
+          }
         }
-
-        sendError({
-          response,
-          status: error.status,
-          error: error.code,
-          message: error.message,
-          correlationId
-        });
-        return;
       }
-
-      sendError({
-        response,
-        status: 500,
-        error: 'internal_error',
-        message: 'Unexpected internal error',
-        correlationId
-      });
-    }
+    );
   };
 
   return handleRequest;

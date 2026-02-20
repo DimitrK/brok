@@ -61,6 +61,7 @@ import {
   type OpenApiTemplate,
   type OpenApiWorkload
 } from '@broker-interceptor/schemas'
+import {createNoopLogger, type StructuredLogger} from '@broker-interceptor/logging'
 import {z} from 'zod'
 import type {Prisma} from '@prisma/client'
 
@@ -578,6 +579,7 @@ export type DataPlaneRepositoryCreateInput = {
   processInfrastructure?: ProcessInfrastructure
   secretKey?: Buffer
   secretKeyId?: string
+  logger?: StructuredLogger
 }
 
 export class DataPlaneRepository {
@@ -591,6 +593,7 @@ export class DataPlaneRepository {
   private readonly ssrfGuardStorageBridge: SsrfGuardStorageBridge
   private readonly keyManagementService: EnvelopeKeyManagementService | null
   private readonly secretKeyBuffer: Buffer | null
+  private readonly logger: StructuredLogger
   private writeChain: Promise<void> = Promise.resolve()
 
   private readonly dpopReplayJtiExpiryByKey = new Map<string, number>()
@@ -604,7 +607,8 @@ export class DataPlaneRepository {
     manifestTtlSeconds,
     processInfrastructure,
     secretKey,
-    secretKeyId
+    secretKeyId,
+    logger
   }: {
     state: PersistedDataPlaneState
     statePath?: string
@@ -613,6 +617,7 @@ export class DataPlaneRepository {
     processInfrastructure?: ProcessInfrastructure
     secretKey?: Buffer
     secretKeyId?: string
+    logger?: StructuredLogger
   }) {
     this.state = state
     this.statePath = statePath
@@ -623,6 +628,7 @@ export class DataPlaneRepository {
     this.cryptoStorageService = this.createSharedCryptoStorageService()
     this.forwarderDbBridge = this.createForwarderDbBridge()
     this.ssrfGuardStorageBridge = this.createSsrfGuardStorageBridge()
+    this.logger = logger ?? createNoopLogger()
     this.keyManagementService = this.createKeyManagementService({secretKey, secretKeyId})
     // Store secret key buffer for zeroization on shutdown
     this.secretKeyBuffer = secretKey ?? null
@@ -637,7 +643,8 @@ export class DataPlaneRepository {
     manifestTtlSeconds,
     processInfrastructure,
     secretKey,
-    secretKeyId
+    secretKeyId,
+    logger
   }: DataPlaneRepositoryCreateInput): Promise<DataPlaneRepository> {
     const loadedState = statePath ? await readStateFile({statePath}) : parseState(initialState)
     const state = await ensureManifestSigningMaterial(loadedState)
@@ -649,7 +656,8 @@ export class DataPlaneRepository {
       manifestTtlSeconds,
       processInfrastructure,
       secretKey,
-      secretKeyId
+      secretKeyId,
+      logger
     })
     await repository.ensureSharedManifestSigningMaterial()
     return repository
@@ -1643,8 +1651,11 @@ export class DataPlaneRepository {
         throw new Error(`[broker-api] ${errorMsg}`)
       }
       // In development/test without shared infrastructure, emit warning and continue
-      process.emitWarning(`[broker-api] ${errorMsg}`, {
-        code: 'BROKER_API_KMS_INIT_WARNING'
+      this.logger.warn({
+        event: 'repository.secret.kms_init_failed',
+        component: 'repository.secret',
+        message: errorMsg,
+        reason_code: 'BROKER_API_KMS_INIT_WARNING'
       })
       return null
     }
@@ -2460,12 +2471,18 @@ export class DataPlaneRepository {
 
       if (!decryptedResult.ok) {
         // Decryption failed - emit warning with error code for monitoring
-        process.emitWarning(
-          `[broker-api] Failed to decrypt secret${correlationId ? ` (correlation: ${correlationId})` : ''}: ${decryptedResult.error.code}`,
-          {
-            code: 'BROKER_API_SECRET_DECRYPT_WARNING'
+        this.logger.warn({
+          event: 'repository.secret.decrypt_failed',
+          component: 'repository.secret',
+          message: 'Failed to decrypt integration secret',
+          ...(correlationId ? {correlation_id: correlationId} : {}),
+          reason_code: decryptedResult.error.code,
+          metadata: {
+            warning_code: 'BROKER_API_SECRET_DECRYPT_WARNING',
+            integration_id: integrationId,
+            tenant_id: tenantId
           }
-        );
+        });
         if (sharedInfrastructureEnabled) {
           throw toIntegrationSecretUnavailableError(`Secret decryption failed: ${decryptedResult.error.code}`);
         }
@@ -2477,12 +2494,18 @@ export class DataPlaneRepository {
     } catch (error) {
       // Log error without leaking secrets
       const errorMessage = error instanceof Error ? error.message : 'unknown error';
-      process.emitWarning(
-        `[broker-api] Error fetching secret${correlationId ? ` (correlation: ${correlationId})` : ''}: ${errorMessage}`,
-        {
-          code: 'BROKER_API_SECRET_FETCH_WARNING'
+      this.logger.warn({
+        event: 'repository.secret.fetch_failed',
+        component: 'repository.secret',
+        message: 'Error fetching integration secret',
+        ...(correlationId ? {correlation_id: correlationId} : {}),
+        reason_code: 'BROKER_API_SECRET_FETCH_WARNING',
+        metadata: {
+          error: errorMessage,
+          integration_id: integrationId,
+          tenant_id: tenantId
         }
-      );
+      });
       if (sharedInfrastructureEnabled) {
         if (isDataPlaneRepositoryError(error)) {
           throw error

@@ -50,6 +50,18 @@ Infrastructure env requirements when enabled:
 - `BROKER_ADMIN_API_REDIS_KEY_PREFIX` (optional)
 - `BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS` (optional, comma-separated; defaults to `http://localhost:4173` outside production and empty in production)
 
+Logging env:
+
+- `BROKER_ADMIN_API_LOG_LEVEL`: `debug|info|warn|error|fatal|silent` (default `info`, default `silent` in `test`)
+- `BROKER_ADMIN_API_LOG_REDACT_EXTRA_KEYS`: optional comma-separated additional sensitive key names to redact in log metadata
+
+Logging behavior:
+
+- structured JSON logs on stdout/stderr
+- request lifecycle emits `request.received`, `request.completed`, and rejection/failure events
+- auth decision failures are logged with stable `reason_code` and correlation context
+- logger failures are non-blocking and never fail request handling
+
 Vault issuer hardening env (vault mode only):
 
 - `BROKER_ADMIN_API_VAULT_REQUEST_TIMEOUT_MS` (optional, default `5000`)

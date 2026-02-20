@@ -2,6 +2,7 @@ import {randomBytes} from 'node:crypto';
 import * as fs from 'node:fs';
 
 import {OpenApiManifestKeysSchema, type OpenApiManifestKeys} from '@broker-interceptor/schemas';
+import {LogLevelSchema, type LogLevel} from '@broker-interceptor/logging';
 import {z} from 'zod';
 
 import {staticAdminTokenSchema, type StaticAdminToken} from './contracts';
@@ -66,6 +67,17 @@ const parseCorsAllowedOrigins = ({raw, envVarName}: {raw: string | undefined; en
   return origins;
 };
 
+const parseCommaSeparatedKeys = (raw: string | undefined) => {
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split(',')
+    .map(value => value.trim())
+    .filter(value => value.length > 0);
+};
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -109,7 +121,9 @@ const envSchema = z
     BROKER_ADMIN_API_REDIS_URL: optionalString,
     BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS: optionalString,
     BROKER_ADMIN_API_REDIS_CONNECT_TIMEOUT_MS: numberFromEnv.default(2_000),
-    BROKER_ADMIN_API_REDIS_KEY_PREFIX: z.string().default('broker-admin-api:control-plane')
+    BROKER_ADMIN_API_REDIS_KEY_PREFIX: z.string().default('broker-admin-api:control-plane'),
+    BROKER_ADMIN_API_LOG_LEVEL: LogLevelSchema.optional(),
+    BROKER_ADMIN_API_LOG_REDACT_EXTRA_KEYS: optionalString
   })
   .strict();
 
@@ -187,6 +201,10 @@ export type ServiceConfig = {
     redisUrl?: string;
     redisConnectTimeoutMs: number;
     redisKeyPrefix: string;
+  };
+  logging: {
+    level: LogLevel;
+    redactExtraKeys: string[];
   };
 };
 
@@ -378,6 +396,7 @@ const parseCertificateIssuerConfig = ({
     let resolvedMtlsCaPem = mtlsCaPem;
     if (!resolvedMtlsCaPem) {
       try {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- Local CA path is an explicit service configuration boundary.
         resolvedMtlsCaPem = fs.readFileSync(localCaCertPath, 'utf-8');
       } catch (err) {
         throw new Error(
@@ -470,7 +489,9 @@ const toEnvInput = (env: NodeJS.ProcessEnv) => ({
   BROKER_ADMIN_API_REDIS_URL: env.BROKER_ADMIN_API_REDIS_URL,
   BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS: env.BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS,
   BROKER_ADMIN_API_REDIS_CONNECT_TIMEOUT_MS: env.BROKER_ADMIN_API_REDIS_CONNECT_TIMEOUT_MS,
-  BROKER_ADMIN_API_REDIS_KEY_PREFIX: env.BROKER_ADMIN_API_REDIS_KEY_PREFIX
+  BROKER_ADMIN_API_REDIS_KEY_PREFIX: env.BROKER_ADMIN_API_REDIS_KEY_PREFIX,
+  BROKER_ADMIN_API_LOG_LEVEL: env.BROKER_ADMIN_API_LOG_LEVEL,
+  BROKER_ADMIN_API_LOG_REDACT_EXTRA_KEYS: env.BROKER_ADMIN_API_LOG_REDACT_EXTRA_KEYS
 });
 
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig => {
@@ -506,6 +527,8 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig 
       (parsed.NODE_ENV === 'production' ? undefined : 'http://localhost:4173'),
     envVarName: 'BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS'
   });
+  const loggingLevel = parsed.BROKER_ADMIN_API_LOG_LEVEL ?? (parsed.NODE_ENV === 'test' ? 'silent' : 'info');
+  const loggingRedactExtraKeys = parseCommaSeparatedKeys(parsed.BROKER_ADMIN_API_LOG_REDACT_EXTRA_KEYS);
 
   return {
     nodeEnv: parsed.NODE_ENV,
@@ -542,6 +565,10 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServiceConfig 
       ...(parsed.BROKER_ADMIN_API_REDIS_URL ? {redisUrl: parsed.BROKER_ADMIN_API_REDIS_URL} : {}),
       redisConnectTimeoutMs: parsed.BROKER_ADMIN_API_REDIS_CONNECT_TIMEOUT_MS,
       redisKeyPrefix: parsed.BROKER_ADMIN_API_REDIS_KEY_PREFIX
+    },
+    logging: {
+      level: loggingLevel,
+      redactExtraKeys: loggingRedactExtraKeys
     }
   };
 };

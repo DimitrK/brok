@@ -120,6 +120,9 @@ importers:
       '@broker-interceptor/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@broker-interceptor/logging':
+        specifier: workspace:*
+        version: link:../../packages/logging
       '@broker-interceptor/policy-engine':
         specifier: workspace:*
         version: link:../../packages/policy-engine
@@ -202,6 +205,9 @@ importers:
       '@broker-interceptor/forwarder':
         specifier: workspace:*
         version: link:../../packages/forwarder
+      '@broker-interceptor/logging':
+        specifier: workspace:*
+        version: link:../../packages/logging
       '@broker-interceptor/policy-engine':
         specifier: workspace:*
         version: link:../../packages/policy-engine
@@ -442,6 +448,28 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.11)
+
+  packages/logging:
+    dependencies:
+      '@broker-interceptor/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@broker-interceptor/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@broker-interceptor/prettier-config':
+        specifier: workspace:*
+        version: link:../prettier-config
+      '@vitest/coverage-v8':
+        specifier: ^2.1.8
+        version: 2.1.9(vitest@2.1.9(@types/node@25.2.3))
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@25.2.3)
 
   packages/policy-engine:
     dependencies:

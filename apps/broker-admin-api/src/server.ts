@@ -1,6 +1,12 @@
 import {createServer as createHttpServer, type IncomingMessage, type ServerResponse} from 'node:http';
-import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto';
+import {createHmac, randomBytes, randomUUID, timingSafeEqual} from 'node:crypto';
 
+import {
+  createNoopLogger,
+  runWithLogContext,
+  setLogContextFields,
+  type StructuredLogger
+} from '@broker-interceptor/logging';
 import {
   OpenApiAdminAccessRequestApproveRequestSchema,
   OpenApiAdminAccessRequestDenyRequestSchema,
@@ -401,6 +407,8 @@ const resolveAuditTenantId = ({principal, tenantId}: {principal: AdminPrincipal;
   return 'global';
 };
 
+const toAuthFailureReasonCode = (error: unknown) => (isAppError(error) ? error.code : 'auth_admin_invalid');
+
 const listAccessRoles = ['owner', 'admin', 'auditor', 'operator'] as const;
 const writeAccessRoles = ['owner', 'admin'] as const;
 const approvalDecisionRoles = ['owner', 'admin', 'operator'] as const;
@@ -447,23 +455,27 @@ const adminAccessRequestListQuerySchema = z
   .strict();
 
 const appendAuditEventNonBlocking = ({
+  logger = createNoopLogger(),
   dependencyBridge,
   event,
   correlationId
 }: {
+  logger?: StructuredLogger;
   dependencyBridge: DependencyBridge;
   event: Parameters<ControlPlaneRepository['appendAuditEvent']>[0]['event'];
   correlationId: string;
 }) => {
   void dependencyBridge.appendAuditEventWithAuditPackage({event}).catch(() => {
-    console.error(
-      JSON.stringify({
-        level: 'error',
-        message: 'audit_emit_failed',
-        correlation_id: correlationId,
+    logger.error({
+      event: 'audit.emit.failed',
+      component: 'server.audit',
+      message: 'Audit emit failed',
+      correlation_id: correlationId,
+      reason_code: 'audit_emit_failed',
+      metadata: {
         event_id: event.event_id
-      })
-    );
+      }
+    });
   });
 };
 
@@ -471,6 +483,7 @@ export type CreateAdminApiServerInput = {
   config: ServiceConfig;
   repository: ControlPlaneRepository;
   dependencyBridge: DependencyBridge;
+  logger?: StructuredLogger;
 };
 
 const normalizeTenantAuditFilter = ({
@@ -540,14 +553,45 @@ const requireIntegrationTenantScope = async ({
   return integration;
 };
 
-export const createAdminApiRequestHandler = ({config, repository, dependencyBridge}: CreateAdminApiServerInput) => {
+export const createAdminApiRequestHandler = ({
+  config,
+  repository,
+  dependencyBridge,
+  logger = createNoopLogger()
+}: CreateAdminApiServerInput) => {
   const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     const correlationId = extractCorrelationId(request);
+    const requestId = randomUUID();
+    const startedAtMs = Date.now();
+    const requestMethod = request.method ?? 'GET';
 
-    try {
-      const method = request.method ?? 'GET';
-      const url = parseUrl(request);
-      const pathname = url.pathname;
+    return runWithLogContext(
+      {
+        correlation_id: correlationId,
+        request_id: requestId,
+        method: requestMethod
+      },
+      async () => {
+        let method = requestMethod;
+        let pathname = '/';
+        let responseReasonCode: string | undefined;
+
+        logger.info({
+          event: 'request.received',
+          component: 'http.server',
+          message: 'Request received',
+          route: request.url ?? '/',
+          method: requestMethod
+        });
+
+        try {
+          method = requestMethod;
+          const url = parseUrl(request);
+          pathname = url.pathname;
+          setLogContextFields({
+            route: pathname,
+            method
+          });
 
       if (method === 'GET' && pathname === '/healthz') {
         sendJson({
@@ -680,9 +724,20 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           }
         }
 
-        const authenticatedPrincipal = await dependencyBridge.authenticateAdminPrincipal({
-          authorizationHeader: `Bearer ${tokenExchange.sessionToken}`
-        });
+        let authenticatedPrincipal: Awaited<ReturnType<typeof dependencyBridge.authenticateAdminPrincipal>>;
+        try {
+          authenticatedPrincipal = await dependencyBridge.authenticateAdminPrincipal({
+            authorizationHeader: `Bearer ${tokenExchange.sessionToken}`
+          });
+        } catch (error) {
+          logger.warn({
+            event: 'auth.admin.denied',
+            component: 'server.auth',
+            message: 'Admin authentication failed during oauth callback',
+            reason_code: toAuthFailureReasonCode(error)
+          });
+          throw error;
+        }
         const principalForIdentityResolution = enrichPrincipalWithIdTokenEmailVerification({
           principal: authenticatedPrincipal,
           idTokenPayload
@@ -690,6 +745,11 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
         const principal = await dependencyBridge.resolveAdminIdentityFromToken({
           principal: principalForIdentityResolution
         });
+        if (principal.tenantIds && principal.tenantIds.length === 1) {
+          setLogContextFields({
+            tenant_id: principal.tenantIds[0]
+          });
+        }
 
         const payload = OpenApiAdminOAuthCallbackResponseSchema.parse({
           session_id: tokenExchange.sessionToken,
@@ -717,12 +777,28 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
         return;
       }
 
-      const authenticatedPrincipal = await dependencyBridge.authenticateAdminPrincipal({
-        authorizationHeader: request.headers.authorization
-      });
+      let authenticatedPrincipal: Awaited<ReturnType<typeof dependencyBridge.authenticateAdminPrincipal>>;
+      try {
+        authenticatedPrincipal = await dependencyBridge.authenticateAdminPrincipal({
+          authorizationHeader: request.headers.authorization
+        });
+      } catch (error) {
+        logger.warn({
+          event: 'auth.admin.denied',
+          component: 'server.auth',
+          message: 'Admin authentication failed',
+          reason_code: toAuthFailureReasonCode(error)
+        });
+        throw error;
+      }
       const principal = await dependencyBridge.resolveAdminIdentityFromToken({
         principal: authenticatedPrincipal
       });
+      if (principal.tenantIds && principal.tenantIds.length === 1) {
+        setLogContextFields({
+          tenant_id: principal.tenantIds[0]
+        });
+      }
 
       if (method === 'GET' && pathname === '/v1/admin/auth/session') {
         const payload = OpenApiAdminSessionResponseSchema.parse({
@@ -794,6 +870,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -872,6 +949,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -942,6 +1020,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -983,6 +1062,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -1021,6 +1101,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
         });
 
         appendAuditEventNonBlocking({
+          logger,
           dependencyBridge,
           correlationId,
           event: repository.createAdminAuditEvent({
@@ -1095,6 +1176,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
             });
 
             appendAuditEventNonBlocking({
+              logger,
               dependencyBridge,
               correlationId,
               event: repository.createAdminAuditEvent({
@@ -1154,6 +1236,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -1225,6 +1308,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -1275,6 +1359,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
             });
 
             appendAuditEventNonBlocking({
+              logger,
               dependencyBridge,
               correlationId,
               event: repository.createAdminAuditEvent({
@@ -1336,6 +1421,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -1372,6 +1458,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
         });
 
         appendAuditEventNonBlocking({
+          logger,
           dependencyBridge,
           correlationId,
           event: repository.createAdminAuditEvent({
@@ -1450,6 +1537,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
         });
 
         appendAuditEventNonBlocking({
+          logger,
           dependencyBridge,
           correlationId,
           event: repository.createPolicyAuditEvent({
@@ -1496,6 +1584,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           sendNoContent({response, correlationId});
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createPolicyAuditEvent({
@@ -1580,6 +1669,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -1593,6 +1683,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
 
           if (result.derivedPolicy) {
             appendAuditEventNonBlocking({
+              logger,
               dependencyBridge,
               correlationId,
               event: repository.createPolicyAuditEvent({
@@ -1654,6 +1745,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
           });
 
           appendAuditEventNonBlocking({
+            logger,
             dependencyBridge,
             correlationId,
             event: repository.createAdminAuditEvent({
@@ -1667,6 +1759,7 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
 
           if (result.derivedPolicy) {
             appendAuditEventNonBlocking({
+              logger,
               dependencyBridge,
               correlationId,
               event: repository.createPolicyAuditEvent({
@@ -1741,26 +1834,72 @@ export const createAdminApiRequestHandler = ({config, repository, dependencyBrid
       }
 
       throw notFound('route_not_found', 'Route not found');
-    } catch (error) {
-      if (isAppError(error)) {
-        sendError({
-          response,
-          status: error.status,
-          error: error.code,
-          message: error.message,
-          correlationId
-        });
-        return;
-      }
+        } catch (error) {
+          if (isAppError(error)) {
+            responseReasonCode = error.code;
+            logger.warn({
+              event: 'request.rejected',
+              component: 'http.server',
+              message: `Request rejected: ${error.code}`,
+              reason_code: error.code,
+              route: pathname,
+              method
+            });
 
-      sendError({
-        response,
-        status: 500,
-        error: 'internal_error',
-        message: 'Unexpected internal error',
-        correlationId
-      });
-    }
+            sendError({
+              response,
+              status: error.status,
+              error: error.code,
+              message: error.message,
+              correlationId
+            });
+            return;
+          }
+
+          responseReasonCode = 'internal_error';
+          logger.error({
+            event: 'request.failed',
+            component: 'http.server',
+            message: 'Unexpected internal error',
+            reason_code: 'internal_error',
+            route: pathname,
+            method,
+            metadata: {
+              error
+            }
+          });
+
+          sendError({
+            response,
+            status: 500,
+            error: 'internal_error',
+            message: 'Unexpected internal error',
+            correlationId
+          });
+        } finally {
+          const durationMs = Math.max(0, Date.now() - startedAtMs);
+          const statusCode = response.statusCode;
+          const baseLog = {
+            event: 'request.completed',
+            component: 'http.server',
+            message: 'Request completed',
+            route: pathname,
+            method,
+            status_code: statusCode,
+            duration_ms: durationMs,
+            ...(responseReasonCode ? {reason_code: responseReasonCode} : {})
+          };
+
+          if (statusCode >= 500) {
+            logger.error(baseLog);
+          } else if (statusCode >= 400) {
+            logger.warn(baseLog);
+          } else {
+            logger.info(baseLog);
+          }
+        }
+      }
+    );
   };
 
   return handleRequest;

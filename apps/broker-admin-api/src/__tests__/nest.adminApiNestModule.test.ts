@@ -4,6 +4,7 @@ import {AdminApiNestModule} from '../nest/adminApiNestModule'
 import {
   BROKER_ADMIN_API_CONFIG,
   BROKER_ADMIN_API_DEPENDENCY_BRIDGE,
+  BROKER_ADMIN_API_LOGGER,
   BROKER_ADMIN_API_REPOSITORY,
   BROKER_ADMIN_API_REQUEST_HANDLER
 } from '../nest/tokens'
@@ -13,11 +14,13 @@ describe('admin api nest module', () => {
     const config = {maxBodyBytes: 1_024} as never
     const repository = {} as never
     const dependencyBridge = {} as never
+    const logger = {} as never
 
     const dynamicModule = AdminApiNestModule.register({
       config,
       repository,
-      dependencyBridge
+      dependencyBridge,
+      logger
     })
 
     expect(dynamicModule.module).toBe(AdminApiNestModule)
@@ -48,6 +51,15 @@ describe('admin api nest module', () => {
     )
     expect(dependencyBridgeProvider).toBeDefined()
 
+    const loggerProvider = providers.find(
+      provider =>
+        typeof provider === 'object' &&
+        provider !== null &&
+        'provide' in provider &&
+        provider.provide === BROKER_ADMIN_API_LOGGER
+    )
+    expect(loggerProvider).toBeDefined()
+
     const requestHandlerProvider = providers.find(
       provider =>
         typeof provider === 'object' &&
@@ -68,7 +80,8 @@ describe('admin api nest module', () => {
     const requestHandlerUnknown: unknown = requestHandlerProvider.useFactory(
       config,
       repository,
-      dependencyBridge
+      dependencyBridge,
+      logger
     )
     expect(typeof requestHandlerUnknown).toBe('function')
   })

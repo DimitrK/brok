@@ -2,6 +2,7 @@ import type {IncomingMessage, ServerResponse} from 'node:http'
 
 import {All, Controller, DynamicModule, Inject, Module, Req, Res} from '@nestjs/common'
 import type {Request, Response} from 'express'
+import type {StructuredLogger} from '@broker-interceptor/logging'
 
 import type {ServiceConfig} from '../config'
 import type {DependencyBridge} from '../dependencyBridge'
@@ -10,6 +11,7 @@ import {createAdminApiRequestHandler} from '../server'
 import {
   BROKER_ADMIN_API_CONFIG,
   BROKER_ADMIN_API_DEPENDENCY_BRIDGE,
+  BROKER_ADMIN_API_LOGGER,
   BROKER_ADMIN_API_REPOSITORY,
   BROKER_ADMIN_API_REQUEST_HANDLER
 } from './tokens'
@@ -20,6 +22,7 @@ export type AdminApiNestModuleOptions = {
   config: ServiceConfig
   repository: ControlPlaneRepository
   dependencyBridge: DependencyBridge
+  logger: StructuredLogger
 }
 
 @Controller()
@@ -59,21 +62,28 @@ export class AdminApiNestModule {
           useValue: options.dependencyBridge
         },
         {
+          provide: BROKER_ADMIN_API_LOGGER,
+          useValue: options.logger
+        },
+        {
           provide: BROKER_ADMIN_API_REQUEST_HANDLER,
           inject: [
             BROKER_ADMIN_API_CONFIG,
             BROKER_ADMIN_API_REPOSITORY,
-            BROKER_ADMIN_API_DEPENDENCY_BRIDGE
+            BROKER_ADMIN_API_DEPENDENCY_BRIDGE,
+            BROKER_ADMIN_API_LOGGER
           ],
           useFactory: (
             config: ServiceConfig,
             repository: ControlPlaneRepository,
-            dependencyBridge: DependencyBridge
+            dependencyBridge: DependencyBridge,
+            logger: StructuredLogger
           ) =>
             createAdminApiRequestHandler({
               config,
               repository,
-              dependencyBridge
+              dependencyBridge,
+              logger
             })
         }
       ]

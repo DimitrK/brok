@@ -28,6 +28,7 @@
     "@broker-interceptor/crypto": "workspace:*",
     "@broker-interceptor/db": "workspace:*",
     "@broker-interceptor/forwarder": "workspace:*",
+    "@broker-interceptor/logging": "workspace:*",
     "@broker-interceptor/policy-engine": "workspace:*",
     "@broker-interceptor/schemas": "workspace:*",
     "@broker-interceptor/ssrf-guard": "workspace:*",

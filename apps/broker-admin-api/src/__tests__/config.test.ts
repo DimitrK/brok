@@ -30,6 +30,10 @@ describe('config', () => {
     expect(config.port).toBe(8080);
     expect(config.infrastructure.enabled).toBe(false);
     expect(config.corsAllowedOrigins).toEqual(['http://localhost:4173']);
+    expect(config.logging).toEqual({
+      level: 'silent',
+      redactExtraKeys: []
+    });
   });
 
   it('loads oidc auth configuration', () => {
@@ -110,6 +114,20 @@ describe('config', () => {
     expect(config.infrastructure.redisConnectTimeoutMs).toBe(3500);
     expect(config.infrastructure.redisKeyPrefix).toBe('broker-admin-api:test');
     expect(config.corsAllowedOrigins).toEqual(['http://localhost:4173', 'https://admin.example']);
+  });
+
+  it('parses logging configuration overrides', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      BROKER_ADMIN_API_INFRA_ENABLED: 'false',
+      BROKER_ADMIN_API_LOG_LEVEL: 'debug',
+      BROKER_ADMIN_API_LOG_REDACT_EXTRA_KEYS: 'foo, bar,baz'
+    });
+
+    expect(config.logging).toEqual({
+      level: 'debug',
+      redactExtraKeys: ['foo', 'bar', 'baz']
+    });
   });
 
   it('ignores unrelated environment variables', () => {

@@ -26,6 +26,7 @@
     "@broker-interceptor/canonicalizer": "workspace:*",
     "@broker-interceptor/crypto": "workspace:*",
     "@broker-interceptor/db": "workspace:*",
+    "@broker-interceptor/logging": "workspace:*",
     "@broker-interceptor/policy-engine": "workspace:*",
     "@broker-interceptor/schemas": "workspace:*",
     "@nestjs/common": "^11.1.13",

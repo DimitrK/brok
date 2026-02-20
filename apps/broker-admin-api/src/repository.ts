@@ -47,6 +47,7 @@ import {
   type OpenApiTenantSummary,
   type OpenApiWorkload
 } from '@broker-interceptor/schemas';
+import {createNoopLogger, type StructuredLogger} from '@broker-interceptor/logging';
 import {z} from 'zod';
 
 import type {AdminPrincipal} from './auth';
@@ -420,9 +421,26 @@ const mapDbRepositoryError = (error: unknown): never => {
   }
 };
 
-const logRedisEnrollmentCacheFailure = (operation: 'issue' | 'consume', error: unknown) => {
+const logRedisEnrollmentCacheFailure = ({
+  logger,
+  operation,
+  error
+}: {
+  logger: StructuredLogger;
+  operation: 'issue' | 'consume';
+  error: unknown;
+}) => {
   const message = error instanceof Error ? error.message : 'Unknown error';
-  console.warn(`Enrollment token cache ${operation} failed`, {message});
+  logger.warn({
+    event: 'repository.enrollment.cache_failed',
+    component: 'repository.enrollment',
+    message: `Enrollment token cache ${operation} failed`,
+    reason_code: 'enrollment_token_cache_failed',
+    metadata: {
+      operation,
+      error: message
+    }
+  });
 };
 
 const validateIpAllowlist = (allowlist: string[]) => {
@@ -503,6 +521,7 @@ export type CreateControlPlaneRepositoryInput = {
   manifestKeys: OpenApiManifestKeys;
   enrollmentTokenTtlSeconds: number;
   processInfrastructure?: ProcessInfrastructure;
+  logger?: StructuredLogger;
 };
 
 export class ControlPlaneRepository {
@@ -512,23 +531,27 @@ export class ControlPlaneRepository {
   private readonly state: PersistedState;
   private readonly dbRepositories?: DbRepositoriesForAdmin;
   private readonly authEnrollmentTokenStorageScope?: AuthEnrollmentTokenStorageScope;
+  private readonly logger: StructuredLogger;
   private writeChain: Promise<void> = Promise.resolve();
 
   public constructor({
     state,
     statePath,
     enrollmentTokenTtlSeconds,
-    processInfrastructure
+    processInfrastructure,
+    logger
   }: {
     state: PersistedState;
     statePath?: string;
     enrollmentTokenTtlSeconds: number;
     processInfrastructure?: ProcessInfrastructure;
+    logger?: StructuredLogger;
   }) {
     this.state = state;
     this.statePath = statePath;
     this.enrollmentTokenTtlSeconds = enrollmentTokenTtlSeconds;
     this.processInfrastructure = processInfrastructure;
+    this.logger = logger ?? createNoopLogger();
 
     if (processInfrastructure?.enabled) {
       if (!processInfrastructure.prisma) {
@@ -562,7 +585,8 @@ export class ControlPlaneRepository {
     statePath,
     manifestKeys,
     enrollmentTokenTtlSeconds,
-    processInfrastructure
+    processInfrastructure,
+    logger
   }: CreateControlPlaneRepositoryInput): Promise<ControlPlaneRepository> {
     const state = await readStateFile({statePath, manifestKeys});
 
@@ -570,7 +594,8 @@ export class ControlPlaneRepository {
       state,
       statePath,
       enrollmentTokenTtlSeconds,
-      processInfrastructure
+      processInfrastructure,
+      logger
     });
   }
 
@@ -1167,7 +1192,11 @@ export class ControlPlaneRepository {
               }
             });
           } catch (error) {
-            logRedisEnrollmentCacheFailure('issue', error);
+            logRedisEnrollmentCacheFailure({
+              logger: this.logger,
+              operation: 'issue',
+              error
+            });
           }
         }
 
@@ -1316,7 +1345,11 @@ export class ControlPlaneRepository {
               tokenHash
             });
           } catch (error) {
-            logRedisEnrollmentCacheFailure('consume', error);
+            logRedisEnrollmentCacheFailure({
+              logger: this.logger,
+              operation: 'consume',
+              error
+            });
           }
         }
 

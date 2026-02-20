@@ -9,51 +9,75 @@ import jsxA11y from 'eslint-plugin-jsx-a11y';
 const base = ({project, tsconfigRootDir} = {}) => {
   const packageDir = tsconfigRootDir ? [tsconfigRootDir] : undefined;
   return [
-  {
-    ignores: ['**/dist/**', '**/coverage/**', '**/eslint.config.js', '**/vitest.config.ts']
-  },
-  js.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
-  tseslint.configs.eslintRecommended,
-  {
-    languageOptions: {
-      parserOptions: {
-        project,
-        tsconfigRootDir
+    {
+      ignores: ['**/dist/**', '**/coverage/**', '**/eslint.config.js', '**/vitest.config.ts']
+    },
+    js.configs.recommended,
+    ...tseslint.configs.recommendedTypeChecked,
+    tseslint.configs.eslintRecommended,
+    {
+      languageOptions: {
+        parserOptions: {
+          project,
+          tsconfigRootDir
+        }
+      },
+      plugins: {
+        import: importPlugin
+      },
+      rules: {
+        'import/no-cycle': 'error',
+        'import/no-extraneous-dependencies': [
+          'error',
+          {
+            devDependencies: [
+              '**/__tests__/**',
+              '**/*.test.*',
+              '**/*.spec.*',
+              '**/vitest.config.*',
+              '**/vitest.setup.*'
+            ],
+            ...(packageDir ? {packageDir} : {})
+          }
+        ],
+        'import/order': [
+          'error',
+          {
+            groups: [['builtin', 'external'], 'internal', ['parent', 'sibling', 'index']]
+          }
+        ],
+        '@typescript-eslint/no-floating-promises': 'error',
+        '@typescript-eslint/no-misused-promises': 'error',
+        '@typescript-eslint/no-unsafe-assignment': 'error',
+        '@typescript-eslint/no-unsafe-call': 'error',
+        '@typescript-eslint/no-unsafe-member-access': 'error',
+        '@typescript-eslint/no-unsafe-return': 'error'
       }
-    },
-    plugins: {
-      import: importPlugin
-    },
-    rules: {
-      'import/no-cycle': 'error',
-      'import/no-extraneous-dependencies': [
-        'error',
-        {
-          devDependencies: [
-            '**/__tests__/**',
-            '**/*.test.*',
-            '**/*.spec.*',
-            '**/vitest.config.*',
-            '**/vitest.setup.*'
-          ],
-          ...(packageDir ? {packageDir} : {})
-        }
-      ],
-      'import/order': [
-        'error',
-        {
-          groups: [['builtin', 'external'], 'internal', ['parent', 'sibling', 'index']]
-        }
-      ],
-      '@typescript-eslint/no-floating-promises': 'error',
-      '@typescript-eslint/no-misused-promises': 'error',
-      '@typescript-eslint/no-unsafe-assignment': 'error',
-      '@typescript-eslint/no-unsafe-call': 'error',
-      '@typescript-eslint/no-unsafe-member-access': 'error',
-      '@typescript-eslint/no-unsafe-return': 'error'
     }
+  ];
+};
+
+const runtimeNoConsoleGuards = ({tsconfigRootDir} = {}) => {
+  if (typeof tsconfigRootDir !== 'string') {
+    return [];
   }
+
+  const normalizedRoot = tsconfigRootDir.replaceAll('\\', '/');
+  const isRuntimeApp =
+    normalizedRoot.endsWith('/apps/broker-api') || normalizedRoot.endsWith('/apps/broker-admin-api');
+
+  if (!isRuntimeApp) {
+    return [];
+  }
+
+  return [
+    {
+      files: ['src/**/*.{ts,tsx,js,cjs,mjs}'],
+      ignores: ['src/**/*.test.*', 'src/**/*.spec.*', 'src/**/__tests__/**'],
+      rules: {
+        'no-console': 'error'
+      }
+    }
   ];
 };
 
@@ -74,9 +98,10 @@ const node = options => [
           name: 'child_process',
           message: 'use a dedicated wrapper for process execution'
         }
-      ]
+      ],
     }
-  }
+  },
+  ...runtimeNoConsoleGuards(options)
 ];
 
 const reactConfig = options => [
