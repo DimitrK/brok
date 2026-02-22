@@ -105,10 +105,33 @@ export class BrokerAdminApiClient {
     this.getToken = input.getToken;
   }
 
+  private resolveRequestUrl(path: string) {
+    let parsedBaseUrl: URL;
+    try {
+      parsedBaseUrl = new URL(this.baseUrl);
+    } catch {
+      throw new ApiClientError({
+        message: 'Broker Admin API base URL must be a valid absolute URL.',
+        status: 400,
+        reason: 'invalid_base_url'
+      });
+    }
+
+    if (!['http:', 'https:'].includes(parsedBaseUrl.protocol)) {
+      throw new ApiClientError({
+        message: 'Broker Admin API base URL must use http or https.',
+        status: 400,
+        reason: 'invalid_base_url'
+      });
+    }
+
+    return new URL(path, parsedBaseUrl);
+  }
+
   private async request<TResponse, TBody = never>(
     input: RequestOptions<TResponse, TBody>
   ): Promise<TResponse | undefined> {
-    const url = new URL(input.path, this.baseUrl);
+    const url = this.resolveRequestUrl(input.path);
     appendQuery(url, input.query);
 
     const headers = new Headers({
@@ -273,6 +296,14 @@ export class BrokerAdminApiClient {
       method: 'GET',
       path: '/v1/admin/auth/session',
       responseSchema: OpenApiAdminSessionResponseSchema,
+      signal
+    });
+  }
+
+  public async logoutAdminSession(signal?: AbortSignal) {
+    await this.request({
+      method: 'POST',
+      path: '/v1/admin/auth/logout',
       signal
     });
   }

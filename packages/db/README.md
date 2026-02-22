@@ -343,7 +343,7 @@ Dedicated utility tests live in:
 
 ## Pending Feedback
 
-Last checked: 2026-02-13.
+Last checked: 2026-02-20.
 
 None awaiting external-team response.
 
@@ -353,6 +353,7 @@ Responses have been posted under `packages/db/external_feedback/broker-intercept
 
 - `audit`
 - `auth`
+- `broker-api`
 - `broker-admin-api`
 - `canonicalizer`
 - `crypto`

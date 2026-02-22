@@ -255,3 +255,9 @@ Current line coverage target is expected to remain above 85%.
   - Request received: `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/apps/broker-api/external_feedback/broker-interceptor/db/schema_consolidation_confirmation.md`
   - Response posted: `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/apps/broker-api/external_feedback/broker-interceptor/db/schema_consolidation_confirmation_response.md`
   - Decision: use shared DB schema as source of truth; keep DPoP replay and rate-limit counters Redis-backed.
+- `packages/db` (outgoing issue report)
+  - Status: waiting for response.
+  - Request: `/Users/dimitriskyriazopoulos/Development/brok/packages/db/external_feedback/broker-interceptor/broker-api/ssrf_projection_upsert_unexpected_error.md`
+  - Tracked copy: `/Users/dimitriskyriazopoulos/Development/brok/apps/broker-api/DB_SSRF_PROJECTION_UPSERT_ISSUE_2026-02-20.md`
+  - Waiting reason: `appendSsrfGuardDecisionProjection` fails with `DbRepositoryError(unexpected_error)` on valid `/v1/execute` flows while direct insert probes succeed.
+  - Related broker-api method: `DataPlaneRepository.appendSsrfDecisionProjectionShared`.

@@ -56,7 +56,7 @@ Unknown paths redirect to `/login` (logged out) or `/tenants` (authenticated).
 
 Contract source of truth:
 
-- `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/packages/schemas/openapi.yaml`
+- `packages/schemas/openapi.yaml`
 
 ## Run
 
@@ -82,12 +82,12 @@ pnpm --filter @broker-interceptor/admin-web run test
 
 For browser-driven validation (open app, snapshot UI, gather console/network logs, and take screenshots), use:
 
-- `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/apps/admin-web/PLAYWRIGHT_RUNBOOK.md`
-- `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/apps/admin-web/SMOKE_TEST_REPORT_2026-02-14.md`
+- `apps/admin-web/PLAYWRIGHT_RUNBOOK.md`
+- `apps/admin-web/SMOKE_TEST_REPORT_2026-02-14.md`
 
 Store screenshots and related browser artifacts under:
 
-- `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/output/playwright`
+- `output/playwright`
 
 ## Environment
 
@@ -105,23 +105,30 @@ refresh for the current browser context.
 - Callback route is `/login/callback`.
 - Session metadata and principal are refreshed through:
   - `GET /v1/admin/auth/session`
+- Sign-out invalidates the server-side session when supported:
+  - `POST /v1/admin/auth/logout`
 - Owner role users can toggle new-user sign-up mode through:
   - `GET /v1/admin/auth/signup-policy`
   - `PATCH /v1/admin/auth/signup-policy`
 - Advanced fallback keeps direct bearer token login for static/local environments.
+- Access-request submission remains blocked by contract gap:
+  - no OpenAPI endpoint exists yet for creating admin access requests from the login callback flow.
 
 Connection settings are staged in the form and committed only when `Apply connection` is pressed. This updates
 auth/base-url state and triggers query invalidation for fresh server data.
 
 ## Pending Feedback
 
-Last checked: 2026-02-14
+Last checked: 2026-02-20
 
 - Target code space: `apps/broker-admin-api`
-- Request file:
-  `apps/broker-admin-api/external_feedback/broker-interceptor/admin-web/integration_secret_write_transaction_support.md`
-- Waiting reason: `POST /v1/tenants/{tenantId}/integrations` returns `503 db_unavailable` for valid secret write payloads,
-  blocking the end-to-end integration secret storage flow.
-- Additional contract gap for admin-web OAuth UX:
-  `submitAccessRequest()` cannot call an API endpoint yet because no OpenAPI path for access request creation is
-  currently defined under `/v1/admin/auth/*`.
+- Reviewed response file:
+  `apps/broker-admin-api/external_feedback/broker-interceptor/admin-web/integration_secret_write_transaction_support_response.md`
+- Status: backend reports integration secret-write transaction wiring is fixed; admin-web should rerun live smoke to
+  confirm end-to-end behavior.
+
+- Target code space: `apps/broker-admin-api`
+- Waiting request file:
+  `apps/broker-admin-api/external_feedback/broker-interceptor/admin-web/admin_access_request_endpoint_contract_gap.md`
+- Waiting reason: no OpenAPI path exists for access-request creation in OAuth signup-closed flow, so admin-web cannot
+  implement `submitAccessRequest()` while staying contract-first.

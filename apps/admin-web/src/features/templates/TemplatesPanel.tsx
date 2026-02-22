@@ -192,7 +192,7 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
             </label>
 
             <label className="field wide">
-              <span>Allowed hosts (comma-separated)</span>
+              <span>Allowed hosts (comma-separated hosts of the service provider)</span>
               <input value={allowedHosts} onChange={event => setAllowedHosts(event.currentTarget.value)} />
             </label>
 
@@ -252,7 +252,11 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
 
             <label className="field">
               <span>Max body bytes</span>
-              <input value={maxBodyBytes} onChange={event => setMaxBodyBytes(event.currentTarget.value)} inputMode="numeric" />
+              <input
+                value={maxBodyBytes}
+                onChange={event => setMaxBodyBytes(event.currentTarget.value)}
+                inputMode="numeric"
+              />
             </label>
 
             <label className="field wide">

@@ -152,7 +152,7 @@ function matchesRuleWithDetails(
   // Check host
   const hostMatch = rule.match.hosts.some(h => hostMatches(host, h));
   if (!hostMatch) {
-    mismatches.push(`host '${host}' not matching [${rule.match.hosts.join(', ')}]`);
+    mismatches.push(`host '${host}' not matching [${rule.match.hosts.join(', ')}, ${host}]`);
   }
 
   // Check path groups

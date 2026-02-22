@@ -42,14 +42,14 @@ const sectionRoutes: SectionRoute[] = [
     description: 'Provision workloads and complete certificate enrollment.'
   },
   {
-    path: 'integrations',
-    label: 'Integrations',
-    description: 'Store provider secrets and bind templates safely.'
-  },
-  {
     path: 'templates',
     label: 'Templates',
     description: 'Publish canonical outbound access contracts.'
+  },
+  {
+    path: 'integrations',
+    label: 'Integrations',
+    description: 'Store provider secrets and bind templates safely.'
   },
   {
     path: 'policies',
@@ -77,6 +77,20 @@ const findActiveSection = (pathname: string) =>
   sectionRoutes.find(section => pathname === `/${section.path}` || pathname.startsWith(`/${section.path}/`)) ??
   sectionRoutes[0];
 
+const isIgnorableLogoutError = (error: unknown) =>
+  error instanceof ApiClientError &&
+  (error.status === 401 || (error.status === 404 && error.reason === 'route_not_found'));
+
+const reportNonBlockingError = (error: unknown) => {
+  const globalReportError = (globalThis as {reportError?: (input: unknown) => void}).reportError;
+  if (typeof globalReportError === 'function') {
+    globalReportError(error);
+    return;
+  }
+
+  console.error(error);
+};
+
 const RequireAuth = ({children}: {children: React.ReactNode}) => {
   const authToken = useAdminStore(state => state.authToken);
   const location = useLocation();
@@ -96,7 +110,7 @@ type AdminConsoleLayoutProps = {
   onDraftApiBaseUrlChange: (value: string) => void;
   onDraftAuthTokenChange: (value: string) => void;
   onApplyConnection: () => void;
-  onSignOut: () => void;
+  onSignOut: () => Promise<void>;
   selectedTenantId?: string;
   healthStatus?: string;
   healthError: unknown;
@@ -216,7 +230,7 @@ const AdminConsoleLayout = ({
           type="button"
           onClick={() => {
             setMobileNavOpen(false);
-            onSignOut();
+            void onSignOut();
           }}
         >
           Sign out
@@ -393,7 +407,17 @@ export const App = () => {
     void queryClient.invalidateQueries();
   };
 
-  const signOut = () => {
+  const signOut = async () => {
+    if (authToken) {
+      try {
+        await api.logoutAdminSession();
+      } catch (error) {
+        if (!isIgnorableLogoutError(error)) {
+          reportNonBlockingError(error);
+        }
+      }
+    }
+
     clearSession();
     queryClient.clear();
     navigate('/login', {replace: true});

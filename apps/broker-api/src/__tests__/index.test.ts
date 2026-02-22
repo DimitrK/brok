@@ -733,7 +733,9 @@ describe('broker-api', () => {
     expect(appendSsrfGuardDecisionProjection).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: 'repository.persistence.warning'
+        event: 'repository.persistence.warning',
+        reason_code: 'Error',
+        message: 'Non-blocking persistence operation failed (ssrf_decision_projection_allowed)'
       })
     );
   });
@@ -812,7 +814,9 @@ describe('broker-api', () => {
     expect(appendSsrfGuardDecisionProjection).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: 'repository.persistence.warning'
+        event: 'repository.persistence.warning',
+        reason_code: 'Error',
+        message: 'Non-blocking persistence operation failed (ssrf_decision_projection_denied)'
       })
     );
   });

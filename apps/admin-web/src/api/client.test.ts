@@ -302,4 +302,40 @@ describe('BrokerAdminApiClient', () => {
     expect(toRequestUrl(fetchSpy.mock.calls[0]?.[0])).toContain('/v1/admin/access-requests/req_1/approve');
     expect(toRequestUrl(fetchSpy.mock.calls[1]?.[0])).toContain('/v1/admin/access-requests/req_2/deny');
   });
+
+  it('fails closed when configured with an invalid base URL', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const api = new BrokerAdminApiClient({
+      baseUrl: 'not-a-valid-url',
+      getToken: () => 'owner-token'
+    });
+
+    await expect(api.listTenants()).rejects.toMatchObject({
+      name: 'ApiClientError',
+      status: 400,
+      reason: 'invalid_base_url'
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('invalidates admin session on sign out endpoint', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(null, {
+        status: 204
+      })
+    );
+    const api = new BrokerAdminApiClient({
+      baseUrl,
+      getToken: () => 'owner-token'
+    });
+
+    await api.logoutAdminSession();
+
+    expect(toRequestUrl(fetchSpy.mock.calls[0]?.[0])).toContain('/v1/admin/auth/logout');
+    const [, options] = fetchSpy.mock.calls[0] ?? [];
+    expect(options?.method).toBe('POST');
+    expect(options?.headers instanceof Headers ? options.headers.get('authorization') : null).toBe(
+      'Bearer owner-token'
+    );
+  });
 });

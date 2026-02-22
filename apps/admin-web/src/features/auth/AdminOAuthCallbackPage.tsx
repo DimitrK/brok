@@ -24,6 +24,22 @@ const isSignupBlockedError = (error: unknown) =>
     error.reason === 'admin_signup_closed' ||
     error.reason === 'admin_access_request_pending');
 
+const getSignupBlockedMessage = (error: unknown) => {
+  if (!(error instanceof ApiClientError)) {
+    return undefined;
+  }
+
+  if (error.reason === 'admin_access_request_pending') {
+    return 'Your access request is already pending owner approval. You will be able to sign in once it is approved.';
+  }
+
+  if (error.reason === 'signup_closed' || error.reason === 'admin_signup_closed') {
+    return 'New admin sign-ins are currently blocked. Ask an owner to approve access from the User Management page.';
+  }
+
+  return undefined;
+};
+
 export const AdminOAuthCallbackPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -85,28 +101,12 @@ export const AdminOAuthCallbackPage = () => {
       });
       await queryClient.invalidateQueries();
       navigate(pendingState.nextPath || '/tenants', {replace: true});
-    }
-  });
-
-  const accessRequestMutation = useMutation({
-    mutationFn: async () => {
+    },
+    onError: () => {
       const query = getCallbackQuery(location.search);
-      if (!query.state) {
-        throw new Error('OAuth state is missing. Start sign-in again.');
+      if (query.state) {
+        clearPendingAdminOAuthState(query.state);
       }
-
-      const pendingState = readPendingAdminOAuthState(query.state);
-      if (!pendingState) {
-        throw new Error('Pending OAuth state is unavailable. Start sign-in again.');
-      }
-
-      const api = new BrokerAdminApiClient({
-        baseUrl: pendingState.apiBaseUrl,
-        getToken: () => ''
-      });
-
-      await api.submitAccessRequest();
-      return pendingState;
     }
   });
 
@@ -131,21 +131,10 @@ export const AdminOAuthCallbackPage = () => {
         {callbackMutation.isPending ? <p className="helper-text">Processing callback response...</p> : null}
 
         <ErrorNotice error={callbackMutation.error} />
-        <ErrorNotice error={accessRequestMutation.error} />
 
         {isSignupBlockedError(callbackMutation.error) ? (
           <div className="auth-actions">
-            <p className="helper-text">
-              Sign-up is currently restricted. You can submit an access request for owner review.
-            </p>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => accessRequestMutation.mutate()}
-              disabled={accessRequestMutation.isPending}
-            >
-              Request access
-            </button>
+            <p className="helper-text">{getSignupBlockedMessage(callbackMutation.error)}</p>
           </div>
         ) : null}
 

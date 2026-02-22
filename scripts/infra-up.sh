@@ -11,6 +11,13 @@ RUN_MIGRATE=false
 WITH_TOOLS=false
 WITH_APPS=false
 WITH_VAULT=false
+POSTGRES_USER="${BROKER_POSTGRES_USER:-broker}"
+POSTGRES_DB="${BROKER_POSTGRES_DB:-broker}"
+POSTGRES_PORT="${BROKER_POSTGRES_PORT:-5432}"
+REDIS_PASSWORD="${BROKER_REDIS_PASSWORD:-broker}"
+REDIS_PORT="${BROKER_REDIS_PORT:-6379}"
+BROKER_ADMIN_API_PORT_VALUE="${BROKER_ADMIN_API_PORT:-8080}"
+BROKER_API_PORT_VALUE="${BROKER_API_PORT:-8081}"
 
 usage() {
   cat <<EOF
@@ -34,14 +41,14 @@ require_command() {
   fi
 }
 
-wait_for_command() {
+wait_for_check() {
   local description="$1"
-  local command_string="$2"
-  local timeout_seconds="$3"
-  local sleep_seconds="${4:-1}"
+  local timeout_seconds="$2"
+  local sleep_seconds=1
+  shift 2
   local elapsed=0
 
-  until eval "$command_string" >/dev/null 2>&1; do
+  until "$@" >/dev/null 2>&1; do
     elapsed=$((elapsed + sleep_seconds))
     if [ "$elapsed" -ge "$timeout_seconds" ]; then
       echo "Timed out waiting for ${description} (${timeout_seconds}s)."
@@ -120,25 +127,21 @@ if [ "$RUN_MIGRATE" = true ]; then
   require_command pnpm
 fi
 
-if [ "$WITH_APPS" = true ]; then
-  require_command curl
-fi
-
 echo "Starting core infrastructure (postgres + redis)..."
 docker compose up -d postgres redis
 
 echo "Waiting for PostgreSQL to be healthy..."
-wait_for_command \
+wait_for_check \
   "PostgreSQL" \
-  "docker compose exec -T postgres pg_isready -U broker -d broker" \
-  120
+  120 \
+  docker compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 echo "PostgreSQL is ready."
 
 echo "Waiting for Redis to be healthy..."
-wait_for_command \
+wait_for_check \
   "Redis" \
-  "docker compose exec -T redis redis-cli -a broker ping | grep -q PONG" \
-  120
+  120 \
+  sh -c "docker compose exec -T redis redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"
 echo "Redis is ready."
 
 if [ "$WITH_TOOLS" = true ]; then
@@ -149,16 +152,16 @@ fi
 if [ "$WITH_VAULT" = true ]; then
   echo "Starting local Vault dev service..."
   docker compose --profile vault up -d vault
-  wait_for_command \
+  wait_for_check \
     "Vault" \
-    "docker compose exec -T vault sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status'" \
-    120
+    120 \
+    docker compose exec -T vault sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status'
   echo "Vault is ready."
 fi
 
 if [ "$RUN_MIGRATE" = true ]; then
   echo "Running Prisma migrations..."
-  export DATABASE_URL="${DATABASE_URL:-postgresql://broker:broker@127.0.0.1:5432/broker}"
+  export DATABASE_URL="${DATABASE_URL:-postgresql://${POSTGRES_USER}:${BROKER_POSTGRES_PASSWORD:-broker}@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}}"
   pnpm --filter @broker-interceptor/db exec prisma migrate deploy --schema ./prisma/schema.prisma
   echo "Prisma migrations completed."
 fi
@@ -167,14 +170,11 @@ if [ "$WITH_APPS" = true ]; then
   echo "Building and starting broker-admin-api + broker-api containers..."
   docker compose --profile apps up -d --build broker-admin-api broker-api
 
-  echo "Waiting for broker-admin-api health endpoint..."
-  wait_for_command \
-    "broker-admin-api /healthz" \
-    "curl -fsS http://127.0.0.1:8080/healthz" \
-    180
+  echo "Waiting for broker-admin-api container to become healthy..."
+  wait_for_container_healthy "broker-admin-api" 180
   echo "broker-admin-api is healthy."
 
-  echo "Waiting for broker-api health endpoint..."
+  echo "Waiting for broker-api container to become healthy..."
   wait_for_container_healthy "broker-api" 180
   echo "broker-api is healthy."
 fi
@@ -183,14 +183,14 @@ echo
 echo "Infrastructure is ready."
 echo
 echo "Core services:"
-echo "  PostgreSQL: postgresql://broker:broker@127.0.0.1:5432/broker"
-echo "  Redis:      redis://:broker@127.0.0.1:6379"
+echo "  PostgreSQL: postgresql://${POSTGRES_USER}:${BROKER_POSTGRES_PASSWORD:-broker}@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}"
+echo "  Redis:      redis://:${REDIS_PASSWORD}@127.0.0.1:${REDIS_PORT}"
 
 if [ "$WITH_APPS" = true ]; then
   echo
   echo "API services:"
-  echo "  broker-admin-api: http://localhost:8080/healthz"
-  echo "  broker-api:       https://localhost:8081/healthz"
+  echo "  broker-admin-api: http://localhost:${BROKER_ADMIN_API_PORT_VALUE}/healthz"
+  echo "  broker-api:       https://localhost:${BROKER_API_PORT_VALUE}/healthz"
 fi
 
 if [ "$WITH_TOOLS" = true ]; then

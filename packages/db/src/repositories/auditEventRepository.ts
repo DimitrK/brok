@@ -15,7 +15,12 @@ import {
   type SsrfGuardDecisionProjection
 } from '../contracts.js'
 import {DbRepositoryError, mapDatabaseError} from '../errors.js'
-import type {CursorPage, DatabaseClient, RepositoryOperationContext} from '../types.js'
+import type {
+  CursorPage,
+  DatabaseClient,
+  RepositoryOperationContext,
+  SsrfGuardDecisionRow
+} from '../types.js'
 import {decodeCursor, encodeCursor, parseCursorPair, resolveRepositoryDbClient} from '../utils.js'
 
 const toAuditEvent = (value: unknown): AuditEvent => OpenApiAuditEventSchema.parse(value)
@@ -58,6 +63,12 @@ const equivalentIsoTimestamp = (left: string, right: string): boolean => {
   return Number.isFinite(leftEpochMs) && Number.isFinite(rightEpochMs) && leftEpochMs === rightEpochMs
 }
 
+const isUniqueViolationError = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  (error as {code?: unknown}).code === 'P2002'
+
 const ssrfProjectionEquals = (
   left: SsrfGuardDecisionProjection,
   right: SsrfGuardDecisionProjection
@@ -75,7 +86,7 @@ const ssrfProjectionEquals = (
   left.reason_code === right.reason_code &&
   left.correlation_id === right.correlation_id &&
   left.resolved_ips.length === right.resolved_ips.length &&
-  left.resolved_ips.every((value, index) => value === right.resolved_ips[index])
+  left.resolved_ips.every((value, index) => right.resolved_ips.at(index) === value)
 
 const policyDecisionInputSchema = CanonicalRequestDescriptorSchema.transform(descriptor => descriptor)
 
@@ -205,31 +216,55 @@ export class AuditEventRepository {
       const dbClient = resolveRepositoryDbClient(this.db, operationContext, [
         {
           model: 'ssrfGuardDecision',
-          method: 'upsert'
+          method: 'create'
+        },
+        {
+          model: 'ssrfGuardDecision',
+          method: 'findUnique'
         }
       ])
 
-      const record = await dbClient.ssrfGuardDecision.upsert({
-        where: {
-          eventId: input.projection.event_id
-        },
-        create: {
-          eventId: input.projection.event_id,
-          timestamp: new Date(input.projection.timestamp),
-          tenantId: input.projection.tenant_id,
-          workloadId: input.projection.workload_id,
-          integrationId: input.projection.integration_id,
-          templateId: input.projection.template_id,
-          templateVersion: input.projection.template_version,
-          destinationHost: input.projection.destination_host,
-          destinationPort: input.projection.destination_port,
-          resolvedIps: input.projection.resolved_ips,
-          decision: input.projection.decision,
-          reasonCode: input.projection.reason_code,
-          correlationId: input.projection.correlation_id
-        },
-        update: {}
-      })
+      const createData = {
+        eventId: input.projection.event_id,
+        timestamp: new Date(input.projection.timestamp),
+        tenantId: input.projection.tenant_id,
+        workloadId: input.projection.workload_id,
+        integrationId: input.projection.integration_id,
+        templateId: input.projection.template_id,
+        templateVersion: input.projection.template_version,
+        destinationHost: input.projection.destination_host,
+        destinationPort: input.projection.destination_port,
+        resolvedIps: input.projection.resolved_ips,
+        decision: input.projection.decision,
+        reasonCode: input.projection.reason_code,
+        correlationId: input.projection.correlation_id
+      }
+
+      let record: SsrfGuardDecisionRow
+      try {
+        record = await dbClient.ssrfGuardDecision.create({
+          data: createData
+        })
+      } catch (error) {
+        if (!isUniqueViolationError(error)) {
+          throw error
+        }
+
+        const existing = await dbClient.ssrfGuardDecision.findUnique({
+          where: {
+            eventId: input.projection.event_id
+          }
+        })
+
+        if (!existing) {
+          throw new DbRepositoryError(
+            'unexpected_error',
+            'SSRF decision projection unique conflict encountered without existing record'
+          )
+        }
+
+        record = existing
+      }
 
       const projection = toSsrfGuardDecisionProjection(record)
       if (!ssrfProjectionEquals(projection, input.projection)) {

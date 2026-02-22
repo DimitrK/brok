@@ -10,6 +10,14 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 # Default values
 REMOVE_VOLUMES=false
 
+require_command() {
+  local command_name="$1"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "Missing required command: $command_name"
+    exit 1
+  fi
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -33,6 +41,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$ROOT_DIR"
+require_command docker
+docker compose version >/dev/null
 
 echo "Stopping broker-interceptor infrastructure..."
 

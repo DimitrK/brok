@@ -100,6 +100,7 @@ Optional profiles:
 | `pnpm infra:down`                    | Stop containers (preserves data)                              |
 | `pnpm infra:down:volumes`            | Stop containers and delete all data                           |
 | `pnpm infra:prod:config`             | Validate production compose env/config                        |
+| `pnpm infra:prod:config:example`     | Validate production compose with `.env.production.example`    |
 | `pnpm infra:prod:up`                 | Start production compose stack (requires production env)      |
 | `pnpm infra:prod:down`               | Stop production compose stack                                 |
 | `pnpm docker:build:broker-admin-api` | Build production image for control-plane API                  |
@@ -138,17 +139,24 @@ cp .env.production.example .env.production
 
 Key environment variables:
 
+**shared local infrastructure:**
+
+- `BROKER_POSTGRES_USER`, `BROKER_POSTGRES_PASSWORD`, `BROKER_POSTGRES_DB`
+- `BROKER_POSTGRES_PORT`, `BROKER_REDIS_PORT`, `BROKER_REDIS_PASSWORD`
+
 **broker-admin-api (port 8080):**
 
 - `BROKER_ADMIN_API_INFRA_ENABLED=true`
 - `BROKER_ADMIN_API_DATABASE_URL=postgresql://broker:broker@127.0.0.1:5432/broker`
 - `BROKER_ADMIN_API_REDIS_URL=redis://:broker@127.0.0.1:6379`
+- `BROKER_ADMIN_API_SECRET_KEY_B64=<32-byte-base64>`
 
 **broker-api (port 8081):**
 
 - `BROKER_API_INFRA_ENABLED=true`
 - `BROKER_API_DATABASE_URL=postgresql://broker:broker@127.0.0.1:5432/broker`
 - `BROKER_API_REDIS_URL=redis://:broker@127.0.0.1:6379`
+- `BROKER_API_SECRET_KEY_B64=<same key as admin API>`
 
 Docker app-profile defaults (container network):
 
@@ -156,11 +164,12 @@ Docker app-profile defaults (container network):
 - `BROKER_ADMIN_API_REDIS_URL_DOCKER=redis://:broker@redis:6379`
 - `BROKER_API_DATABASE_URL_DOCKER=postgresql://broker:broker@postgres:5432/broker`
 - `BROKER_API_REDIS_URL_DOCKER=redis://:broker@redis:6379`
+- `infra:smoke` uses TLS verification + client cert by default (`apps/broker-api/certs/healthcheck-client.*`).
 
 ## CI and Production Notes
 
 - CI now validates both code quality and compose orchestration:
-  - `.github/workflows/ci.yml` runs lint/typecheck/test/build plus a container smoke test.
+  - `.github/workflows/ci.yml` runs lint/typecheck/test/build, validates production compose config, and runs a container smoke test.
 - Production container images are defined in:
   - `apps/broker-admin-api/Dockerfile`
   - `apps/broker-api/Dockerfile`
@@ -169,7 +178,7 @@ Docker app-profile defaults (container network):
 - For production runtime, set strict env values at minimum:
   - `NODE_ENV=production`
   - Admin API: `BROKER_ADMIN_API_SECRET_KEY_B64`, OIDC or hardened static auth, vault config if vault mode is enabled
-  - Broker API: `BROKER_API_STATE_PATH` or `BROKER_API_INITIAL_STATE_JSON`
+  - Broker API: `BROKER_API_SECRET_KEY_B64`, `BROKER_API_STATE_PATH` or `BROKER_API_INITIAL_STATE_JSON`
   - Both APIs: externalized `*_DATABASE_URL` and `*_REDIS_URL`
 
 ### Project Structure

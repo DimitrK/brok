@@ -359,7 +359,7 @@ export type DatabaseClient = {
     findMany: DbMethod<AuditEventRow[]>
   }
   ssrfGuardDecision: {
-    upsert: DbMethod<SsrfGuardDecisionRow>
+    create: DbMethod<SsrfGuardDecisionRow>
     findUnique: DbMethod<SsrfGuardDecisionRow | null>
   }
   templateInvalidationOutbox: {

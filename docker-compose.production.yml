@@ -11,6 +11,7 @@ services:
       BROKER_ADMIN_API_REDIS_URL: ${BROKER_ADMIN_API_REDIS_URL:?BROKER_ADMIN_API_REDIS_URL is required}
       BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS: ${BROKER_ADMIN_API_CORS_ALLOWED_ORIGINS:-}
       BROKER_ADMIN_API_SECRET_KEY_B64: ${BROKER_ADMIN_API_SECRET_KEY_B64:?BROKER_ADMIN_API_SECRET_KEY_B64 is required}
+      BROKER_ADMIN_API_SECRET_KEY_ID: ${BROKER_ADMIN_API_SECRET_KEY_ID:-v1}
       BROKER_ADMIN_API_AUTH_MODE: ${BROKER_ADMIN_API_AUTH_MODE:-oidc}
       BROKER_ADMIN_API_OIDC_ISSUER: ${BROKER_ADMIN_API_OIDC_ISSUER:-}
       BROKER_ADMIN_API_OIDC_AUDIENCE: ${BROKER_ADMIN_API_OIDC_AUDIENCE:-}
@@ -43,6 +44,8 @@ services:
       BROKER_API_CORS_ALLOWED_ORIGINS: ${BROKER_API_CORS_ALLOWED_ORIGINS:-}
       BROKER_API_STATE_PATH: ${BROKER_API_STATE_PATH:-}
       BROKER_API_INITIAL_STATE_JSON: ${BROKER_API_INITIAL_STATE_JSON:-}
+      BROKER_API_SECRET_KEY_B64: ${BROKER_API_SECRET_KEY_B64:?BROKER_API_SECRET_KEY_B64 is required}
+      BROKER_API_SECRET_KEY_ID: ${BROKER_API_SECRET_KEY_ID:-v1}
       BROKER_API_TLS_ENABLED: 'true'
       BROKER_API_TLS_KEY_PATH: ${BROKER_API_TLS_KEY_PATH:-/run/certs/broker-api/server.key}
       BROKER_API_TLS_CERT_PATH: ${BROKER_API_TLS_CERT_PATH:-/run/certs/broker-api/server.crt}
@@ -57,7 +60,9 @@ services:
       test:
         [
           'CMD-SHELL',
-          'node -e "const https=require(\"node:https\"); const fs=require(\"node:fs\"); const req=https.request({host:\"127.0.0.1\",port:8081,path:\"/healthz\",method:\"GET\",key:fs.readFileSync(\"/run/certs/broker-api/healthcheck-client.key\"),cert:fs.readFileSync(\"/run/certs/broker-api/healthcheck-client.crt\"),ca:fs.readFileSync(\"/run/certs/broker-api/ca.crt\"),rejectUnauthorized:true},res=>process.exit(res.statusCode===200?0:1)); req.on(\"error\",()=>process.exit(1)); req.end();"'
+          'node -e "const https=require(\"node:https\"); const fs=require(\"node:fs\"); const
+          req=https.request({host:\"127.0.0.1\",port:8081,path:\"/healthz\",method:\"GET\",key:fs.readFileSync(\"/run/certs/broker-api/healthcheck-client.key\"),cert:fs.readFileSync(\"/run/certs/broker-api/healthcheck-client.crt\"),ca:fs.readFileSync(\"/run/certs/broker-api/ca.crt\"),rejectUnauthorized:true},res=>process.exit(res.statusCode===200?0:1));
+          req.on(\"error\",()=>process.exit(1)); req.end();"'
         ]
       interval: 15s
       timeout: 5s

@@ -460,6 +460,55 @@ const parseDestinationFromRequestUrl = (rawUrl: string) => {
   };
 };
 
+const truncateForLog = ({value, maxLength}: {value: string; maxLength: number}) =>
+  value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
+
+const describePersistenceError = (error: unknown) => {
+  if (isAppError(error)) {
+    return {
+      reasonCode: error.code,
+      details: {
+        error_name: 'AppError',
+        error_code: error.code,
+        error_message: truncateForLog({value: error.message, maxLength: 240})
+      }
+    };
+  }
+
+  if (error instanceof Error) {
+    const errorWithCode = error as Error & {code?: unknown};
+    return {
+      reasonCode: error.name,
+      details: {
+        error_name: error.name,
+        ...(typeof errorWithCode.code === 'string' ? {error_code: errorWithCode.code} : {}),
+        error_message: truncateForLog({value: error.message, maxLength: 240})
+      }
+    };
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const candidate = error as {name?: unknown; code?: unknown; message?: unknown};
+    return {
+      reasonCode: typeof candidate.name === 'string' ? candidate.name : 'unknown_error',
+      details: {
+        ...(typeof candidate.name === 'string' ? {error_name: candidate.name} : {}),
+        ...(typeof candidate.code === 'string' ? {error_code: candidate.code} : {}),
+        ...(typeof candidate.message === 'string'
+          ? {error_message: truncateForLog({value: candidate.message, maxLength: 240})}
+          : {})
+      }
+    };
+  }
+
+  return {
+    reasonCode: 'unknown_error',
+    details: {
+      error_name: 'unknown_error'
+    }
+  };
+};
+
 const reportPersistenceWarning = ({
   logger,
   stage,
@@ -471,15 +520,17 @@ const reportPersistenceWarning = ({
   correlationId: string;
   error: unknown;
 }) => {
-  const reasonCode = isAppError(error) ? error.code : error instanceof Error ? error.name : 'unknown_error';
+  const diagnostics = describePersistenceError(error);
   logger.warn({
     event: 'repository.persistence.warning',
     component: 'repository.persistence',
     message: `Non-blocking persistence operation failed (${stage})`,
     correlation_id: correlationId,
-    reason_code: reasonCode,
+    reason_code: diagnostics.reasonCode,
     metadata: {
-      warning_code: 'BROKER_API_PERSISTENCE_WARNING'
+      warning_code: 'BROKER_API_PERSISTENCE_WARNING',
+      stage,
+      ...diagnostics.details
     }
   });
 };

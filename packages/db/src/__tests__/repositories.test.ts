@@ -124,7 +124,7 @@ const createDbClientStub = (overrides: DatabaseClientOverrides = {}): DatabaseCl
       findMany: notImplemented()
     },
     ssrfGuardDecision: {
-      upsert: notImplemented(),
+      create: notImplemented(),
       findUnique: notImplemented()
     },
     templateInvalidationOutbox: {

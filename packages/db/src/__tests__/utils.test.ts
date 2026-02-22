@@ -127,7 +127,7 @@ const createDbClientStub = (): DatabaseClient => ({
     findMany: notImplemented()
   },
   ssrfGuardDecision: {
-    upsert: notImplemented(),
+    create: notImplemented(),
     findUnique: notImplemented()
   },
   templateInvalidationOutbox: {

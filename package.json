@@ -20,6 +20,7 @@
     "infra:down": "./scripts/infra-down.sh",
     "infra:down:volumes": "./scripts/infra-down.sh --volumes",
     "infra:prod:config": "docker compose --env-file .env.production -f docker-compose.production.yml config",
+    "infra:prod:config:example": "docker compose --env-file .env.production.example -f docker-compose.production.yml config",
     "infra:prod:up": "docker compose --env-file .env.production -f docker-compose.production.yml up -d",
     "infra:prod:down": "docker compose --env-file .env.production -f docker-compose.production.yml down --remove-orphans",
     "docker:build:broker-admin-api": "docker build -f apps/broker-admin-api/Dockerfile -t broker-admin-api:local .",

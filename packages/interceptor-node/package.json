@@ -21,7 +21,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:service": "tsx test-service/server.ts",
-    "test:service:intercepted": "BROKER_URL=${BROKER_URL:-https://localhost:8081} BROKER_WORKLOAD_ID=${BROKER_WORKLOAD_ID:-w_92f9f2dc4b3f4e10a026a4e7063b3850} OPENAI_API_KEY=${OPENAI_API_KEY:-int_c31a3116ae854b1db295ef15518bcb16} BROKER_MTLS_CERT_PATH=${BROKER_MTLS_CERT_PATH:-./test-service/certs/workload.crt} BROKER_MTLS_KEY_PATH=${BROKER_MTLS_KEY_PATH:-./test-service/certs/workload.key} BROKER_MTLS_CA_PATH=${BROKER_MTLS_CA_PATH:-./test-service/certs/ca-chain.pem} BROKER_LOG_LEVEL=${BROKER_LOG_LEVEL:-debug} node --import ./dist/preload.js --import tsx test-service/server.ts"
+    "test:service:intercepted": "BROKER_URL=${BROKER_URL:-https://localhost:8081} BROKER_WORKLOAD_ID=${BROKER_WORKLOAD_ID:-w_f73d1dc18e9c41bc89c5928d5bc67230} OPENAI_API_KEY=${OPENAI_API_KEY:-int_c7baa65e33244fb8b8bcd51a7072b57f} BROKER_MTLS_CERT_PATH=${BROKER_MTLS_CERT_PATH:-./test-service/certs/workload.crt} BROKER_MTLS_KEY_PATH=${BROKER_MTLS_KEY_PATH:-./test-service/certs/workload.key} BROKER_MTLS_CA_PATH=${BROKER_MTLS_CA_PATH:-./test-service/certs/ca-chain.pem} BROKER_LOG_LEVEL=${BROKER_LOG_LEVEL:-debug} node --import ./dist/preload.js --import tsx test-service/server.ts"
   },
   "prettier": "@broker-interceptor/prettier-config",
   "devDependencies": {

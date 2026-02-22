@@ -18,6 +18,8 @@ import type {DatabaseClient} from '../types.js'
 import {decodeBase64ByteLength, parseCursorPair} from '../utils.js'
 
 const notImplemented = <T>() => (): Promise<T> => Promise.reject(new Error('not_implemented'))
+const prismaError = (code: string): Error & {code: string} =>
+  Object.assign(new Error(`prisma_error_${code}`), {code})
 
 type DatabaseClientOverrides = {
   [K in Exclude<keyof DatabaseClient, '$transaction'>]?: Record<string, unknown>
@@ -131,7 +133,7 @@ const createDbClientStub = (overrides: DatabaseClientOverrides = {}): DatabaseCl
       findMany: notImplemented()
     },
     ssrfGuardDecision: {
-      upsert: notImplemented(),
+      create: notImplemented(),
       findUnique: notImplemented()
     },
     templateInvalidationOutbox: {
@@ -1897,9 +1899,9 @@ describe('AuditEventRepository', () => {
     expect(txCreate).toHaveBeenCalledTimes(1)
   })
 
-  it('appends ssrf decision projection via idempotent upsert', async () => {
+  it('appends ssrf decision projection via create-first persistence', async () => {
     const projection = createSsrfDecisionProjection()
-    const upsert = vi.fn(() =>
+    const create = vi.fn(() =>
       Promise.resolve({
         eventId: projection.event_id,
         timestamp: new Date(projection.timestamp),
@@ -1920,7 +1922,7 @@ describe('AuditEventRepository', () => {
     const repository = new AuditEventRepository(
       createDbClientStub({
         ssrfGuardDecision: {
-          upsert
+          create
         }
       })
     )
@@ -1930,34 +1932,38 @@ describe('AuditEventRepository', () => {
     })
 
     expect(persisted).toEqual(projection)
-    expect(upsert).toHaveBeenCalledTimes(1)
+    expect(create).toHaveBeenCalledTimes(1)
   })
 
-  it('treats equivalent offset timestamps as idempotent for ssrf projection writes', async () => {
+  it('treats duplicate event_id with equivalent offset timestamps as idempotent', async () => {
     const projection = {
       ...createSsrfDecisionProjection(),
       timestamp: '2026-02-13T00:00:00+00:00'
     }
+    const create = vi.fn(() => Promise.reject(prismaError('P2002')))
+    const findUnique = vi.fn(() =>
+      Promise.resolve({
+        eventId: projection.event_id,
+        timestamp: new Date('2026-02-13T00:00:00.000Z'),
+        tenantId: projection.tenant_id,
+        workloadId: projection.workload_id,
+        integrationId: projection.integration_id,
+        templateId: projection.template_id,
+        templateVersion: projection.template_version,
+        destinationHost: projection.destination_host,
+        destinationPort: projection.destination_port,
+        resolvedIps: projection.resolved_ips,
+        decision: projection.decision,
+        reasonCode: projection.reason_code,
+        correlationId: projection.correlation_id
+      })
+    )
+
     const repository = new AuditEventRepository(
       createDbClientStub({
         ssrfGuardDecision: {
-          upsert: vi.fn(() =>
-            Promise.resolve({
-              eventId: projection.event_id,
-              timestamp: new Date('2026-02-13T00:00:00.000Z'),
-              tenantId: projection.tenant_id,
-              workloadId: projection.workload_id,
-              integrationId: projection.integration_id,
-              templateId: projection.template_id,
-              templateVersion: projection.template_version,
-              destinationHost: projection.destination_host,
-              destinationPort: projection.destination_port,
-              resolvedIps: projection.resolved_ips,
-              decision: projection.decision,
-              reasonCode: projection.reason_code,
-              correlationId: projection.correlation_id
-            })
-          )
+          create,
+          findUnique
         }
       })
     )
@@ -1970,12 +1976,14 @@ describe('AuditEventRepository', () => {
       event_id: projection.event_id,
       timestamp: '2026-02-13T00:00:00.000Z'
     })
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(findUnique).toHaveBeenCalledTimes(1)
   })
 
   it('supports transaction_client pass-through for ssrf decision projection writes', async () => {
     const projection = createSsrfDecisionProjection()
-    const rootUpsert = vi.fn(() => Promise.reject(new Error('must_not_use_root_client')))
-    const txUpsert = vi.fn(() =>
+    const rootCreate = vi.fn(() => Promise.reject(new Error('must_not_use_root_client')))
+    const txCreate = vi.fn(() =>
       Promise.resolve({
         eventId: projection.event_id,
         timestamp: new Date(projection.timestamp),
@@ -1996,7 +2004,7 @@ describe('AuditEventRepository', () => {
     const repository = new AuditEventRepository(
       createDbClientStub({
         ssrfGuardDecision: {
-          upsert: rootUpsert
+          create: rootCreate
         }
       })
     )
@@ -2006,39 +2014,43 @@ describe('AuditEventRepository', () => {
       context: {
         transaction_client: createDbClientStub({
           ssrfGuardDecision: {
-            upsert: txUpsert
+            create: txCreate
           }
         })
       }
     })
 
     expect(persisted).toEqual(projection)
-    expect(rootUpsert).not.toHaveBeenCalled()
-    expect(txUpsert).toHaveBeenCalledTimes(1)
+    expect(rootCreate).not.toHaveBeenCalled()
+    expect(txCreate).toHaveBeenCalledTimes(1)
   })
 
-  it('rejects conflicting ssrf projection payload for existing event_id', async () => {
+  it('rejects conflicting ssrf projection payload for duplicate event_id', async () => {
     const projection = createSsrfDecisionProjection()
+    const create = vi.fn(() => Promise.reject(prismaError('P2002')))
+    const findUnique = vi.fn(() =>
+      Promise.resolve({
+        eventId: projection.event_id,
+        timestamp: new Date(projection.timestamp),
+        tenantId: projection.tenant_id,
+        workloadId: projection.workload_id,
+        integrationId: projection.integration_id,
+        templateId: projection.template_id,
+        templateVersion: projection.template_version,
+        destinationHost: projection.destination_host,
+        destinationPort: projection.destination_port,
+        resolvedIps: projection.resolved_ips,
+        decision: projection.decision,
+        reasonCode: 'dns_resolution_failed',
+        correlationId: projection.correlation_id
+      })
+    )
+
     const repository = new AuditEventRepository(
       createDbClientStub({
         ssrfGuardDecision: {
-          upsert: vi.fn(() =>
-            Promise.resolve({
-              eventId: projection.event_id,
-              timestamp: new Date(projection.timestamp),
-              tenantId: projection.tenant_id,
-              workloadId: projection.workload_id,
-              integrationId: projection.integration_id,
-              templateId: projection.template_id,
-              templateVersion: projection.template_version,
-              destinationHost: projection.destination_host,
-              destinationPort: projection.destination_port,
-              resolvedIps: projection.resolved_ips,
-              decision: projection.decision,
-              reasonCode: 'dns_resolution_failed',
-              correlationId: projection.correlation_id
-            })
-          )
+          create,
+          findUnique
         }
       })
     )
@@ -2049,6 +2061,28 @@ describe('AuditEventRepository', () => {
       })
     ).rejects.toMatchObject({
       code: 'conflict'
+    })
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(findUnique).toHaveBeenCalledTimes(1)
+  })
+
+  it('maps non-unique SSRF persistence failures through stable db error mapping', async () => {
+    const projection = createSsrfDecisionProjection()
+    const repository = new AuditEventRepository(
+      createDbClientStub({
+        ssrfGuardDecision: {
+          create: vi.fn(() => Promise.reject(prismaError('P2003'))),
+          findUnique: vi.fn(() => Promise.resolve(null))
+        }
+      })
+    )
+
+    await expect(
+      repository.appendSsrfGuardDecisionProjection({
+        projection
+      })
+    ).rejects.toMatchObject({
+      code: 'integrity_violation'
     })
   })
 
