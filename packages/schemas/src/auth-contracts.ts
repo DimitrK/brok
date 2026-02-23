@@ -23,12 +23,14 @@ export const dpopPayloadSchema = dpopClaimsSchema.extend({
 export type DpopClaimsContract = z.infer<typeof dpopClaimsSchema>
 export type DpopPayloadContract = z.infer<typeof dpopPayloadSchema>
 
-const canonicalWorkloadRecordSchema = WorkloadSchema.pick({
-  workload_id: true,
-  tenant_id: true,
-  enabled: true,
-  ip_allowlist: true
-}).loose()
+const canonicalWorkloadRecordSchema = z
+  .object({
+    workload_id: WorkloadSchema.shape.workload_id,
+    tenant_id: WorkloadSchema.shape.tenant_id,
+    enabled: WorkloadSchema.shape.enabled,
+    ip_allowlist: WorkloadSchema.shape.ip_allowlist
+  })
+  .loose()
 
 export const workloadRecordSchema = z
   .preprocess(value => {

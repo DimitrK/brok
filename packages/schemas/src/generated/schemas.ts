@@ -215,7 +215,7 @@ export type OpenApiWorkloadEnrollmentTokenIssueRequest = z.infer<typeof OpenApiW
 export const OpenApiWorkloadEnrollmentTokenIssueResponseSchema = z.object({"enrollment_token": z.string(), "expires_at": z.string().datetime({offset: true})}).strict()
 export type OpenApiWorkloadEnrollmentTokenIssueResponse = z.infer<typeof OpenApiWorkloadEnrollmentTokenIssueResponseSchema>
 
-export const OpenApiWorkloadEnrollRequestSchema = z.object({"enrollment_token": z.string(), "csr_pem": z.string(), "requested_ttl_seconds": z.number().int()}).strict()
+export const OpenApiWorkloadEnrollRequestSchema = z.object({"enrollment_token": z.string(), "csr_pem": z.string(), "requested_ttl_seconds": z.number().int().gte(1)}).strict()
 export type OpenApiWorkloadEnrollRequest = z.infer<typeof OpenApiWorkloadEnrollRequestSchema>
 
 export const OpenApiWorkloadEnrollResponseSchema = z.object({"client_cert_pem": z.string(), "ca_chain_pem": z.string(), "expires_at": z.string().datetime({offset: true})}).strict()

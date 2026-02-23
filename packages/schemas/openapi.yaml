@@ -251,6 +251,7 @@ components:
       additionalProperties: false
     AdminUserUpdateRequest:
       type: object
+      minProperties: 1
       properties:
         status:
           $ref: '#/components/schemas/AdminUserStatus'
@@ -417,6 +418,10 @@ components:
           type: string
         requested_ttl_seconds:
           type: integer
+          minimum: 1
+          description:
+            Requested certificate TTL in seconds. Upper bound is enforced at runtime by
+            BROKER_ADMIN_API_CLIENT_CERT_TTL_SECONDS_MAX.
       additionalProperties: false
     WorkloadEnrollResponse:
       type: object

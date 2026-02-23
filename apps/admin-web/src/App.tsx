@@ -78,8 +78,7 @@ const findActiveSection = (pathname: string) =>
   sectionRoutes[0];
 
 const isIgnorableLogoutError = (error: unknown) =>
-  error instanceof ApiClientError &&
-  (error.status === 401 || (error.status === 404 && error.reason === 'route_not_found'));
+  error instanceof ApiClientError && error.status === 401;
 
 const reportNonBlockingError = (error: unknown) => {
   const globalReportError = (globalThis as {reportError?: (input: unknown) => void}).reportError;
