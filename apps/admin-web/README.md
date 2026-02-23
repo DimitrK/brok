@@ -107,8 +107,8 @@ refresh for the current browser context.
 - Callback route is `/login/callback`.
 - Session metadata and principal are refreshed through:
   - `GET /v1/admin/auth/session`
-- Sign-out invalidates the server-side session when supported:
-  - `POST /v1/admin/auth/logout`
+- Sign-out calls:
+  - `POST /v1/admin/auth/logout` and expects `204`; client must discard bearer session credentials immediately.
 - Owner role users can toggle new-user sign-up mode through:
   - `GET /v1/admin/auth/signup-policy`
   - `PATCH /v1/admin/auth/signup-policy`

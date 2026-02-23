@@ -19,11 +19,19 @@ import {appName} from '../index';
 import type {ServiceConfig} from '../config';
 import type {ProcessInfrastructure} from '../infrastructure';
 import {DataPlaneRepository} from '../repository';
-import {createBrokerApiRequestHandler} from '../server';
+import {
+  createBrokerApiRouteHandlers,
+  type CreateBrokerApiRequestHandlerInput
+} from '../http/requestHandler';
+import type {BrokerApiRouteHandler, BrokerApiRouteHandlers} from '../http/routes/types';
 
 type RequestOptions = {
   method: 'GET' | 'POST';
   path: string;
+  originalUrl?: string;
+  expressPath?: string;
+  expressBaseUrl?: string;
+  expressRoutePath?: string;
   token?: string;
   dpop?: string;
   body?: unknown;
@@ -341,6 +349,10 @@ const invokeHandler = async ({
   handler,
   method,
   path,
+  originalUrl,
+  expressPath,
+  expressBaseUrl,
+  expressRoutePath,
   token,
   dpop,
   body,
@@ -348,7 +360,7 @@ const invokeHandler = async ({
   headers,
   tls
 }: {
-  handler: ReturnType<typeof createBrokerApiRequestHandler>;
+  handler: BrokerApiRouteHandler;
 } & RequestOptions): Promise<ResponseShape> => {
   const requestHeaders: Record<string, string> = {
     host: 'broker.example',
@@ -377,6 +389,18 @@ const invokeHandler = async ({
   }) as IncomingMessage;
   request.method = method;
   request.url = path;
+  if (typeof originalUrl === 'string') {
+    (request as IncomingMessage & {originalUrl?: string}).originalUrl = originalUrl;
+  }
+  if (typeof expressPath === 'string') {
+    (request as IncomingMessage & {path?: string}).path = expressPath;
+  }
+  if (typeof expressBaseUrl === 'string') {
+    (request as IncomingMessage & {baseUrl?: string}).baseUrl = expressBaseUrl;
+  }
+  if (typeof expressRoutePath === 'string') {
+    (request as IncomingMessage & {route?: {path?: string}}).route = {path: expressRoutePath};
+  }
   request.headers = requestHeaders;
 
   const socket = {
@@ -404,7 +428,9 @@ const invokeHandler = async ({
   });
 
   const response = {
+    statusCode: 200,
     writeHead: (statusCode: number, headerValues: Record<string, string | number>) => {
+      response.statusCode = statusCode;
       for (const [key, value] of Object.entries(headerValues)) {
         capturedHeaders[key.toLowerCase()] = String(value);
       }
@@ -443,6 +469,61 @@ const invokeHandler = async ({
   };
 };
 
+const resolveRequestPathname = ({
+  path,
+  originalUrl,
+  expressPath,
+  expressBaseUrl,
+  expressRoutePath
+}: RequestOptions) => {
+  if (typeof originalUrl === 'string' && originalUrl.length > 0) {
+    return new URL(originalUrl, 'https://broker.example').pathname;
+  }
+
+  if (path !== '/') {
+    return new URL(path, 'https://broker.example').pathname;
+  }
+
+  if (typeof expressPath === 'string' && expressPath.length > 0) {
+    const base = typeof expressBaseUrl === 'string' ? expressBaseUrl : '';
+    return new URL(`${base}${expressPath}`, 'https://broker.example').pathname;
+  }
+
+  if (typeof expressRoutePath === 'string' && expressRoutePath.length > 0) {
+    return new URL(expressRoutePath, 'https://broker.example').pathname;
+  }
+
+  return new URL(path, 'https://broker.example').pathname;
+};
+
+const selectHandlerForRequest = ({
+  routeHandlers,
+  options
+}: {
+  routeHandlers: BrokerApiRouteHandlers;
+  options: RequestOptions;
+}): BrokerApiRouteHandler => {
+  const pathname = resolveRequestPathname(options);
+  const method = options.method;
+  if (method === 'GET' && pathname === '/healthz') {
+    return routeHandlers.health;
+  }
+  if (method === 'GET' && pathname === '/v1/keys/manifest') {
+    return routeHandlers.manifestKeys;
+  }
+  if (method === 'POST' && pathname === '/v1/session') {
+    return routeHandlers.session;
+  }
+  if (method === 'POST' && pathname === '/v1/execute') {
+    return routeHandlers.execute;
+  }
+  if (method === 'GET' && /^\/v1\/workloads\/[^/]+\/manifest$/u.test(pathname)) {
+    return routeHandlers.workloadManifest;
+  }
+
+  return routeHandlers.fallback;
+};
+
 const createContext = async ({
   state = createBaseState(),
   fetchImpl,
@@ -473,17 +554,21 @@ const createContext = async ({
   const auditService = createAuditService({store: auditStore});
   const effectiveDnsResolver = dnsResolver ?? (() => ['198.51.100.10']);
 
-  const handler = createBrokerApiRequestHandler({
+  const routeHandlers = createBrokerApiRouteHandlers({
     config: makeConfig(),
     repository,
     auditService,
     ...(logger ? {logger} : {}),
     ...(fetchImpl ? {fetchImpl} : {}),
     dnsResolver: effectiveDnsResolver
-  });
+  } satisfies CreateBrokerApiRequestHandlerInput);
 
   return {
-    request: (options: RequestOptions) => invokeHandler({handler, ...options}),
+    request: (options: RequestOptions) =>
+      invokeHandler({
+        handler: selectHandlerForRequest({routeHandlers, options}),
+        ...options
+      }),
     repository,
     auditService
   };
@@ -514,6 +599,44 @@ describe('broker-api', () => {
     const response = await context.request({
       method: 'GET',
       path: '/healthz?api_key=secret-value'
+    });
+
+    expect(response.status).toBe(200);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'request.received',
+        route: '/healthz'
+      })
+    );
+  });
+
+  it('uses originalUrl for route parsing when request.url is route-local', async () => {
+    const logger = createMockLogger();
+    const context = await createContext({logger});
+
+    const response = await context.request({
+      method: 'GET',
+      path: '/',
+      originalUrl: '/healthz?api_key=secret-value'
+    });
+
+    expect(response.status).toBe(200);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'request.received',
+        route: '/healthz'
+      })
+    );
+  });
+
+  it('uses express path context for route parsing when originalUrl is missing', async () => {
+    const logger = createMockLogger();
+    const context = await createContext({logger});
+
+    const response = await context.request({
+      method: 'GET',
+      path: '/',
+      expressPath: '/healthz'
     });
 
     expect(response.status).toBe(200);

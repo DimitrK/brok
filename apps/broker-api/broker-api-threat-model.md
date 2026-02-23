@@ -2,15 +2,17 @@
 
 ## Scope
 
-- **In scope:** `apps/broker-api/src/config.ts`, `apps/broker-api/src/repository.ts`, `apps/broker-api/src/server.ts`,
-  and touched tests under `apps/broker-api/src/__tests__`.
+- **In scope:** `apps/broker-api/src/config.ts`, `apps/broker-api/src/repository.ts`,
+  `apps/broker-api/src/http/requestHandler.ts`, `apps/broker-api/src/http/routes/*`,
+  `apps/broker-api/src/nest/controllers/*`, and touched tests under `apps/broker-api/src/__tests__`.
 - **Runtime focus only:** Data-plane session/execute/manifest flow and shared-infrastructure secret/key handling.
 - **Out of scope:** CI/tooling, frontend/admin UX, non-runtime docs.
 
 ## Repository-grounded system model
 
 - Data-plane entrypoints: `POST /v1/session`, `POST /v1/execute`, `GET /v1/workloads/{id}/manifest`,
-  `GET /v1/keys/manifest` in `apps/broker-api/src/server.ts`.
+  `GET /v1/keys/manifest` handled via Nest controllers and route handlers under
+  `apps/broker-api/src/nest/controllers/*` and `apps/broker-api/src/http/routes/*`.
 - Runtime state and policy/template/session interfaces in `apps/broker-api/src/repository.ts`.
 - Shared infra wiring (Prisma + Redis + db repositories) in `apps/broker-api/src/infrastructure.ts`.
 - Secret envelope cryptography primitives from `packages/crypto/src/envelope.ts` and DB envelope persistence in
@@ -56,8 +58,8 @@
 
 ### Existing mitigations (kept)
 
-- mTLS + session + optional DPoP gate chain in `server.ts`.
-- Zod parsing for request DTOs and persisted state in `server.ts` and `repository.ts`.
+- mTLS + session + optional DPoP gate chain in route handlers.
+- Zod parsing for request DTOs and persisted state in route handlers and `repository.ts`.
 - SSRF guard + canonicalization + policy checks before forward execute.
 
 ### Implemented refactors in this review

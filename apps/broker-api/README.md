@@ -18,9 +18,15 @@ Data-plane service for protected outbound provider execution.
 The service is implemented with NestJS on Express and uses a single-process Prisma client and Redis client whe
 infrastructure mode is enabled.
 
+Nest/Express alignment playbook (for reuse by `broker-admin-api`):
+- `apps/broker-api/NEST_EXPRESS_ALIGNMENT_PLAYBOOK.md`
+
 ## Architecture (runtime)
 
 - Framework: NestJS (`@nestjs/platform-express`) with Express adapter
+- Routing: explicit Nest controllers per endpoint (`/healthz`, `/v1/session`, `/v1/execute`,
+  `/v1/keys/manifest`, `/v1/workloads/:workloadId/manifest`) plus a fallback controller that
+  delegates unmatched traffic to the broker handler to preserve structured `route_not_found` errors/audit
 - Validation: zod schemas sourced from `@broker-interceptor/schemas`
 - Persistence/runtime state:
   - In-memory + optional state file (`BROKER_API_STATE_PATH`), always validated

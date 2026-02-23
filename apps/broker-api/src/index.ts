@@ -17,7 +17,6 @@ export * from './http'
 export * from './infrastructure'
 export * from './repository'
 export * from './runtime'
-export * from './server'
 
 const main = async () => {
   const config = loadConfig(process.env)

@@ -1,3 +1,5 @@
+import 'reflect-metadata'
+
 import type {Server} from 'node:http'
 import {promises as fs} from 'node:fs'
 

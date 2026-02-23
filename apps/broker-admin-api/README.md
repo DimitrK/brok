@@ -8,6 +8,8 @@ manifest key distribution.
 
 - Runtime: Node.js + TypeScript
 - Framework: NestJS on Express (`@nestjs/platform-express`)
+- Routing: explicit Nest controllers by endpoint domain with a fallback controller for unsupported routes/method mismatches
+- Request execution: controller-level route handling via `src/nest/controllerContext.ts`; `src/server.ts` remains a minimal compatibility export
 - Security middleware: Helmet
 - Process infrastructure: single Prisma client + single Redis client initialized once per process and passed through app
   dependencies
@@ -92,6 +94,7 @@ Vault issuer hardening env (vault mode only):
 - `POST /v1/admin/auth/oauth/start`
 - `POST /v1/admin/auth/oauth/callback`
 - `GET /v1/admin/auth/session`
+- `POST /v1/admin/auth/logout`
 - `GET /v1/admin/auth/signup-policy`
 - `PATCH /v1/admin/auth/signup-policy`
 
@@ -134,6 +137,7 @@ Interactive OAuth behavior:
   `BROKER_ADMIN_API_OIDC_AUDIENCE`.
 - `POST /v1/admin/auth/oauth/callback` exchanges the code and uses OAuth `access_token` as `session_id` for admin API
   bearer auth (while validating nonce against `id_token` when present).
+- `POST /v1/admin/auth/logout` acknowledges logout with `204`; clients must discard bearer session credentials.
 
 ## Security Notes
 

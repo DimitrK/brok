@@ -1,16 +1,16 @@
 import {describe, expect, it} from 'vitest'
 
 import {AdminApiNestModule} from '../nest/adminApiNestModule'
+import {AdminApiControllerContext} from '../nest/controllerContext'
 import {
   BROKER_ADMIN_API_CONFIG,
   BROKER_ADMIN_API_DEPENDENCY_BRIDGE,
   BROKER_ADMIN_API_LOGGER,
-  BROKER_ADMIN_API_REPOSITORY,
-  BROKER_ADMIN_API_REQUEST_HANDLER
+  BROKER_ADMIN_API_REPOSITORY
 } from '../nest/tokens'
 
 describe('admin api nest module', () => {
-  it('registers providers and request handler factory', () => {
+  it('registers providers for controller runtime dependencies', () => {
     const config = {maxBodyBytes: 1_024} as never
     const repository = {} as never
     const dependencyBridge = {} as never
@@ -60,29 +60,6 @@ describe('admin api nest module', () => {
     )
     expect(loggerProvider).toBeDefined()
 
-    const requestHandlerProvider = providers.find(
-      provider =>
-        typeof provider === 'object' &&
-        provider !== null &&
-        'provide' in provider &&
-        provider.provide === BROKER_ADMIN_API_REQUEST_HANDLER
-    )
-
-    if (
-      !requestHandlerProvider ||
-      typeof requestHandlerProvider !== 'object' ||
-      !('useFactory' in requestHandlerProvider) ||
-      typeof requestHandlerProvider.useFactory !== 'function'
-    ) {
-      throw new Error('expected request handler provider with useFactory')
-    }
-
-    const requestHandlerUnknown: unknown = requestHandlerProvider.useFactory(
-      config,
-      repository,
-      dependencyBridge,
-      logger
-    )
-    expect(typeof requestHandlerUnknown).toBe('function')
+    expect(providers).toContain(AdminApiControllerContext)
   })
 })

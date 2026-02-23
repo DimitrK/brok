@@ -106,4 +106,19 @@ describe('broker api app integration', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:4173')
   })
+
+  it('fails fast when tls key or cert files cannot be loaded', async () => {
+    const configWithTls = makeConfig()
+    configWithTls.tls = {
+      enabled: true,
+      keyPath: '/tmp/broker-api-missing-key.pem',
+      certPath: '/tmp/broker-api-missing-cert.pem',
+      requireClientCert: false,
+      rejectUnauthorizedClientCert: false
+    }
+
+    await expect(createBrokerApiApp({config: configWithTls})).rejects.toThrow(
+      'Unable to load TLS configuration for broker-api'
+    )
+  })
 })

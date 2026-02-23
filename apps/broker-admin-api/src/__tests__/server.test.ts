@@ -891,6 +891,17 @@ describe('broker-admin-api server routes', () => {
     expect(updateAdminUserCall?.[0]?.roles).toEqual(['admin'])
     expect(updateAdminUserCall?.[0]?.tenantIds).toEqual(['t_1'])
 
+    const invalidPatchUserResponse = await context.request({
+      method: 'PATCH',
+      path: '/v1/admin/users/adm_1',
+      body: {}
+    })
+    expect(invalidPatchUserResponse.status).toBe(400)
+    expect(invalidPatchUserResponse.body).toMatchObject({
+      error: 'admin_user_update_invalid'
+    })
+    expect(updateAdminUserSpy).toHaveBeenCalledTimes(1)
+
     const listAccessRequestsResponse = await context.request({
       method: 'GET',
       path: '/v1/admin/access-requests?status=pending&tenant_id=t_1&role=admin&search=admin&limit=5&cursor=cursor_1'
@@ -990,6 +1001,13 @@ describe('broker-admin-api server routes', () => {
         roles: ['owner']
       }
     })
+
+    const logoutResponse = await context.request({
+      method: 'POST',
+      path: '/v1/admin/auth/logout'
+    })
+    expect(logoutResponse.status).toBe(204)
+    expect(logoutResponse.text).toBe('')
 
     const signupPolicyUnavailable = await context.request({
       method: 'GET',
