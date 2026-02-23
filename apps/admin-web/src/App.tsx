@@ -103,6 +103,18 @@ const RequireAuth = ({children}: {children: React.ReactNode}) => {
   return <>{children}</>;
 };
 
+const RequireTenantSelection = ({children}: {children: React.ReactNode}) => {
+  const selectedTenantId = useAdminStore(state => state.selectedTenantId);
+  const location = useLocation();
+
+  if (!selectedTenantId) {
+    const nextPath = `${location.pathname}${location.search}${location.hash}`;
+    return <Navigate to={`/tenants?next=${encodeURIComponent(nextPath)}`} replace />;
+  }
+
+  return <>{children}</>;
+};
+
 type AdminConsoleLayoutProps = {
   draftApiBaseUrl: string;
   draftAuthToken: string;
@@ -111,6 +123,7 @@ type AdminConsoleLayoutProps = {
   onDraftAuthTokenChange: (value: string) => void;
   onApplyConnection: () => void;
   onSignOut: () => Promise<void>;
+  selectedTenantName?: string;
   selectedTenantId?: string;
   healthStatus?: string;
   healthError: unknown;
@@ -127,6 +140,7 @@ const AdminConsoleLayout = ({
   onDraftAuthTokenChange,
   onApplyConnection,
   onSignOut,
+  selectedTenantName,
   selectedTenantId,
   healthStatus,
   healthError,
@@ -254,8 +268,11 @@ const AdminConsoleLayout = ({
             <p>{activeSection.description}</p>
           </div>
           <div className="workspace-meta">
-            <div className={`tenant-chip${selectedTenantId ? '' : ' muted'}`}>
-              {selectedTenantId ? `Active tenant: ${selectedTenantId}` : 'No tenant selected'}
+            <div
+              className={`tenant-chip${selectedTenantId ? '' : ' muted'}`}
+              title={selectedTenantId ? `Tenant ID: ${selectedTenantId}` : undefined}
+            >
+              {selectedTenantId ? `Active tenant: ${selectedTenantName ?? selectedTenantId}` : 'No tenant selected'}
             </div>
             <p className={`status-pill compact${healthError ? ' danger' : ''}`}>
               Health status: {healthStatus ?? 'unknown'}
@@ -366,6 +383,24 @@ export const App = () => {
     }
   });
 
+  const tenantsQuery = useQuery({
+    queryKey: ['tenants'],
+    enabled: Boolean(authToken),
+    queryFn: async ({signal}) => {
+      try {
+        return await api.listTenants(signal);
+      } catch (error) {
+        if (error instanceof ApiClientError && [401, 403, 404].includes(error.status)) {
+          return {
+            tenants: []
+          };
+        }
+
+        throw error;
+      }
+    }
+  });
+
   useEffect(() => {
     if (!adminSessionQuery.data) {
       return;
@@ -426,6 +461,9 @@ export const App = () => {
   const adminIdentityLabel =
     adminPrincipal?.name?.trim() || adminPrincipal?.email || adminPrincipal?.subject || 'Unknown admin';
   const adminIdentityRoles = adminPrincipal?.roles?.join(', ') || 'roles unavailable';
+  const selectedTenantName = selectedTenantId
+    ? tenantsQuery.data?.tenants.find(tenant => tenant.tenant_id === selectedTenantId)?.name
+    : undefined;
 
   return (
     <Routes>
@@ -444,6 +482,7 @@ export const App = () => {
               onDraftAuthTokenChange={setDraftAuthToken}
               onApplyConnection={applyConnection}
               onSignOut={signOut}
+              selectedTenantName={selectedTenantName}
               selectedTenantId={selectedTenantId}
               healthStatus={healthQuery.data?.status}
               healthError={healthQuery.error}
@@ -457,8 +496,22 @@ export const App = () => {
         <Route index element={<Navigate to="/tenants" replace />} />
         <Route path="tenants" element={<TenantsPanel api={api} />} />
         <Route path="users" element={<UserManagementPanel api={api} />} />
-        <Route path="workloads" element={<WorkloadsPanel api={api} />} />
-        <Route path="integrations" element={<IntegrationsPanel api={api} />} />
+        <Route
+          path="workloads"
+          element={
+            <RequireTenantSelection>
+              <WorkloadsPanel api={api} />
+            </RequireTenantSelection>
+          }
+        />
+        <Route
+          path="integrations"
+          element={
+            <RequireTenantSelection>
+              <IntegrationsPanel api={api} />
+            </RequireTenantSelection>
+          }
+        />
         <Route path="templates" element={<TemplatesPanel api={api} />} />
         <Route path="policies" element={<PoliciesPanel api={api} />} />
         <Route path="approvals" element={<ApprovalsPanel api={api} />} />

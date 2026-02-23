@@ -1,5 +1,6 @@
 import React, {useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
+import {useLocation, useNavigate} from 'react-router-dom';
 
 import {BrokerAdminApiClient} from '../../api/client';
 import {ErrorNotice} from '../../components/ErrorNotice';
@@ -11,10 +12,29 @@ type TenantsPanelProps = {
 };
 
 export const TenantsPanel = ({api}: TenantsPanelProps) => {
+  const location = useLocation();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const selectedTenantId = useAdminStore(state => state.selectedTenantId);
   const setSelectedTenantId = useAdminStore(state => state.setSelectedTenantId);
   const [name, setName] = useState('');
+
+  const nextPath = (() => {
+    const params = new URLSearchParams(location.search);
+    const candidate = params.get('next');
+    if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) {
+      return undefined;
+    }
+
+    return candidate;
+  })();
+
+  const applyTenantSelection = (tenantId: string) => {
+    setSelectedTenantId(tenantId);
+    if (nextPath) {
+      navigate(nextPath, {replace: true});
+    }
+  };
 
   const tenantsQuery = useQuery({
     queryKey: ['tenants'],
@@ -26,7 +46,7 @@ export const TenantsPanel = ({api}: TenantsPanelProps) => {
     onSuccess: async data => {
       setName('');
       if (data?.tenant_id) {
-        setSelectedTenantId(data.tenant_id);
+        applyTenantSelection(data.tenant_id);
       }
       await queryClient.invalidateQueries({queryKey: ['tenants']});
     }
@@ -64,7 +84,7 @@ export const TenantsPanel = ({api}: TenantsPanelProps) => {
             key={tenant.tenant_id}
             type="button"
             className={`list-card ${selectedTenantId === tenant.tenant_id ? 'selected' : ''}`}
-            onClick={() => setSelectedTenantId(tenant.tenant_id)}
+            onClick={() => applyTenantSelection(tenant.tenant_id)}
           >
             <strong>{tenant.name}</strong>
             <span>{tenant.tenant_id}</span>

@@ -392,6 +392,29 @@ a:focus-visible {
   resize: vertical;
 }
 
+.input-prefix-group {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, #fff 18%);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.input-prefix {
+  padding: 0.52rem 0.6rem;
+  color: var(--muted);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--surface-muted) 60%, #fff 40%);
+  border-right: 1px solid color-mix(in srgb, var(--line) 82%, #fff 18%);
+}
+
+.input-prefix-group input {
+  border: 0;
+  border-radius: 0;
+}
+
 .inline-toggle {
   align-self: end;
   flex-direction: row;

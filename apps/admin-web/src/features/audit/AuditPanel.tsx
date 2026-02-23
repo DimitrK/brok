@@ -1,16 +1,28 @@
 import React, {useMemo, useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
+import {useNavigate} from 'react-router-dom';
 
 import {BrokerAdminApiClient} from '../../api/client';
 import {auditFilterSchema, type AuditFilter} from '../../api/querySchemas';
 import {ErrorNotice} from '../../components/ErrorNotice';
 import {Panel} from '../../components/Panel';
+import {
+  buildPathPatternSuggestion,
+  buildTemplateDraftFromAuditEvent,
+  collectMatchingFailingEvents,
+  getCanonicalUrlFromEvent,
+  getPathFromEvent,
+  isFailingAuditEvent,
+  TEMPLATE_DRAFT_STORAGE_KEY
+} from './templateSuggestion';
 
 type AuditPanelProps = {
   api: BrokerAdminApiClient;
 };
 
 export const AuditPanel = ({api}: AuditPanelProps) => {
+  const navigate = useNavigate();
+
   const [timeMin, setTimeMin] = useState('');
   const [timeMax, setTimeMax] = useState('');
   const [tenantId, setTenantId] = useState('');
@@ -20,6 +32,14 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
   const [decision, setDecision] = useState<'allowed' | 'denied' | 'approval_required' | 'throttled' | ''>('');
 
   const [appliedFilter, setAppliedFilter] = useState<AuditFilter>({});
+  const [selectedEventId, setSelectedEventId] = useState<string | undefined>();
+
+  const [includeAllObservedHosts, setIncludeAllObservedHosts] = useState(true);
+  const [includeQueryKeys, setIncludeQueryKeys] = useState(true);
+  const [includeNormalizedHeaders, setIncludeNormalizedHeaders] = useState(true);
+  const [includeActionGroup, setIncludeActionGroup] = useState(true);
+  const [includeRiskTier, setIncludeRiskTier] = useState(true);
+  const [useSuggestedPathPattern, setUseSuggestedPathPattern] = useState(true);
 
   const filterHash = useMemo(() => JSON.stringify(appliedFilter), [appliedFilter]);
 
@@ -28,8 +48,62 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
     queryFn: ({signal}) => api.listAuditEvents({filter: appliedFilter, signal})
   });
 
+  const events = useMemo(() => auditQuery.data?.events ?? [], [auditQuery.data]);
+  const failingEvents = useMemo(() => events.filter(isFailingAuditEvent), [events]);
+
+  const resolvedSelectedEventId =
+    selectedEventId && events.some(event => event.event_id === selectedEventId)
+      ? selectedEventId
+      : (failingEvents[0]?.event_id ?? events[0]?.event_id);
+
+  const selectedEvent = useMemo(
+    () => events.find(event => event.event_id === resolvedSelectedEventId),
+    [events, resolvedSelectedEventId]
+  );
+
+  const matchingFailingEvents = useMemo(
+    () => (selectedEvent ? collectMatchingFailingEvents(selectedEvent, events) : []),
+    [events, selectedEvent]
+  );
+
+  const suggestedPathPattern = useMemo(() => {
+    const paths = matchingFailingEvents.map(event => getPathFromEvent(event)).filter(Boolean) as string[];
+    return buildPathPatternSuggestion(paths);
+  }, [matchingFailingEvents]);
+
+  const draftRouteState = useMemo(() => {
+    if (!selectedEvent) {
+      return null;
+    }
+
+    return buildTemplateDraftFromAuditEvent({
+      selectedEvent,
+      allEvents: events,
+      traits: {
+        includeAllObservedHosts,
+        includeQueryKeys,
+        includeNormalizedHeaders,
+        includeActionGroup,
+        includeRiskTier,
+        useSuggestedPathPattern
+      }
+    });
+  }, [
+    events,
+    includeActionGroup,
+    includeAllObservedHosts,
+    includeNormalizedHeaders,
+    includeQueryKeys,
+    includeRiskTier,
+    selectedEvent,
+    useSuggestedPathPattern
+  ]);
+
   return (
-    <Panel title="Audit" subtitle="Query immutable audit events by tenant, workload, integration, and decision.">
+    <Panel
+      title="Audit"
+      subtitle="Review failing events, inspect canonical descriptors, and draft template contracts from real traffic."
+    >
       <form
         className="inline-form"
         onSubmit={event => {
@@ -103,32 +177,180 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
 
       <ErrorNotice error={auditQuery.error} />
 
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Timestamp</th>
-            <th>Event type</th>
-            <th>Tenant</th>
-            <th>Workload</th>
-            <th>Integration</th>
-            <th>Decision</th>
-            <th>Correlation</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(auditQuery.data?.events ?? []).map(event => (
-            <tr key={event.event_id}>
-              <td>{event.timestamp}</td>
-              <td>{event.event_type}</td>
-              <td>{event.tenant_id}</td>
-              <td>{event.workload_id ?? '-'}</td>
-              <td>{event.integration_id ?? '-'}</td>
-              <td>{event.decision ?? '-'}</td>
-              <td>{event.correlation_id}</td>
+      <p className="helper-text">
+        Click a failing event row to inspect details and draft a template. Matching failing events suggest reusable path
+        regex patterns.
+      </p>
+
+      <div className="table-shell">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Event type</th>
+              <th>Tenant</th>
+              <th>Workload</th>
+              <th>Integration</th>
+              <th>Decision</th>
+              <th>Correlation</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {events.map(event => {
+              const selected = event.event_id === resolvedSelectedEventId;
+              return (
+                <tr
+                  key={event.event_id}
+                  className={`interactive-row${selected ? ' selected-row' : ''}`}
+                  onClick={() => setSelectedEventId(event.event_id)}
+                >
+                  <td>{event.timestamp}</td>
+                  <td>{event.event_type}</td>
+                  <td>{event.tenant_id}</td>
+                  <td>{event.workload_id ?? '-'}</td>
+                  <td>{event.integration_id ?? '-'}</td>
+                  <td>{event.decision ?? '-'}</td>
+                  <td>{event.correlation_id}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {selectedEvent ? (
+        <section className="management-surface">
+          <div className="management-surface-header">
+            <h3>Selected event details</h3>
+            <p>
+              Event `{selectedEvent.event_id}` | Decision `{selectedEvent.decision ?? 'n/a'}` | Correlation `
+              {selectedEvent.correlation_id}`
+            </p>
+          </div>
+
+          <div className="editor-grid">
+            <label className="field wide">
+              <span>Canonical URL</span>
+              <input value={getCanonicalUrlFromEvent(selectedEvent)} readOnly />
+            </label>
+
+            <label className="field">
+              <span>Path</span>
+              <input value={getPathFromEvent(selectedEvent) ?? 'Unavailable'} readOnly />
+            </label>
+
+            <label className="field">
+              <span>Matched action group</span>
+              <input
+                value={
+                  selectedEvent.canonical_descriptor?.matched_path_group_id ?? selectedEvent.action_group ?? 'Unavailable'
+                }
+                readOnly
+              />
+            </label>
+
+            <label className="field wide">
+              <span>Query keys</span>
+              <input value={(selectedEvent.canonical_descriptor?.query_keys ?? []).join(', ')} readOnly />
+            </label>
+
+            <label className="field wide">
+              <span>Normalized headers</span>
+              <input
+                value={
+                  (selectedEvent.canonical_descriptor?.normalized_headers ?? [])
+                    .map(header => header.name)
+                    .join(', ') || 'none'
+                }
+                readOnly
+              />
+            </label>
+          </div>
+
+          <hr className="divider" />
+
+          <div className="management-surface-header">
+            <h3>Template traits from this event</h3>
+            <p>Select which event traits should be included in the template draft.</p>
+          </div>
+
+          <div className="checkbox-grid">
+            <label className="chip-checkbox">
+              <input
+                type="checkbox"
+                checked={includeAllObservedHosts}
+                onChange={event => setIncludeAllObservedHosts(event.currentTarget.checked)}
+              />
+              <span className="chip-label">Include all matched failing hosts</span>
+            </label>
+
+            <label className="chip-checkbox">
+              <input
+                type="checkbox"
+                checked={useSuggestedPathPattern}
+                onChange={event => setUseSuggestedPathPattern(event.currentTarget.checked)}
+              />
+              <span className="chip-label">Use suggested path regex from matches</span>
+            </label>
+
+            <label className="chip-checkbox">
+              <input type="checkbox" checked={includeQueryKeys} onChange={event => setIncludeQueryKeys(event.currentTarget.checked)} />
+              <span className="chip-label">Include query keys</span>
+            </label>
+
+            <label className="chip-checkbox">
+              <input
+                type="checkbox"
+                checked={includeNormalizedHeaders}
+                onChange={event => setIncludeNormalizedHeaders(event.currentTarget.checked)}
+              />
+              <span className="chip-label">Include normalized header names</span>
+            </label>
+
+            <label className="chip-checkbox">
+              <input
+                type="checkbox"
+                checked={includeActionGroup}
+                onChange={event => setIncludeActionGroup(event.currentTarget.checked)}
+              />
+              <span className="chip-label">Use action group as path-group ID</span>
+            </label>
+
+            <label className="chip-checkbox">
+              <input type="checkbox" checked={includeRiskTier} onChange={event => setIncludeRiskTier(event.currentTarget.checked)} />
+              <span className="chip-label">Include risk tier and approval mode</span>
+            </label>
+          </div>
+
+          <p className="helper-text">
+            Matching failing events: {matchingFailingEvents.length}. Suggested path pattern: `{suggestedPathPattern}`.
+          </p>
+
+          <div className="row-actions">
+            <button
+              type="button"
+              disabled={!isFailingAuditEvent(selectedEvent) || !draftRouteState}
+              onClick={() => {
+                if (!draftRouteState) {
+                  return;
+                }
+                if (typeof window !== 'undefined') {
+                  window.sessionStorage.setItem(TEMPLATE_DRAFT_STORAGE_KEY, JSON.stringify(draftRouteState));
+                }
+                navigate('/templates?draft=audit');
+              }}
+            >
+              Open template draft
+            </button>
+          </div>
+
+          {!isFailingAuditEvent(selectedEvent) ? (
+            <p className="helper-text">Template drafting is available only for failing decisions.</p>
+          ) : null}
+
+          <pre className="json-view">{JSON.stringify(selectedEvent, null, 2)}</pre>
+        </section>
+      ) : null}
     </Panel>
   );
 };

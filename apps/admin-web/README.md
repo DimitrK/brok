@@ -27,6 +27,7 @@ This code space is frontend-only and consumes the existing `apps/broker-admin-ap
 
 Guided builders are available for integrations, templates, policies, and approval constraints, with preset shortcuts
 for common provider and policy setups.
+Audit workflow now supports selecting failing events and drafting template contracts with prefilled traits.
 
 ## Routing
 
@@ -119,7 +120,7 @@ auth/base-url state and triggers query invalidation for fresh server data.
 
 ## Pending Feedback
 
-Last checked: 2026-02-20
+Last checked: 2026-02-22
 
 - Target code space: `apps/broker-admin-api`
 - Reviewed response file:
@@ -132,3 +133,9 @@ Last checked: 2026-02-20
   `apps/broker-admin-api/external_feedback/broker-interceptor/admin-web/admin_access_request_endpoint_contract_gap.md`
 - Waiting reason: no OpenAPI path exists for access-request creation in OAuth signup-closed flow, so admin-web cannot
   implement `submitAccessRequest()` while staying contract-first.
+
+- Target code space: `apps/broker-admin-api`
+- Waiting request file:
+  `apps/broker-admin-api/external_feedback/broker-interceptor/admin-web/missing_methods.md`
+- Waiting reason: no contract-backed delete/archive lifecycle endpoint exists yet for templates/integrations, so delete
+  controls remain disabled in admin-web.

@@ -1,69 +1,215 @@
-import React, {useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {OpenApiTemplateSchema, type OpenApiTemplate} from '@broker-interceptor/schemas';
+import {z} from 'zod';
 
 import {BrokerAdminApiClient} from '../../api/client';
 import {ErrorNotice} from '../../components/ErrorNotice';
 import {Panel} from '../../components/Panel';
+import {TEMPLATE_DRAFT_STORAGE_KEY} from '../audit/templateSuggestion';
+import {
+  TEMPLATE_ID_PREFIX,
+  buildTemplateId,
+  normalizeTemplateIdSuffix,
+  splitTemplateId,
+  toCsvList,
+  toLineList
+} from './templateHelpers';
 
-const toCsvList = (value: string) =>
-  value
-    .split(',')
-    .map(item => item.trim())
-    .filter(Boolean);
+const httpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
+const templateDraftRouteSchema = z
+  .object({
+    templateDraft: z
+      .object({
+        source: z.literal('audit'),
+        provider: z.string(),
+        template_name: z.string(),
+        template_id_suffix: z.string().min(1),
+        description: z.string().optional(),
+        allowed_hosts: z.array(z.string().min(1)).min(1),
+        path_groups: z
+          .array(
+            z
+              .object({
+                group_id: z.string(),
+                risk_tier: z.enum(['low', 'medium', 'high']),
+                approval_mode: z.enum(['none', 'required']),
+                methods: z.array(httpMethodSchema).min(1),
+                path_patterns: z.array(z.string().min(1)).min(1),
+                query_allowlist: z.array(z.string()),
+                header_forward_allowlist: z.array(z.string()),
+                max_body_bytes: z.number().int().min(0),
+                content_types: z.array(z.string())
+              })
+              .strict()
+          )
+          .min(1)
+      })
+      .strict()
+  })
+  .strict();
+
+type HttpMethod = z.infer<typeof httpMethodSchema>;
+
+const httpMethods: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
 type TemplatesPanelProps = {
   api: BrokerAdminApiClient;
 };
 
-const defaultEditorState = {
-  templateId: '',
-  version: '1',
-  provider: 'openai',
-  description: '',
-  allowedHosts: '',
-  pathGroupId: 'responses_create',
-  riskTier: 'low' as 'low' | 'medium' | 'high',
-  approvalMode: 'none' as 'none' | 'required',
-  method: 'POST' as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
-  pathPattern: '^/v1/responses$',
-  queryAllowlist: '',
-  headerForwardAllowlist: 'content-type,accept',
-  maxBodyBytes: '262144',
-  contentTypes: 'application/json'
+type PathGroupDraft = {
+  draftId: string;
+  groupId: string;
+  riskTier: 'low' | 'medium' | 'high';
+  approvalMode: 'none' | 'required';
+  methods: HttpMethod[];
+  pathPatterns: string;
+  queryAllowlist: string;
+  headerForwardAllowlist: string;
+  maxBodyBytes: string;
+  contentTypes: string;
 };
+
+let pathGroupDraftCounter = 0;
+const nextPathGroupDraftId = () => {
+  pathGroupDraftCounter += 1;
+  return `path-group-${pathGroupDraftCounter}`;
+};
+
+const createPathGroupDraft = (input: Partial<Omit<PathGroupDraft, 'draftId'>> = {}): PathGroupDraft => ({
+  draftId: nextPathGroupDraftId(),
+  groupId: input.groupId ?? 'responses_create',
+  riskTier: input.riskTier ?? 'low',
+  approvalMode: input.approvalMode ?? 'none',
+  methods: input.methods ?? ['POST'],
+  pathPatterns: input.pathPatterns ?? '^/v1/responses$',
+  queryAllowlist: input.queryAllowlist ?? '',
+  headerForwardAllowlist: input.headerForwardAllowlist ?? 'content-type,accept',
+  maxBodyBytes: input.maxBodyBytes ?? '262144',
+  contentTypes: input.contentTypes ?? 'application/json'
+});
+
+const defaultTemplateName = 'OpenAI Core';
 
 export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
   const queryClient = useQueryClient();
 
-  const [showEditor, setShowEditor] = useState(false);
+  const readTemplateDraftFromStorage = () => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const rawValue = window.sessionStorage.getItem(TEMPLATE_DRAFT_STORAGE_KEY);
+    if (!rawValue) {
+      return undefined;
+    }
+
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(rawValue);
+    } catch {
+      return undefined;
+    }
+
+    const parsed = templateDraftRouteSchema.safeParse(parsedJson);
+    if (!parsed.success) {
+      return undefined;
+    }
+
+    return parsed.data.templateDraft;
+  };
+
+  const [initialTemplateDraft] = useState(() => readTemplateDraftFromStorage());
+
+  const [showEditor, setShowEditor] = useState(Boolean(initialTemplateDraft));
   const [editorMode, setEditorMode] = useState<'new' | 'edit'>('new');
 
-  const [templateId, setTemplateId] = useState(defaultEditorState.templateId);
-  const [version, setVersion] = useState(defaultEditorState.version);
-  const [provider, setProvider] = useState(defaultEditorState.provider);
-  const [description, setDescription] = useState(defaultEditorState.description);
-  const [allowedHosts, setAllowedHosts] = useState(defaultEditorState.allowedHosts);
-  const [pathGroupId, setPathGroupId] = useState(defaultEditorState.pathGroupId);
-  const [riskTier, setRiskTier] = useState<'low' | 'medium' | 'high'>(defaultEditorState.riskTier);
-  const [approvalMode, setApprovalMode] = useState<'none' | 'required'>(defaultEditorState.approvalMode);
-  const [method, setMethod] = useState<'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'>(defaultEditorState.method);
-  const [pathPattern, setPathPattern] = useState(defaultEditorState.pathPattern);
-  const [queryAllowlist, setQueryAllowlist] = useState(defaultEditorState.queryAllowlist);
-  const [headerForwardAllowlist, setHeaderForwardAllowlist] = useState(defaultEditorState.headerForwardAllowlist);
-  const [maxBodyBytes, setMaxBodyBytes] = useState(defaultEditorState.maxBodyBytes);
-  const [contentTypes, setContentTypes] = useState(defaultEditorState.contentTypes);
+  const [templateName, setTemplateName] = useState(initialTemplateDraft?.template_name ?? defaultTemplateName);
+  const [templateIdSuffix, setTemplateIdSuffix] = useState(
+    normalizeTemplateIdSuffix(initialTemplateDraft?.template_id_suffix ?? defaultTemplateName)
+  );
+  const [templateIdLocked, setTemplateIdLocked] = useState(Boolean(initialTemplateDraft));
+  const [version, setVersion] = useState('1');
+  const [provider, setProvider] = useState(initialTemplateDraft?.provider ?? 'openai');
+  const [description, setDescription] = useState(initialTemplateDraft?.description ?? '');
+  const [allowedHosts, setAllowedHosts] = useState(initialTemplateDraft?.allowed_hosts.join(', ') ?? '');
+  const [pathGroups, setPathGroups] = useState<PathGroupDraft[]>(
+    initialTemplateDraft?.path_groups.map(pathGroup =>
+      createPathGroupDraft({
+        groupId: pathGroup.group_id,
+        riskTier: pathGroup.risk_tier,
+        approvalMode: pathGroup.approval_mode,
+        methods: pathGroup.methods,
+        pathPatterns: pathGroup.path_patterns.join('\n'),
+        queryAllowlist: pathGroup.query_allowlist.join(', '),
+        headerForwardAllowlist: pathGroup.header_forward_allowlist.join(', '),
+        maxBodyBytes: String(pathGroup.max_body_bytes),
+        contentTypes: pathGroup.content_types.join(', ')
+      })
+    ) ?? [createPathGroupDraft()]
+  );
+
+  useEffect(() => {
+    if (!initialTemplateDraft || typeof window === 'undefined') {
+      return;
+    }
+
+    window.sessionStorage.removeItem(TEMPLATE_DRAFT_STORAGE_KEY);
+  }, [initialTemplateDraft]);
 
   const templatesQuery = useQuery({
     queryKey: ['templates'],
     queryFn: ({signal}) => api.listTemplates(signal)
   });
 
+  const resetEditor = () => {
+    setTemplateName(defaultTemplateName);
+    setTemplateIdSuffix(normalizeTemplateIdSuffix(defaultTemplateName));
+    setTemplateIdLocked(false);
+    setVersion('1');
+    setProvider('openai');
+    setDescription('');
+    setAllowedHosts('');
+    setPathGroups([createPathGroupDraft()]);
+  };
+
+  const applyTemplate = (template: OpenApiTemplate) => {
+    setTemplateName(template.description?.trim() || splitTemplateId(template.template_id).replace(/_/g, ' '));
+    setTemplateIdSuffix(splitTemplateId(template.template_id));
+    setTemplateIdLocked(true);
+    setVersion(String(template.version + 1));
+    setProvider(template.provider);
+    setDescription(template.description ?? '');
+    setAllowedHosts(template.allowed_hosts.join(', '));
+    setPathGroups(
+      template.path_groups.map(pathGroup =>
+        createPathGroupDraft({
+          groupId: pathGroup.group_id,
+          riskTier: pathGroup.risk_tier,
+          approvalMode: pathGroup.approval_mode,
+          methods: pathGroup.methods,
+          pathPatterns: pathGroup.path_patterns.join('\n'),
+          queryAllowlist: pathGroup.query_allowlist.join(', '),
+          headerForwardAllowlist: pathGroup.header_forward_allowlist.join(', '),
+          maxBodyBytes: String(pathGroup.body_policy.max_bytes),
+          contentTypes: pathGroup.body_policy.content_types.join(', ')
+        })
+      )
+    );
+  };
+
+  const updatePathGroup = (draftId: string, updater: (draft: PathGroupDraft) => PathGroupDraft) => {
+    setPathGroups(current => current.map(pathGroup => (pathGroup.draftId === draftId ? updater(pathGroup) : pathGroup)));
+  };
+
   const createTemplateMutation = useMutation({
     mutationFn: async () => {
+      const parsedVersion = Number.parseInt(version, 10);
+      const normalizedTemplateId = buildTemplateId(templateIdSuffix);
+
       const payload = OpenApiTemplateSchema.parse({
-        template_id: templateId.trim(),
-        version: Number.parseInt(version, 10),
+        template_id: normalizedTemplateId,
+        version: parsedVersion,
         provider: provider.trim(),
         ...(description.trim() ? {description: description.trim()} : {}),
         allowed_schemes: ['https'],
@@ -72,21 +218,19 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
         redirect_policy: {
           mode: 'deny'
         },
-        path_groups: [
-          {
-            group_id: pathGroupId.trim(),
-            risk_tier: riskTier,
-            approval_mode: approvalMode,
-            methods: [method],
-            path_patterns: [pathPattern.trim()],
-            query_allowlist: toCsvList(queryAllowlist),
-            header_forward_allowlist: toCsvList(headerForwardAllowlist),
-            body_policy: {
-              max_bytes: Number.parseInt(maxBodyBytes, 10),
-              content_types: toCsvList(contentTypes)
-            }
+        path_groups: pathGroups.map(pathGroup => ({
+          group_id: pathGroup.groupId.trim(),
+          risk_tier: pathGroup.riskTier,
+          approval_mode: pathGroup.approvalMode,
+          methods: pathGroup.methods,
+          path_patterns: toLineList(pathGroup.pathPatterns),
+          query_allowlist: toCsvList(pathGroup.queryAllowlist),
+          header_forward_allowlist: toCsvList(pathGroup.headerForwardAllowlist),
+          body_policy: {
+            max_bytes: Number.parseInt(pathGroup.maxBodyBytes, 10),
+            content_types: toCsvList(pathGroup.contentTypes)
           }
-        ],
+        })),
         network_safety: {
           deny_private_ip_ranges: true,
           deny_link_local: true,
@@ -104,23 +248,6 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
     }
   });
 
-  const resetEditor = () => {
-    setTemplateId(defaultEditorState.templateId);
-    setVersion(defaultEditorState.version);
-    setProvider(defaultEditorState.provider);
-    setDescription(defaultEditorState.description);
-    setAllowedHosts(defaultEditorState.allowedHosts);
-    setPathGroupId(defaultEditorState.pathGroupId);
-    setRiskTier(defaultEditorState.riskTier);
-    setApprovalMode(defaultEditorState.approvalMode);
-    setMethod(defaultEditorState.method);
-    setPathPattern(defaultEditorState.pathPattern);
-    setQueryAllowlist(defaultEditorState.queryAllowlist);
-    setHeaderForwardAllowlist(defaultEditorState.headerForwardAllowlist);
-    setMaxBodyBytes(defaultEditorState.maxBodyBytes);
-    setContentTypes(defaultEditorState.contentTypes);
-  };
-
   const openNewEditor = () => {
     setEditorMode('new');
     resetEditor();
@@ -128,32 +255,17 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
   };
 
   const openEditEditor = (template: OpenApiTemplate) => {
-    const firstPathGroup = template.path_groups[0];
-    const firstMethod = firstPathGroup?.methods[0] ?? 'POST';
-    const firstPathPattern = firstPathGroup?.path_patterns[0] ?? '^/v1/responses$';
-
     setEditorMode('edit');
-    setTemplateId(template.template_id);
-    setVersion(String(template.version + 1));
-    setProvider(template.provider);
-    setDescription(template.description ?? '');
-    setAllowedHosts(template.allowed_hosts.join(', '));
-    setPathGroupId(firstPathGroup?.group_id ?? 'responses_create');
-    setRiskTier(firstPathGroup?.risk_tier ?? 'low');
-    setApprovalMode(firstPathGroup?.approval_mode ?? 'none');
-    setMethod(firstMethod);
-    setPathPattern(firstPathPattern);
-    setQueryAllowlist(firstPathGroup?.query_allowlist.join(', ') ?? '');
-    setHeaderForwardAllowlist(firstPathGroup?.header_forward_allowlist.join(', ') ?? '');
-    setMaxBodyBytes(String(firstPathGroup?.body_policy.max_bytes ?? 262144));
-    setContentTypes(firstPathGroup?.body_policy.content_types.join(', ') ?? 'application/json');
+    applyTemplate(template);
     setShowEditor(true);
   };
+
+  const fullTemplateId = useMemo(() => buildTemplateId(templateIdSuffix), [templateIdSuffix]);
 
   return (
     <Panel
       title="Templates"
-      subtitle="List templates and publish immutable new versions when needed."
+      subtitle="Manage template contracts with multiple path groups and regex patterns."
       action={
         <button type="button" onClick={openNewEditor}>
           New template
@@ -172,8 +284,33 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
 
           <div className="inline-form">
             <label className="field">
-              <span>Template ID</span>
-              <input value={templateId} onChange={event => setTemplateId(event.currentTarget.value)} />
+              <span>Template name (for easier ID generation)</span>
+              <input
+                value={templateName}
+                onChange={event => {
+                  const nextName = event.currentTarget.value;
+                  setTemplateName(nextName);
+                  if (!templateIdLocked) {
+                    setTemplateIdSuffix(normalizeTemplateIdSuffix(nextName));
+                  }
+                }}
+                placeholder="OpenAI Responses"
+              />
+            </label>
+
+            <label className="field">
+              <span>Template ID suffix</span>
+              <div className="input-prefix-group">
+                <span className="input-prefix">{TEMPLATE_ID_PREFIX}</span>
+                <input
+                  value={templateIdSuffix}
+                  onChange={event => {
+                    setTemplateIdLocked(true);
+                    setTemplateIdSuffix(normalizeTemplateIdSuffix(event.currentTarget.value));
+                  }}
+                  placeholder="openai_core_v1"
+                />
+              </div>
             </label>
 
             <label className="field">
@@ -192,77 +329,195 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
             </label>
 
             <label className="field wide">
-              <span>Allowed hosts (comma-separated hosts of the service provider)</span>
+              <span>Allowed hosts (comma-separated)</span>
               <input value={allowedHosts} onChange={event => setAllowedHosts(event.currentTarget.value)} />
             </label>
+          </div>
 
-            <label className="field">
-              <span>Path group ID</span>
-              <input value={pathGroupId} onChange={event => setPathGroupId(event.currentTarget.value)} />
-            </label>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                setTemplateIdLocked(false);
+                setTemplateIdSuffix(normalizeTemplateIdSuffix(templateName));
+              }}
+            >
+              Regenerate ID from name
+            </button>
+            <p className="helper-text">Final template ID: `{fullTemplateId}` (must match `tpl_[a-z0-9_]+`).</p>
+          </div>
 
-            <label className="field">
-              <span>Risk tier</span>
-              <select value={riskTier} onChange={event => setRiskTier(event.currentTarget.value as typeof riskTier)}>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-              </select>
-            </label>
+          <div className="stack-form">
+            <h3>Path groups</h3>
+            {pathGroups.map((pathGroup, index) => (
+              <article key={pathGroup.draftId} className="editor-card">
+                <header className="editor-card-header">
+                  <h4>Path group {index + 1}</h4>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={pathGroups.length <= 1}
+                    onClick={() => setPathGroups(current => current.filter(item => item.draftId !== pathGroup.draftId))}
+                  >
+                    Remove group
+                  </button>
+                </header>
 
-            <label className="field">
-              <span>Approval mode</span>
-              <select
-                value={approvalMode}
-                onChange={event => setApprovalMode(event.currentTarget.value as typeof approvalMode)}
-              >
-                <option value="none">none</option>
-                <option value="required">required</option>
-              </select>
-            </label>
+                <div className="editor-grid">
+                  <label className="field">
+                    <span>Group ID</span>
+                    <input
+                      value={pathGroup.groupId}
+                      onChange={event =>
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          groupId: event.currentTarget.value
+                        }))
+                      }
+                    />
+                  </label>
 
-            <label className="field">
-              <span>Method</span>
-              <select value={method} onChange={event => setMethod(event.currentTarget.value as typeof method)}>
-                <option value="GET">GET</option>
-                <option value="POST">POST</option>
-                <option value="PUT">PUT</option>
-                <option value="PATCH">PATCH</option>
-                <option value="DELETE">DELETE</option>
-              </select>
-            </label>
+                  <label className="field">
+                    <span>Risk tier</span>
+                    <select
+                      value={pathGroup.riskTier}
+                      onChange={event =>
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          riskTier: event.currentTarget.value as PathGroupDraft['riskTier']
+                        }))
+                      }
+                    >
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </label>
 
-            <label className="field wide">
-              <span>Path regex pattern</span>
-              <input value={pathPattern} onChange={event => setPathPattern(event.currentTarget.value)} />
-            </label>
+                  <label className="field">
+                    <span>Approval mode</span>
+                    <select
+                      value={pathGroup.approvalMode}
+                      onChange={event =>
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          approvalMode: event.currentTarget.value as PathGroupDraft['approvalMode']
+                        }))
+                      }
+                    >
+                      <option value="none">none</option>
+                      <option value="required">required</option>
+                    </select>
+                  </label>
 
-            <label className="field wide">
-              <span>Query allowlist (comma-separated)</span>
-              <input value={queryAllowlist} onChange={event => setQueryAllowlist(event.currentTarget.value)} />
-            </label>
+                  <label className="field">
+                    <span>Max body bytes</span>
+                    <input
+                      value={pathGroup.maxBodyBytes}
+                      onChange={event =>
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          maxBodyBytes: event.currentTarget.value
+                        }))
+                      }
+                      inputMode="numeric"
+                    />
+                  </label>
 
-            <label className="field wide">
-              <span>Forwarded headers (comma-separated)</span>
-              <input
-                value={headerForwardAllowlist}
-                onChange={event => setHeaderForwardAllowlist(event.currentTarget.value)}
-              />
-            </label>
+                  <label className="field wide">
+                    <span>HTTP methods</span>
+                    <div className="checkbox-grid">
+                      {httpMethods.map(httpMethod => {
+                        const checked = pathGroup.methods.includes(httpMethod);
+                        return (
+                          <label key={httpMethod} className="chip-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={event =>
+                                updatePathGroup(pathGroup.draftId, current => {
+                                  const nextMethods = event.currentTarget.checked
+                                    ? [...current.methods, httpMethod]
+                                    : current.methods.filter(value => value !== httpMethod);
 
-            <label className="field">
-              <span>Max body bytes</span>
-              <input
-                value={maxBodyBytes}
-                onChange={event => setMaxBodyBytes(event.currentTarget.value)}
-                inputMode="numeric"
-              />
-            </label>
+                                  return {
+                                    ...current,
+                                    methods: [...new Set(nextMethods)] as HttpMethod[]
+                                  };
+                                })
+                              }
+                            />
+                            <span className="chip-label">{httpMethod}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </label>
 
-            <label className="field wide">
-              <span>Allowed content types (comma-separated)</span>
-              <input value={contentTypes} onChange={event => setContentTypes(event.currentTarget.value)} />
-            </label>
+                  <label className="field wide">
+                    <span>Path regex patterns (one per line)</span>
+                    <textarea
+                      rows={4}
+                      value={pathGroup.pathPatterns}
+                      onChange={event =>
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          pathPatterns: event.currentTarget.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label className="field wide">
+                    <span>Query allowlist (comma-separated)</span>
+                    <input
+                      value={pathGroup.queryAllowlist}
+                      onChange={event =>
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          queryAllowlist: event.currentTarget.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label className="field wide">
+                    <span>Forwarded headers (comma-separated)</span>
+                    <input
+                      value={pathGroup.headerForwardAllowlist}
+                      onChange={event =>
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          headerForwardAllowlist: event.currentTarget.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label className="field wide">
+                    <span>Allowed content types (comma-separated)</span>
+                    <input
+                      value={pathGroup.contentTypes}
+                      onChange={event =>
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          contentTypes: event.currentTarget.value
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </article>
+            ))}
+
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setPathGroups(current => [...current, createPathGroupDraft()])}
+            >
+              Add path group
+            </button>
           </div>
 
           <p className="helper-text">
@@ -287,10 +542,6 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
         </form>
       ) : null}
 
-      <p className="helper-text">
-        Delete/disable actions for templates require backend support and are not yet exposed by the Admin API.
-      </p>
-
       <ErrorNotice error={templatesQuery.error ?? createTemplateMutation.error} />
 
       <div className="table-shell">
@@ -301,23 +552,33 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
               <th>Version</th>
               <th>Provider</th>
               <th>Allowed hosts</th>
+              <th>Path groups</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {(templatesQuery.data?.templates ?? []).map(template => (
-              <tr key={`${template.template_id}:${template.version}`}>
-                <td>{template.template_id}</td>
-                <td>{template.version}</td>
-                <td>{template.provider}</td>
-                <td>{template.allowed_hosts.join(', ')}</td>
-                <td>
-                  <button type="button" className="btn-secondary" onClick={() => openEditEditor(template)}>
-                    Edit
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {(templatesQuery.data?.templates ?? []).map(template => {
+              const patternCount = template.path_groups.reduce((count, pathGroup) => count + pathGroup.path_patterns.length, 0);
+
+              return (
+                <tr key={`${template.template_id}:${template.version}`}>
+                  <td>{template.template_id}</td>
+                  <td>{template.version}</td>
+                  <td>{template.provider}</td>
+                  <td>{template.allowed_hosts.join(', ')}</td>
+                  <td>
+                    {template.path_groups.length} groups / {patternCount} patterns
+                  </td>
+                  <td>
+                    <div className="row-actions">
+                      <button type="button" className="btn-secondary" onClick={() => openEditEditor(template)}>
+                        Edit
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
