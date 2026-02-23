@@ -137,6 +137,54 @@ a:focus-visible {
   margin-bottom: 0.8rem;
 }
 
+.pathgroup-request-test {
+  border: 1px solid color-mix(in srgb, var(--line) 80%, #fff 20%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-muted) 46%, #fff 54%);
+  padding: 0.6rem 0.7rem;
+}
+
+.pathgroup-request-test summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.pathgroup-request-test[open] summary {
+  margin-bottom: 0.7rem;
+}
+
+.pathgroup-request-test-body {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.pathgroup-request-test-result {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.request-check-list {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.request-check-status {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.request-check-status.ok {
+  color: var(--accent-strong);
+}
+
+.request-check-status.bad {
+  color: var(--danger-strong);
+}
+
 .auth-actions {
   display: flex;
   gap: 0.6rem;

@@ -15,6 +15,12 @@ import {
   toCsvList,
   toLineList
 } from './templateHelpers';
+import {
+  checkPathGroupCurlRequest,
+  checkTemplateCurlRequest,
+  type PathGroupRequestCheck,
+  type TemplateRequestCheck
+} from './pathGroupRequestCheck';
 
 const httpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const templateDraftRouteSchema = z
@@ -90,6 +96,131 @@ const createPathGroupDraft = (input: Partial<Omit<PathGroupDraft, 'draftId'>> = 
 });
 
 const defaultTemplateName = 'OpenAI Core';
+
+type TemplateRequestTesterProps = {
+  pathGroups: PathGroupDraft[];
+  allowedHosts: string[];
+};
+
+const TemplateRequestTester = ({pathGroups, allowedHosts}: TemplateRequestTesterProps) => {
+  const [curlInput, setCurlInput] = useState('');
+  const [checkResult, setCheckResult] = useState<TemplateRequestCheck | undefined>();
+  const [checkError, setCheckError] = useState<string | undefined>();
+
+  useEffect(() => {
+    const normalizedCurl = curlInput.trim();
+    if (!normalizedCurl) {
+      return;
+    }
+
+    const debounceId = window.setTimeout(() => {
+      try {
+        const result = checkTemplateCurlRequest({
+          curl: normalizedCurl,
+          allowedHosts,
+          pathGroups: pathGroups.map(pathGroup => ({
+            groupId: pathGroup.groupId.trim() || 'unnamed-group',
+            methods: pathGroup.methods,
+            pathPatterns: toLineList(pathGroup.pathPatterns)
+          }))
+        });
+        setCheckResult(result);
+        setCheckError(undefined);
+      } catch (error) {
+        setCheckResult(undefined);
+        setCheckError(error instanceof Error ? error.message : 'Unable to parse cURL request.');
+      }
+    }, 500);
+
+    return () => {
+      window.clearTimeout(debounceId);
+    };
+  }, [allowedHosts, curlInput, pathGroups]);
+
+  return (
+    <details className="pathgroup-request-test">
+      <summary>Test template</summary>
+      <div className="pathgroup-request-test-body">
+        <p className="helper-text">
+          Paste a cURL request to test template matching across all configured path groups. Evaluation is debounced by
+          500ms.
+        </p>
+
+        <label className="field">
+          <span>cURL request</span>
+          <textarea
+            rows={5}
+            value={curlInput}
+            onChange={event => {
+              const nextValue = event.currentTarget.value;
+              setCurlInput(nextValue);
+              if (!nextValue.trim()) {
+                setCheckResult(undefined);
+                setCheckError(undefined);
+              }
+            }}
+            spellCheck={false}
+            placeholder={'curl -X POST "https://api.openai.com/v1/responses" -d \'{"input":"hello"}\''}
+          />
+        </label>
+
+        {checkError ? <p className="error-notice">{checkError}</p> : null}
+
+        {checkResult ? (
+          <div className="pathgroup-request-test-result">
+            <p className="helper-text">
+              Parsed request:{' '}
+              <strong>
+                {checkResult.request.method} {checkResult.request.url}
+              </strong>
+            </p>
+
+            <ul className="request-check-list">
+              <li>Host: {checkResult.hostMatched ? 'matched' : 'not matched'}</li>
+              <li>Scheme (https): {checkResult.schemeMatched ? 'matched' : 'not matched'}</li>
+              <li>Port (443): {checkResult.portMatched ? 'matched' : 'not matched'}</li>
+            </ul>
+
+            <p className={`request-check-status ${checkResult.matched ? 'ok' : 'bad'}`}>
+              {checkResult.matched ? 'Matched' : 'Not matched'}: {checkResult.reason}
+            </p>
+
+            {checkResult.matched ? (
+              <>
+                <p className="helper-text">Matched path groups:</p>
+                <ul className="request-check-list">
+                  {checkResult.matchedPathGroups.map(pathGroup => (
+                    <li key={pathGroup.groupId}>
+                      <strong>{pathGroup.groupId}</strong>
+                      {pathGroup.check.matchedPattern ? ` (${pathGroup.check.matchedPattern})` : ''}:{' '}
+                      {pathGroup.check.reason}
+                    </li>
+                  ))}
+                </ul>
+                {checkResult.failedPathGroups.length > 0 ? (
+                  <p className="helper-text">
+                    Additional non-matching path groups are hidden because at least one path group matched.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <p className="helper-text">Path group failures:</p>
+                <ul className="request-check-list">
+                  {checkResult.failedPathGroups.map(pathGroup => (
+                    <li key={pathGroup.groupId}>
+                      <strong>{pathGroup.groupId}</strong>: {pathGroup.check.reason}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+};
 
 export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
   const queryClient = useQueryClient();
@@ -261,6 +392,7 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
   };
 
   const fullTemplateId = useMemo(() => buildTemplateId(templateIdSuffix), [templateIdSuffix]);
+  const normalizedAllowedHosts = useMemo(() => toCsvList(allowedHosts), [allowedHosts]);
 
   return (
     <Panel
@@ -520,6 +652,8 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
             </button>
           </div>
 
+          <TemplateRequestTester pathGroups={pathGroups} allowedHosts={normalizedAllowedHosts} />
+
           <p className="helper-text">
             Templates are immutable contracts. Editing publishes a new version and keeps previous versions intact.
           </p>
@@ -558,7 +692,10 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
           </thead>
           <tbody>
             {(templatesQuery.data?.templates ?? []).map(template => {
-              const patternCount = template.path_groups.reduce((count, pathGroup) => count + pathGroup.path_patterns.length, 0);
+              const patternCount = template.path_groups.reduce(
+                (count, pathGroup) => count + pathGroup.path_patterns.length,
+                0
+              );
 
               return (
                 <tr key={`${template.template_id}:${template.version}`}>

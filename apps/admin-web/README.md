@@ -28,6 +28,7 @@ This code space is frontend-only and consumes the existing `apps/broker-admin-ap
 Guided builders are available for integrations, templates, policies, and approval constraints, with preset shortcuts
 for common provider and policy setups.
 Audit workflow now supports selecting failing events and drafting template contracts with prefilled traits.
+Template editor includes template-level and per-path-group cURL request checks for fast regex/method/host validation.
 
 ## Routing
 

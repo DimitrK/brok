@@ -11,7 +11,7 @@ import {AdminOAuthCallbackPage} from './features/auth/AdminOAuthCallbackPage';
 import {ApprovalsPanel} from './features/approvals/ApprovalsPanel';
 import {AuditPanel} from './features/audit/AuditPanel';
 import {IntegrationsPanel} from './features/integrations/IntegrationsPanel';
-import {ManifestKeysPanel} from './features/manifest/ManifestKeysPanel';
+import {ManifestPanel} from './features/manifest/ManifestKeysPanel';
 import {PoliciesPanel} from './features/policies/PoliciesPanel';
 import {TemplatesPanel} from './features/templates/TemplatesPanel';
 import {TenantsPanel} from './features/tenants/TenantsPanel';
@@ -68,7 +68,7 @@ const sectionRoutes: SectionRoute[] = [
   },
   {
     path: 'manifest',
-    label: 'Manifest Keys',
+    label: 'Manifest',
     description: 'Inspect signing material used for broker manifests.'
   }
 ];
@@ -516,7 +516,7 @@ export const App = () => {
         <Route path="policies" element={<PoliciesPanel api={api} />} />
         <Route path="approvals" element={<ApprovalsPanel api={api} />} />
         <Route path="audit" element={<AuditPanel api={api} />} />
-        <Route path="manifest" element={<ManifestKeysPanel api={api} />} />
+        <Route path="manifest" element={<ManifestPanel api={api} />} />
       </Route>
 
       <Route path="*" element={<Navigate to={authToken ? '/tenants' : '/login'} replace />} />
