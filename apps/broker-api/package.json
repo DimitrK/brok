@@ -34,7 +34,7 @@
     "@broker-interceptor/ssrf-guard": "workspace:*",
     "@nestjs/common": "^11.1.13",
     "@nestjs/core": "^11.1.13",
-    "@nestjs/platform-express": "^11.1.13",
+    "@nestjs/platform-express": "^11.1.14",
     "@prisma/client": "^6.16.3",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
