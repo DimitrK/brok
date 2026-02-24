@@ -18,7 +18,7 @@
     "@broker-interceptor/prettier-config": "workspace:*",
     "@vitest/coverage-v8": "^2.1.8",
     "prisma": "6.16.3",
-    "vitest": "^2.1.8"
+    "vitest": "^4.0.18"
   },
   "dependencies": {
     "@broker-interceptor/schemas": "workspace:*",
