@@ -30,7 +30,7 @@
     "@broker-interceptor/policy-engine": "workspace:*",
     "@broker-interceptor/schemas": "workspace:*",
     "@nestjs/common": "^11.1.13",
-    "@nestjs/core": "^11.1.13",
+    "@nestjs/core": "^11.1.14",
     "@nestjs/platform-express": "^11.1.13",
     "@peculiar/x509": "^1.12.3",
     "@prisma/client": "^6.16.3",
