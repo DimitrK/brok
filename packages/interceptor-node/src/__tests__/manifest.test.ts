@@ -373,6 +373,28 @@ describe('validateManifestForInterception', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('rejects regex patterns that use glob-style /* wildcard', () => {
+    const fixture = createSignedManifestFixture();
+    const manifest: OpenApiManifest = {
+      ...fixture.manifest,
+      match_rules: [
+        {
+          ...fixture.manifest.match_rules[0],
+          match: {
+            ...fixture.manifest.match_rules[0].match,
+            path_groups: ['^/v1/*$']
+          }
+        }
+      ]
+    };
+
+    const result = validateManifestForInterception(manifest);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('regex path pattern uses /*');
+    }
+  });
+
   it('rejects prefix patterns that do not start with /', () => {
     const fixture = createSignedManifestFixture();
     const result = validateManifestForInterception({

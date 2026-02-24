@@ -120,6 +120,12 @@ function validatePathGroupPattern(pattern: string): string | null {
       return 'regex path pattern must be anchored with $';
     }
 
+    // Guard against glob-style confusion in regex form.
+    // Example: ^/v1/*$ does NOT mean "anything under /v1/" in regex.
+    if (/(^|[^\\])\/\*/.test(pattern)) {
+      return 'regex path pattern uses /* which behaves as a regex quantifier; use /v1/* prefix pattern or ^/v1/.*$';
+    }
+
     try {
       // eslint-disable-next-line security/detect-non-literal-regexp -- manifest pattern is signature-verified before use
       new RegExp(pattern);
