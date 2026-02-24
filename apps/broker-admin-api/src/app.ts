@@ -14,6 +14,8 @@ import type {CertificateIssuerConfig, ServiceConfig} from './config';
 import {DependencyBridge} from './dependencyBridge';
 import {createProcessInfrastructure} from './infrastructure';
 import {AdminApiNestModule} from './nest/adminApiNestModule';
+import {expressDecodeErrorMiddleware} from './nest/expressDecodeErrorMiddleware';
+import {pathEncodingGuardMiddleware} from './nest/pathEncodingGuardMiddleware';
 import {ControlPlaneRepository} from './repository';
 
 const createExternalCaEnrollmentProvider = (
@@ -73,6 +75,7 @@ export const createAdminApiApp = async ({config}: {config: ServiceConfig}) => {
         contentSecurityPolicy: false
       })
     );
+    expressApp.use(pathEncodingGuardMiddleware);
 
     const nestApp = await NestFactory.create(
       AdminApiNestModule.register({
@@ -95,6 +98,7 @@ export const createAdminApiApp = async ({config}: {config: ServiceConfig}) => {
     }
 
     await nestApp.init();
+    expressApp.use(expressDecodeErrorMiddleware);
 
     const server = nestApp.getHttpServer() as Server;
 

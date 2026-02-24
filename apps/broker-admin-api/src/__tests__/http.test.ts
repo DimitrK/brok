@@ -82,6 +82,21 @@ describe('http helpers', () => {
     ).rejects.toMatchObject({code: 'request_body_invalid_json'})
   })
 
+  it('treats content-length zero as an empty optional body', async () => {
+    const schema = z.object({mode: z.enum(['once', 'until_revoked'])}).strict()
+
+    await expect(
+      parseJsonBody({
+        request: makeRequest({
+          headers: {'content-length': '0'}
+        }),
+        schema,
+        maxBodyBytes: 1024,
+        required: false
+      })
+    ).resolves.toBeUndefined()
+  })
+
   it('parses query values and emits json/error responses', () => {
     const parsedQuery = parseQuery({
       searchParams: new URLSearchParams('status=pending'),
@@ -155,4 +170,3 @@ describe('http helpers', () => {
     }
   })
 })
-

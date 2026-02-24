@@ -22,6 +22,42 @@ const isJsonContentType = (contentTypeHeader: string | undefined) => {
   return contentTypeHeader.toLowerCase().includes('application/json')
 }
 
+const hasNonEmptyHeaderValue = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0
+
+const normalizeHeaderValues = (value: string | string[] | undefined) => {
+  if (typeof value === 'string') {
+    return [value]
+  }
+
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string')
+  }
+
+  return []
+}
+
+const hasPotentialRequestBody = (request: IncomingMessage) => {
+  const transferEncodingValues = normalizeHeaderValues(request.headers['transfer-encoding'])
+  if (transferEncodingValues.some(value => hasNonEmptyHeaderValue(value))) {
+    return true
+  }
+
+  const contentLengthValue = normalizeHeaderValues(request.headers['content-length']).find(value =>
+    hasNonEmptyHeaderValue(value)
+  )
+  if (!hasNonEmptyHeaderValue(contentLengthValue)) {
+    return false
+  }
+
+  const parsedLength = Number.parseInt(contentLengthValue, 10)
+  if (Number.isNaN(parsedLength)) {
+    return true
+  }
+
+  return parsedLength > 0
+}
+
 export const extractCorrelationId = (request: IncomingMessage) => {
   const header = request.headers['x-correlation-id']
   const value = Array.isArray(header) ? header[0] : header
@@ -101,7 +137,7 @@ export async function parseJsonBody<TSchema extends z.ZodTypeAny>({
   maxBodyBytes: number
   required: boolean
 }): Promise<z.infer<TSchema> | undefined> {
-  const hasPotentialBody = Boolean(request.headers['content-length'] || request.headers['transfer-encoding'])
+  const hasPotentialBody = hasPotentialRequestBody(request)
   if (!required && !hasPotentialBody) {
     return undefined
   }

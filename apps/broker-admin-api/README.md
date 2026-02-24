@@ -9,7 +9,7 @@ manifest key distribution.
 - Runtime: Node.js + TypeScript
 - Framework: NestJS on Express (`@nestjs/platform-express`)
 - Routing: explicit Nest controllers by endpoint domain with a fallback controller for unsupported routes/method mismatches
-- Request execution: controller-level route handling via `src/nest/controllerContext.ts`; `src/server.ts` remains a minimal compatibility export
+- Request execution: controller-level route handling via `src/nest/controllerContext.ts`
 - Security middleware: Helmet
 - Process infrastructure: single Prisma client + single Redis client initialized once per process and passed through app
   dependencies

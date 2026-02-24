@@ -1,10 +1,14 @@
 import {mkdtemp, rm, writeFile} from 'node:fs/promises'
-import type {IncomingMessage, ServerResponse} from 'node:http'
+import {request as sendHttpRequest, type Server} from 'node:http'
+import {createServer} from 'node:net'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
-import {Readable} from 'node:stream'
 
+import express from 'express'
+import helmet from 'helmet'
 import type {StructuredLogger} from '@broker-interceptor/logging'
+import {NestFactory} from '@nestjs/core'
+import {ExpressAdapter} from '@nestjs/platform-express'
 import {OpenApiAdminOAuthStartResponseSchema, type OpenApiAuditEvent, type OpenApiTemplate} from '@broker-interceptor/schemas'
 import {afterEach, describe, expect, it, vi} from 'vitest'
 
@@ -12,8 +16,10 @@ import {AdminAuthenticator} from '../auth'
 import {CertificateIssuer} from '../certificateIssuer'
 import type {ServiceConfig} from '../config'
 import {DependencyBridge} from '../dependencyBridge'
+import {AdminApiNestModule} from '../nest/adminApiNestModule'
+import {expressDecodeErrorMiddleware} from '../nest/expressDecodeErrorMiddleware'
+import {pathEncodingGuardMiddleware} from '../nest/pathEncodingGuardMiddleware'
 import {ControlPlaneRepository, type RepositoryAdminAccessRequest, type RepositoryAdminIdentity} from '../repository'
-import {createAdminApiRequestHandler} from '../server'
 
 const OWNER_TOKEN = 'owner-token-0123456789abcdef'
 const ADMIN_TOKEN = 'admin-token-0123456789abcdef'
@@ -21,9 +27,38 @@ const LIMITED_ADMIN_TOKEN = 'limited-admin-token-0123456789abcdef'
 const TEST_CA_PEM = '-----BEGIN CERTIFICATE-----\nTEST_CA\n-----END CERTIFICATE-----'
 
 const temporaryDirectories: string[] = []
+const cleanupTasks: Array<() => Promise<void>> = []
+const canBindLoopback = await new Promise<boolean>(resolve => {
+  const probeServer = createServer()
+  const finish = (result: boolean) => {
+    probeServer.removeAllListeners()
+    resolve(result)
+  }
+
+  probeServer.once('error', error => {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+      finish(false)
+      return
+    }
+    finish(false)
+  })
+  probeServer.listen(0, '127.0.0.1', () => {
+    probeServer.close(() => {
+      finish(true)
+    })
+  })
+})
 
 afterEach(async () => {
   vi.restoreAllMocks()
+
+  while (cleanupTasks.length > 0) {
+    const cleanup = cleanupTasks.pop()
+    if (!cleanup) {
+      continue
+    }
+    await cleanup()
+  }
 
   while (temporaryDirectories.length > 0) {
     const directory = temporaryDirectories.pop()
@@ -159,8 +194,8 @@ type ServerContext = {
   dependencyBridge: DependencyBridge
 }
 
-const invokeHandler = async ({
-  handler,
+const sendRequestOverHttp = async ({
+  port,
   method,
   path,
   token = OWNER_TOKEN,
@@ -168,7 +203,7 @@ const invokeHandler = async ({
   rawBody,
   headers
 }: {
-  handler: ReturnType<typeof createAdminApiRequestHandler>
+  port: number
 } & RequestOptions): Promise<ResponseShape> => {
   const requestHeaders: Record<string, string> = {
     host: 'broker-admin-api.test',
@@ -186,64 +221,58 @@ const invokeHandler = async ({
     requestHeaders['content-length'] = String(Buffer.byteLength(payload, 'utf8'))
   }
 
-  const request = new Readable({
-    read() {
-      if (payload) {
-        this.push(payload)
+  return new Promise((resolve, reject) => {
+    const request = sendHttpRequest(
+      {
+        method,
+        host: '127.0.0.1',
+        port,
+        path,
+        headers: requestHeaders
+      },
+      response => {
+        const bodyChunks: Buffer[] = []
+        response.on('data', (chunk: Buffer | string) => {
+          bodyChunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk)
+        })
+        response.on('end', () => {
+          const text = Buffer.concat(bodyChunks).toString('utf8')
+          let parsedBody: unknown = undefined
+          if (text.length > 0) {
+            try {
+              parsedBody = JSON.parse(text) as unknown
+            } catch {
+              parsedBody = text
+            }
+          }
+
+          const responseHeaders: Record<string, string> = {}
+          for (const [key, value] of Object.entries(response.headers)) {
+            if (Array.isArray(value)) {
+              responseHeaders[key.toLowerCase()] = value.join(', ')
+              continue
+            }
+            if (typeof value === 'string') {
+              responseHeaders[key.toLowerCase()] = value
+            }
+          }
+
+          resolve({
+            status: response.statusCode ?? 0,
+            body: parsedBody,
+            text,
+            headers: responseHeaders
+          })
+        })
       }
-      this.push(null)
+    )
+
+    request.on('error', reject)
+    if (payload) {
+      request.write(payload)
     }
-  }) as IncomingMessage
-  request.method = method
-  request.url = path
-  request.headers = requestHeaders
-
-  const capturedHeaders: Record<string, string> = {}
-  const capturedBodyChunks: Buffer[] = []
-
-  let resolveEnded: () => void = () => undefined
-  const ended = new Promise<void>(resolve => {
-    resolveEnded = resolve
+    request.end()
   })
-
-  const response = {
-    writeHead: (statusCode: number, headerValues: Record<string, string | number>) => {
-      for (const [key, value] of Object.entries(headerValues)) {
-        capturedHeaders[key.toLowerCase()] = String(value)
-      }
-      capturedHeaders[':status'] = String(statusCode)
-      return response
-    },
-    end: (chunk?: string | Buffer) => {
-      if (typeof chunk === 'string') {
-        capturedBodyChunks.push(Buffer.from(chunk, 'utf8'))
-      } else if (chunk) {
-        capturedBodyChunks.push(Buffer.from(chunk))
-      }
-      resolveEnded()
-      return response
-    }
-  } as unknown as ServerResponse
-
-  await handler(request, response)
-  await ended
-
-  const text = Buffer.concat(capturedBodyChunks).toString('utf8')
-  let parsedBody: unknown = undefined
-  if (text.length > 0) {
-    try {
-      parsedBody = JSON.parse(text) as unknown
-    } catch {
-      parsedBody = text
-    }
-  }
-
-  return {
-    status: Number(capturedHeaders[':status'] ?? 0),
-    body: parsedBody,
-    text,
-    headers: capturedHeaders
-  }
 }
 
 const createContext = async ({
@@ -255,51 +284,75 @@ const createContext = async ({
   config?: ServiceConfig
   logger?: StructuredLogger
 } = {}): Promise<ServerContext> => {
+  const effectiveConfig =
+    statePath !== undefined
+      ? ({
+          ...config,
+          statePath
+        } satisfies ServiceConfig)
+      : config
+  const effectiveLogger = logger ?? createMockLogger()
+
   const repository = await ControlPlaneRepository.create({
-    ...(statePath ? {statePath} : {}),
-    manifestKeys: {keys: []},
-    enrollmentTokenTtlSeconds: 600
+    ...(effectiveConfig.statePath ? {statePath: effectiveConfig.statePath} : {}),
+    manifestKeys: effectiveConfig.manifestKeys,
+    enrollmentTokenTtlSeconds: effectiveConfig.enrollmentTokenTtlSeconds,
+    logger: effectiveLogger
   })
 
   const dependencyBridge = new DependencyBridge({
     repository,
-    authenticator: new AdminAuthenticator({
-      mode: 'static',
-      tokens: [
-        {
-          token: OWNER_TOKEN,
-          subject: 'owner-user',
-          roles: ['owner']
-        },
-        {
-          token: ADMIN_TOKEN,
-          subject: 'tenant-admin',
-          roles: ['admin'],
-          tenant_ids: ['t_1', 't_2']
-        },
-        {
-          token: LIMITED_ADMIN_TOKEN,
-          subject: 'limited-admin',
-          roles: ['admin'],
-          tenant_ids: ['t_other']
-        }
-      ]
-    }),
-    certificateIssuer: new CertificateIssuer({
-      mode: 'mock',
-      mtlsCaPem: TEST_CA_PEM
+    authenticator: new AdminAuthenticator(effectiveConfig.auth),
+    certificateIssuer: new CertificateIssuer(effectiveConfig.certificateIssuer)
+  })
+  await dependencyBridge.persistStateWithDbPackage()
+
+  const expressApp = express()
+  expressApp.disable('x-powered-by')
+  expressApp.use(
+    helmet({
+      contentSecurityPolicy: false
     })
+  )
+  expressApp.use(pathEncodingGuardMiddleware)
+
+  const nestApp = await NestFactory.create(
+    AdminApiNestModule.register({
+      config: effectiveConfig,
+      repository,
+      dependencyBridge,
+      logger: effectiveLogger
+    }),
+    new ExpressAdapter(expressApp),
+    {
+      bodyParser: false,
+      logger: false
+    }
+  )
+
+  if ((effectiveConfig.corsAllowedOrigins ?? []).length > 0) {
+    nestApp.enableCors({
+      origin: effectiveConfig.corsAllowedOrigins
+    })
+  }
+
+  await nestApp.init()
+  expressApp.use(expressDecodeErrorMiddleware)
+  await nestApp.listen(0, '127.0.0.1')
+  cleanupTasks.push(async () => {
+    await nestApp.close()
   })
 
-  const handler = createAdminApiRequestHandler({
-    config,
-    repository,
-    dependencyBridge,
-    ...(logger ? {logger} : {})
-  })
+  const httpServer = nestApp.getHttpServer() as Server
+  const serverAddress = httpServer.address()
+  if (!serverAddress || typeof serverAddress === 'string') {
+    throw new Error('expected TCP address from nest http server')
+  }
+
+  const port = serverAddress.port
 
   return {
-    request: (options: RequestOptions) => invokeHandler({handler, ...options}),
+    request: (options: RequestOptions) => sendRequestOverHttp({port, ...options}),
     repository,
     dependencyBridge
   }
@@ -477,7 +530,7 @@ const makeAuditEvent = ({
   metadata: null
 })
 
-describe('broker-admin-api server routes', () => {
+describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
   it('logs request route without query parameters', async () => {
     const logger = createMockLogger()
     const context = await createContext({logger})
