@@ -554,11 +554,191 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
             </button>
             <p className="helper-text">Final template ID: `{fullTemplateId}` (must match `tpl_[a-z0-9_]+`).</p>
             {editorMode === 'edit' ? (
-              <p className="helper-text">
-                Version is auto-set to the next publish version for this template lineage.
-              </p>
+              <p className="helper-text">Version is auto-set to the next publish version for this template lineage.</p>
             ) : null}
           </div>
+          <div className="stack-form">
+            <h3>Path groups</h3>
+            {pathGroups.map((pathGroup, index) => (
+              <article key={pathGroup.draftId} className="editor-card">
+                <header className="editor-card-header">
+                  <h4>Path group {index + 1}</h4>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={pathGroups.length <= 1}
+                    onClick={() => setPathGroups(current => current.filter(item => item.draftId !== pathGroup.draftId))}
+                  >
+                    Remove group
+                  </button>
+                </header>
+
+                <div className="editor-grid">
+                  <label className="field">
+                    <span>Group ID</span>
+                    <input
+                      value={pathGroup.groupId}
+                      onChange={event => {
+                        const nextGroupId = event.currentTarget.value;
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          groupId: nextGroupId
+                        }));
+                      }}
+                    />
+                  </label>
+
+                  <label className="field">
+                    <span>Risk tier</span>
+                    <select
+                      value={pathGroup.riskTier}
+                      onChange={event => {
+                        const nextRiskTier = event.currentTarget.value as PathGroupDraft['riskTier'];
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          riskTier: nextRiskTier
+                        }));
+                      }}
+                    >
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </label>
+
+                  <label className="field">
+                    <span>Approval mode</span>
+                    <select
+                      value={pathGroup.approvalMode}
+                      onChange={event => {
+                        const nextApprovalMode = event.currentTarget.value as PathGroupDraft['approvalMode'];
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          approvalMode: nextApprovalMode
+                        }));
+                      }}
+                    >
+                      <option value="none">none</option>
+                      <option value="required">required</option>
+                    </select>
+                  </label>
+
+                  <label className="field">
+                    <span>Max body bytes</span>
+                    <input
+                      value={pathGroup.maxBodyBytes}
+                      onChange={event => {
+                        const nextMaxBodyBytes = event.currentTarget.value;
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          maxBodyBytes: nextMaxBodyBytes
+                        }));
+                      }}
+                      inputMode="numeric"
+                    />
+                  </label>
+
+                  <label className="field wide">
+                    <span>HTTP methods</span>
+                    <div className="checkbox-grid">
+                      {httpMethods.map(httpMethod => {
+                        const checked = pathGroup.methods.includes(httpMethod);
+                        return (
+                          <label key={httpMethod} className="chip-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={event => {
+                                const isChecked = event.currentTarget.checked;
+                                updatePathGroup(pathGroup.draftId, current => {
+                                  const nextMethods = isChecked
+                                    ? [...current.methods, httpMethod]
+                                    : current.methods.filter(value => value !== httpMethod);
+
+                                  return {
+                                    ...current,
+                                    methods: [...new Set(nextMethods)] as HttpMethod[]
+                                  };
+                                });
+                              }}
+                            />
+                            <span className="chip-label">{httpMethod}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </label>
+
+                  <label className="field wide">
+                    <span>Path regex patterns (one per line)</span>
+                    <textarea
+                      rows={4}
+                      value={pathGroup.pathPatterns}
+                      onChange={event => {
+                        const nextPathPatterns = event.currentTarget.value;
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          pathPatterns: nextPathPatterns
+                        }));
+                      }}
+                    />
+                  </label>
+
+                  <label className="field wide">
+                    <span>Query allowlist (comma-separated)</span>
+                    <input
+                      value={pathGroup.queryAllowlist}
+                      onChange={event => {
+                        const nextQueryAllowlist = event.currentTarget.value;
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          queryAllowlist: nextQueryAllowlist
+                        }));
+                      }}
+                    />
+                  </label>
+
+                  <label className="field wide">
+                    <span>Forwarded headers (comma-separated)</span>
+                    <input
+                      value={pathGroup.headerForwardAllowlist}
+                      onChange={event => {
+                        const nextHeaderForwardAllowlist = event.currentTarget.value;
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          headerForwardAllowlist: nextHeaderForwardAllowlist
+                        }));
+                      }}
+                    />
+                  </label>
+
+                  <label className="field wide">
+                    <span>Allowed content types (comma-separated)</span>
+                    <input
+                      value={pathGroup.contentTypes}
+                      onChange={event => {
+                        const nextContentTypes = event.currentTarget.value;
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          contentTypes: nextContentTypes
+                        }));
+                      }}
+                    />
+                  </label>
+                </div>
+              </article>
+            ))}
+
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setPathGroups(current => [...current, createPathGroupDraft()])}
+            >
+              Add path group
+            </button>
+          </div>
+
+          <TemplateRequestTester pathGroups={pathGroups} allowedHosts={normalizedAllowedHosts} />
 
           {editorMode === 'edit' && latestEditorTemplate ? (
             <section className="editor-card version-history-card" aria-label="Template version history">
@@ -584,7 +764,10 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
                     {editorTemplateHistory.map(template => {
                       const isSelected = selectedHistoryTemplate?.version === template.version;
                       return (
-                        <tr key={`${template.template_id}:${template.version}`} className={isSelected ? 'selected-row' : ''}>
+                        <tr
+                          key={`${template.template_id}:${template.version}`}
+                          className={isSelected ? 'selected-row' : ''}
+                        >
                           <td>
                             v{template.version}
                             {template.version === latestEditorTemplate.version ? ' (latest)' : ''}
@@ -669,180 +852,6 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
               ) : null}
             </section>
           ) : null}
-
-          <div className="stack-form">
-            <h3>Path groups</h3>
-            {pathGroups.map((pathGroup, index) => (
-              <article key={pathGroup.draftId} className="editor-card">
-                <header className="editor-card-header">
-                  <h4>Path group {index + 1}</h4>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    disabled={pathGroups.length <= 1}
-                    onClick={() => setPathGroups(current => current.filter(item => item.draftId !== pathGroup.draftId))}
-                  >
-                    Remove group
-                  </button>
-                </header>
-
-                <div className="editor-grid">
-                  <label className="field">
-                    <span>Group ID</span>
-                    <input
-                      value={pathGroup.groupId}
-                      onChange={event =>
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          groupId: event.currentTarget.value
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <label className="field">
-                    <span>Risk tier</span>
-                    <select
-                      value={pathGroup.riskTier}
-                      onChange={event =>
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          riskTier: event.currentTarget.value as PathGroupDraft['riskTier']
-                        }))
-                      }
-                    >
-                      <option value="low">low</option>
-                      <option value="medium">medium</option>
-                      <option value="high">high</option>
-                    </select>
-                  </label>
-
-                  <label className="field">
-                    <span>Approval mode</span>
-                    <select
-                      value={pathGroup.approvalMode}
-                      onChange={event =>
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          approvalMode: event.currentTarget.value as PathGroupDraft['approvalMode']
-                        }))
-                      }
-                    >
-                      <option value="none">none</option>
-                      <option value="required">required</option>
-                    </select>
-                  </label>
-
-                  <label className="field">
-                    <span>Max body bytes</span>
-                    <input
-                      value={pathGroup.maxBodyBytes}
-                      onChange={event =>
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          maxBodyBytes: event.currentTarget.value
-                        }))
-                      }
-                      inputMode="numeric"
-                    />
-                  </label>
-
-                  <label className="field wide">
-                    <span>HTTP methods</span>
-                    <div className="checkbox-grid">
-                      {httpMethods.map(httpMethod => {
-                        const checked = pathGroup.methods.includes(httpMethod);
-                        return (
-                          <label key={httpMethod} className="chip-checkbox">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={event =>
-                                updatePathGroup(pathGroup.draftId, current => {
-                                  const nextMethods = event.currentTarget.checked
-                                    ? [...current.methods, httpMethod]
-                                    : current.methods.filter(value => value !== httpMethod);
-
-                                  return {
-                                    ...current,
-                                    methods: [...new Set(nextMethods)] as HttpMethod[]
-                                  };
-                                })
-                              }
-                            />
-                            <span className="chip-label">{httpMethod}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </label>
-
-                  <label className="field wide">
-                    <span>Path regex patterns (one per line)</span>
-                    <textarea
-                      rows={4}
-                      value={pathGroup.pathPatterns}
-                      onChange={event =>
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          pathPatterns: event.currentTarget.value
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <label className="field wide">
-                    <span>Query allowlist (comma-separated)</span>
-                    <input
-                      value={pathGroup.queryAllowlist}
-                      onChange={event =>
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          queryAllowlist: event.currentTarget.value
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <label className="field wide">
-                    <span>Forwarded headers (comma-separated)</span>
-                    <input
-                      value={pathGroup.headerForwardAllowlist}
-                      onChange={event =>
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          headerForwardAllowlist: event.currentTarget.value
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <label className="field wide">
-                    <span>Allowed content types (comma-separated)</span>
-                    <input
-                      value={pathGroup.contentTypes}
-                      onChange={event =>
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          contentTypes: event.currentTarget.value
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-              </article>
-            ))}
-
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => setPathGroups(current => [...current, createPathGroupDraft()])}
-            >
-              Add path group
-            </button>
-          </div>
-
-          <TemplateRequestTester pathGroups={pathGroups} allowedHosts={normalizedAllowedHosts} />
 
           <p className="helper-text">
             Templates are immutable contracts. Editing publishes a new version and keeps previous versions intact.
