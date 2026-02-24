@@ -426,6 +426,12 @@ importers:
 
   packages/interceptor-node:
     dependencies:
+      '@broker-interceptor/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      jose:
+        specifier: ^6.1.0
+        version: 6.1.3
       zod:
         specifier: ^4.3.6
         version: 4.3.6

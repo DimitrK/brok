@@ -13,12 +13,17 @@
 
 import * as http from 'node:http';
 import * as https from 'node:https';
+import {createRequire, syncBuiltinESMExports} from 'node:module';
 import * as net from 'node:net';
 import {PassThrough} from 'node:stream';
 
 import {matchUrl} from './matcher.js';
-import {executeRequest, ApprovalRequiredError, RequestDeniedError} from './broker-client.js';
-import type {InterceptorState, ExecuteResponseExecuted} from './types.js';
+import {executeRequest, ApprovalRequiredError, ManifestUnavailableError, RequestDeniedError} from './broker-client.js';
+import type {InterceptorState, ExecuteResponseExecuted, ParsedManifest} from './types.js';
+
+const require = createRequire(import.meta.url);
+const mutableHttp = require('node:http') as typeof import('node:http');
+const mutableHttps = require('node:https') as typeof import('node:https');
 
 // Store original implementations
 let originalHttpRequest: typeof http.request | null = null;
@@ -29,11 +34,66 @@ let originalHttpsGet: typeof https.get | null = null;
 // Global state reference (set during initialization)
 let interceptorState: InterceptorState | null = null;
 
+function normalizeExecuteMethod(method: string | undefined): 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | null {
+  const normalized = (method ?? 'GET').toUpperCase();
+  switch (normalized) {
+    case 'GET':
+    case 'POST':
+    case 'PUT':
+    case 'PATCH':
+    case 'DELETE':
+      return normalized;
+    default:
+      return null;
+  }
+}
+
+function resolveManifestForInterception(
+  state: InterceptorState
+): {mode: 'use'; manifest: ParsedManifest} | {mode: 'passthrough'} | {mode: 'block'; reason: string} {
+  const manifest = state.manifest;
+  if (!manifest) {
+    if (state.config.manifestFailurePolicy === 'fail_open') {
+      return {mode: 'passthrough'};
+    }
+    return {mode: 'block', reason: 'no verified manifest is available'};
+  }
+
+  const manifestExpired = new Date(manifest.expires_at).getTime() <= Date.now();
+  if (manifestExpired && state.config.manifestFailurePolicy !== 'fail_open') {
+    return {mode: 'block', reason: 'last verified manifest is expired'};
+  }
+  if (manifestExpired) {
+    return {mode: 'passthrough'};
+  }
+
+  return {mode: 'use', manifest};
+}
+
 /**
  * Check if patching has been applied.
  */
 export function isPatched(): boolean {
   return originalHttpRequest !== null;
+}
+
+function createSyntheticClientRequest(): http.ClientRequest {
+  const request = new PassThrough() as unknown as http.ClientRequest;
+
+  request.abort = () => request;
+  request.destroy = () => request;
+  request.setNoDelay = () => request;
+  request.setSocketKeepAlive = () => request;
+  request.setTimeout = (() => request) as http.ClientRequest['setTimeout'];
+  request.flushHeaders = () => {};
+  request.setHeader = (() => request) as http.ClientRequest['setHeader'];
+  request.removeHeader = (() => request) as http.ClientRequest['removeHeader'];
+  request.getHeader = () => undefined;
+  request.getHeaderNames = () => [];
+  request.getHeaders = () => ({});
+  request.hasHeader = () => false;
+
+  return request;
 }
 
 /**
@@ -134,6 +194,7 @@ function normalizeHeaders(
 function createInterceptedRequest(
   targetUrl: URL,
   integrationId: string,
+  manifest: ParsedManifest,
   options: http.RequestOptions | https.RequestOptions,
   callback?: (res: http.IncomingMessage) => void
 ): http.ClientRequest {
@@ -142,8 +203,8 @@ function createInterceptedRequest(
 
   const chunks: Buffer[] = [];
 
-  // Create a real ClientRequest
-  const request = new http.ClientRequest(targetUrl.href);
+  // Create an in-memory request object to avoid unintended network side effects.
+  const request = createSyntheticClientRequest();
 
   // Override write to buffer body
   request.write = function (
@@ -195,7 +256,14 @@ function createInterceptedRequest(
     const headers = normalizeHeaders(options.headers);
 
     // Determine method
-    const method = (options.method?.toUpperCase() || 'GET') as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    const method = normalizeExecuteMethod(options.method);
+    if (!method) {
+      request.emit('error', new Error(`Unsupported HTTP method for interception: ${options.method ?? 'unknown'}`));
+      if (finalCallback) {
+        finalCallback();
+      }
+      return request;
+    }
 
     logger.debug(`Intercepting ${method} ${targetUrl.href}`);
 
@@ -207,7 +275,7 @@ function createInterceptedRequest(
         headers,
         body: body.length > 0 ? body : undefined
       },
-      state.manifest!,
+      manifest,
       state.config,
       logger,
       state.sessionManager ?? undefined
@@ -230,7 +298,7 @@ function createInterceptedRequest(
           );
           request.emit('error', err);
         } else if (result.denied) {
-          const err = new RequestDeniedError(result.denied.reason, result.denied.correlation_id);
+          const err = new RequestDeniedError(result.denied.reason, result.denied.correlationId);
           request.emit('error', err);
         } else {
           request.emit('error', new Error(result.error));
@@ -250,6 +318,41 @@ function createInterceptedRequest(
     return request;
   };
 
+  return request;
+}
+
+function createBlockedRequest(reason: string): http.ClientRequest {
+  const request = createSyntheticClientRequest();
+  request.write = function (
+    _chunk: string | Buffer,
+    encodingOrCallback?: BufferEncoding | ((error?: Error) => void),
+    cb?: (error?: Error) => void
+  ): boolean {
+    const finalCb = typeof encodingOrCallback === 'function' ? encodingOrCallback : cb;
+    if (finalCb) {
+      setImmediate(finalCb);
+    }
+    return true;
+  };
+  request.end = function (
+    chunkOrCallback?: string | Buffer | (() => void),
+    encodingOrCallback?: BufferEncoding | (() => void),
+    cb?: () => void
+  ): typeof request {
+    const finalCallback =
+      typeof chunkOrCallback === 'function'
+        ? chunkOrCallback
+        : typeof encodingOrCallback === 'function'
+          ? encodingOrCallback
+          : cb;
+    if (finalCallback) {
+      setImmediate(finalCallback);
+    }
+    setImmediate(() => {
+      request.emit('error', new ManifestUnavailableError(reason));
+    });
+    return request;
+  };
   return request;
 }
 
@@ -291,12 +394,22 @@ function createPatchedRequest(
 
     // Check if we should intercept this request
     const state = interceptorState;
-    if (!state || !state.initialized || !state.manifest) {
+    if (!state || !state.initialized) {
       // Not initialized, pass through
       return originalFn.call(null, urlOrOptions as string, optionsOrCallback as http.RequestOptions, maybeCallback);
     }
 
-    const matchResult = matchUrl(url, state.manifest);
+    const manifestDecision = resolveManifestForInterception(state);
+    if (manifestDecision.mode === 'passthrough') {
+      return originalFn.call(null, urlOrOptions as string, optionsOrCallback as http.RequestOptions, maybeCallback);
+    }
+
+    if (manifestDecision.mode === 'block') {
+      state.logger.warn(`Blocking request because manifest is unavailable: ${manifestDecision.reason}`);
+      return createBlockedRequest(manifestDecision.reason);
+    }
+
+    const matchResult = matchUrl(url, manifestDecision.manifest);
     if (!matchResult.matched) {
       // No match, pass through to original
       if (matchResult.details && matchResult.details.length > 0) {
@@ -312,7 +425,7 @@ function createPatchedRequest(
 
     // Intercept this request
     state.logger.debug(`Intercepting: ${url.href} (integration: ${matchResult.integrationId})`);
-    return createInterceptedRequest(url, matchResult.integrationId, options, callback);
+    return createInterceptedRequest(url, matchResult.integrationId, manifestDecision.manifest, options, callback);
   };
 }
 
@@ -329,10 +442,10 @@ export function applyPatches(state: InterceptorState): void {
   interceptorState = state;
 
   // Store originals
-  originalHttpRequest = http.request;
-  originalHttpsRequest = https.request;
-  originalHttpGet = http.get;
-  originalHttpsGet = https.get;
+  originalHttpRequest = mutableHttp.request;
+  originalHttpsRequest = mutableHttps.request;
+  originalHttpGet = mutableHttp.get;
+  originalHttpsGet = mutableHttps.get;
 
   // Apply patches using Object.defineProperty to handle readonly
   const patchedHttpRequest = createPatchedRequest(originalHttpRequest, 'http');
@@ -360,8 +473,8 @@ export function applyPatches(state: InterceptorState): void {
     }
   };
 
-  safeDefineProperty(http, 'request', patchedHttpRequest, 'http');
-  safeDefineProperty(https, 'request', patchedHttpsRequest, 'https');
+  safeDefineProperty(mutableHttp, 'request', patchedHttpRequest, 'http');
+  safeDefineProperty(mutableHttps, 'request', patchedHttpsRequest, 'https');
 
   // Patch get methods (they just call request with method and end())
   const patchedHttpGet = function (
@@ -394,8 +507,9 @@ export function applyPatches(state: InterceptorState): void {
     return req;
   };
 
-  safeDefineProperty(http, 'get', patchedHttpGet, 'http');
-  safeDefineProperty(https, 'get', patchedHttpsGet, 'https');
+  safeDefineProperty(mutableHttp, 'get', patchedHttpGet, 'http');
+  safeDefineProperty(mutableHttps, 'get', patchedHttpsGet, 'https');
+  syncBuiltinESMExports();
 
   state.logger.info('HTTP/HTTPS module patches applied');
 }
@@ -427,17 +541,18 @@ export function removePatches(): void {
   };
 
   if (originalHttpRequest) {
-    safeRestoreProperty(http, 'request', originalHttpRequest);
+    safeRestoreProperty(mutableHttp, 'request', originalHttpRequest);
   }
   if (originalHttpsRequest) {
-    safeRestoreProperty(https, 'request', originalHttpsRequest);
+    safeRestoreProperty(mutableHttps, 'request', originalHttpsRequest);
   }
   if (originalHttpGet) {
-    safeRestoreProperty(http, 'get', originalHttpGet);
+    safeRestoreProperty(mutableHttp, 'get', originalHttpGet);
   }
   if (originalHttpsGet) {
-    safeRestoreProperty(https, 'get', originalHttpsGet);
+    safeRestoreProperty(mutableHttps, 'get', originalHttpsGet);
   }
+  syncBuiltinESMExports();
 
   originalHttpRequest = null;
   originalHttpsRequest = null;

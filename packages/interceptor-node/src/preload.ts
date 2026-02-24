@@ -1,7 +1,7 @@
 /**
  * Preload entry point for broker interceptor.
  *
- * This file is loaded via `node --require @broker-interceptor/interceptor-node/preload`
+ * This file is loaded via `node --import @broker-interceptor/interceptor-node/preload`
  * or via NODE_OPTIONS environment variable.
  *
  * It patches Node's http, https, fetch, and child_process modules BEFORE
@@ -31,6 +31,12 @@ function getConfigFromEnv(): InterceptorConfig | null {
   const mtlsKeyPath = resolvePath(process.env.BROKER_MTLS_KEY_PATH);
   const mtlsCaPath = resolvePath(process.env.BROKER_MTLS_CA_PATH);
   const manifestPath = resolvePath(process.env.BROKER_MANIFEST_PATH);
+  const manifestFailurePolicy =
+    process.env.BROKER_MANIFEST_FAILURE_POLICY === 'fail_closed' ||
+    process.env.BROKER_MANIFEST_FAILURE_POLICY === 'fail_open' ||
+    process.env.BROKER_MANIFEST_FAILURE_POLICY === 'use_last_valid'
+      ? process.env.BROKER_MANIFEST_FAILURE_POLICY
+      : undefined;
 
   // Need either session token OR mTLS credentials (cert + key)
   const hasSessionToken = Boolean(sessionToken);
@@ -55,7 +61,8 @@ function getConfigFromEnv(): InterceptorConfig | null {
     manifestRefreshIntervalMs: process.env.BROKER_MANIFEST_REFRESH_MS
       ? parseInt(process.env.BROKER_MANIFEST_REFRESH_MS, 10)
       : undefined,
-    failOnManifestError: process.env.BROKER_FAIL_ON_MANIFEST_ERROR !== 'false'
+    failOnManifestError: process.env.BROKER_FAIL_ON_MANIFEST_ERROR !== 'false',
+    manifestFailurePolicy
   };
 }
 

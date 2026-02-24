@@ -10,6 +10,8 @@ import * as https from 'node:https';
 import * as http from 'node:http';
 import * as nodePath from 'node:path';
 
+import {OpenApiSessionResponseSchema, type OpenApiSessionResponse} from '@broker-interceptor/schemas/dist/generated/schemas.js';
+
 import type {Logger} from './types.js';
 
 /** Session response from broker-api /v1/sessions */
@@ -17,6 +19,7 @@ export interface SessionResponse {
   session_token: string;
   expires_at: string;
   bound_cert_thumbprint: string;
+  dpop_jkt?: string;
 }
 
 /** Session manager configuration */
@@ -56,6 +59,28 @@ function validateFilePath(filePath: string, description: string): string {
     throw new Error(`${description} contains path traversal: ${filePath}`);
   }
   return normalized;
+}
+
+function parseSessionResponse(rawBody: string): {ok: true; session: OpenApiSessionResponse} | {ok: false; error: string} {
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(rawBody);
+  } catch (error) {
+    return {
+      ok: false,
+      error: `Session response is not valid JSON: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+
+  const parsedSession = OpenApiSessionResponseSchema.safeParse(parsedJson);
+  if (!parsedSession.success) {
+    return {
+      ok: false,
+      error: `Session response failed schema validation: ${parsedSession.error.message}`
+    };
+  }
+
+  return {ok: true, session: parsedSession.data};
 }
 
 /**
@@ -104,6 +129,8 @@ async function rawSessionRequest(
   });
 }
 
+export type RawSessionRequest = typeof rawSessionRequest;
+
 /**
  * Session manager that auto-acquires and refreshes tokens.
  */
@@ -118,8 +145,9 @@ export class SessionManager {
   private expiresAt: Date | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private acquiring: Promise<string> | null = null;
+  private readonly requestImpl: RawSessionRequest;
 
-  constructor(config: SessionManagerConfig, logger: Logger) {
+  constructor(config: SessionManagerConfig, logger: Logger, requestImpl: RawSessionRequest = rawSessionRequest) {
     this.config = {
       ...config,
       sessionTtlSeconds: config.sessionTtlSeconds ?? 3600,
@@ -127,6 +155,7 @@ export class SessionManager {
       refreshThreshold: config.refreshThreshold ?? 0.8
     };
     this.logger = logger;
+    this.requestImpl = requestImpl;
 
     // Load mTLS credentials
     const certPath = validateFilePath(this.config.mtlsCertPath, 'mtlsCertPath');
@@ -196,7 +225,7 @@ export class SessionManager {
       scopes: this.config.scopes
     });
 
-    const response = await rawSessionRequest(url, {
+    const response = await this.requestImpl(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -218,7 +247,11 @@ export class SessionManager {
       throw new Error(error);
     }
 
-    const sessionResponse = JSON.parse(response.body) as SessionResponse;
+    const parsedSessionResponse = parseSessionResponse(response.body);
+    if (!parsedSessionResponse.ok) {
+      throw new Error(parsedSessionResponse.error);
+    }
+    const sessionResponse = parsedSessionResponse.session as SessionResponse;
 
     this.currentToken = sessionResponse.session_token;
     this.expiresAt = new Date(sessionResponse.expires_at);

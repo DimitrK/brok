@@ -6,6 +6,12 @@
  */
 
 import {z} from 'zod';
+import type {
+  OpenApiExecuteRequest,
+  OpenApiExecuteResponseApprovalRequired,
+  OpenApiExecuteResponseExecuted,
+  OpenApiManifest
+} from '@broker-interceptor/schemas/dist/generated/schemas.js';
 
 /**
  * Logger interface for the interceptor.
@@ -72,7 +78,10 @@ export const InterceptorConfigSchema = z
       .default(5 * 60 * 1000),
 
     /** Whether to fail if manifest cannot be fetched (default: true) */
-    failOnManifestError: z.boolean().default(true)
+    failOnManifestError: z.boolean().default(true),
+
+    /** How interceptor behaves when manifest refresh fails */
+    manifestFailurePolicy: z.enum(['use_last_valid', 'fail_closed', 'fail_open']).default('use_last_valid')
   })
   .refine(
     data => {
@@ -100,101 +109,42 @@ export type ResolvedInterceptorConfig = z.output<typeof InterceptorConfigSchema>
 /**
  * Match rule from the manifest - determines which requests to intercept.
  */
-export interface MatchRule {
-  integration_id: string;
-  provider: string;
-  match: {
-    hosts: string[];
-    schemes: Array<'https'>;
-    ports: number[];
-    path_groups: string[];
-  };
-  rewrite: {
-    mode: 'execute';
-    send_intended_url: boolean;
-  };
-}
+export type MatchRule = OpenApiManifest['match_rules'][number];
 
 /**
  * Parsed manifest with match rules.
  */
-export interface ParsedManifest {
-  manifest_version: number;
-  issued_at: string;
-  expires_at: string;
-  broker_execute_url: string;
-  dpop_required?: boolean;
-  dpop_ath_required?: boolean;
-  match_rules: MatchRule[];
-  signature: {
-    alg: string;
-    kid: string;
-    jws: string;
-  };
-}
+export type ParsedManifest = OpenApiManifest;
 
 /**
  * Execute request payload sent to the broker.
  */
-export interface ExecuteRequest {
-  integration_id: string;
-  request: {
-    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-    url: string;
-    headers: Array<{name: string; value: string}>;
-    body_base64?: string;
-  };
-  client_context?: {
-    request_id?: string;
-    idempotency_key?: string;
-    source?: string;
-  };
-}
+export type ExecuteRequest = OpenApiExecuteRequest;
 
 /**
  * Execute response from the broker when request was executed.
  */
-export interface ExecuteResponseExecuted {
-  status: 'executed';
-  correlation_id: string;
-  upstream: {
-    status_code: number;
-    headers: Array<{name: string; value: string}>;
-    body_base64: string;
-  };
-}
+export type ExecuteResponseExecuted = OpenApiExecuteResponseExecuted;
 
 /**
  * Execute response from the broker when approval is required.
  */
-export interface ExecuteResponseApprovalRequired {
-  status: 'approval_required';
-  approval_id: string;
-  expires_at: string;
-  correlation_id: string;
-  summary: {
-    integration_id: string;
-    action_group: string;
-    risk_tier: 'low' | 'medium' | 'high';
-    destination_host: string;
-    method: string;
-    path: string;
-  };
-}
-
-/**
- * Execute response from the broker when request was denied.
- */
-export interface ExecuteResponseDenied {
-  status: 'denied';
-  correlation_id: string;
-  reason: string;
-}
+export type ExecuteResponseApprovalRequired = OpenApiExecuteResponseApprovalRequired;
 
 /**
  * Union of all possible execute responses.
  */
-export type ExecuteResponse = ExecuteResponseExecuted | ExecuteResponseApprovalRequired | ExecuteResponseDenied;
+export type ExecuteResponse = ExecuteResponseExecuted | ExecuteResponseApprovalRequired;
+
+export type ManifestFailurePolicy = 'use_last_valid' | 'fail_closed' | 'fail_open';
+export type ManifestStateKind = 'missing' | 'valid' | 'stale' | 'expired';
+
+export interface ManifestRuntimeState {
+  currentManifest: ParsedManifest | null;
+  currentManifestExpiresAt: Date | null;
+  lastRefreshAttemptAt: Date | null;
+  manifestState: ManifestStateKind;
+}
 
 /**
  * Session manager interface for getting tokens.
@@ -210,6 +160,7 @@ export interface SessionTokenProvider {
 export interface InterceptorState {
   config: ResolvedInterceptorConfig;
   manifest: ParsedManifest | null;
+  manifestRuntime: ManifestRuntimeState;
   logger: Logger;
   refreshTimer: ReturnType<typeof setInterval> | null;
   initialized: boolean;

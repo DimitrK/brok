@@ -4,12 +4,13 @@
  * This module patches spawn, exec, execFile, and fork to inject environment
  * variables that enable interception in child processes.
  *
- * For Node child processes: NODE_OPTIONS="--require ..." is injected
+ * For Node child processes: NODE_OPTIONS="--import ..." is injected
  * For other processes on Linux: LD_PRELOAD can be injected (if native lib available)
  */
 
 import * as child_process from 'node:child_process';
 import * as path from 'node:path';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import type {
   SpawnOptions,
   SpawnSyncOptions,
@@ -43,13 +44,59 @@ export function isChildProcessPatched(): boolean {
 
 /**
  * Get the path to the preload script.
- * This is the script that will be --require'd in child Node processes.
+ * This is the script that will be --import'ed in child Node processes.
  */
 function getPreloadPath(): string {
-  // In the built package, preload.js will be in dist/
-  // During development, it might be in src/
-  const distPath = path.resolve(__dirname, 'preload.js');
-  return distPath;
+  const currentFilePath = fileURLToPath(import.meta.url);
+  return path.resolve(path.dirname(currentFilePath), 'preload.js');
+}
+
+function tokenizeNodeOptions(existingOptions: string): string[] {
+  const matches = existingOptions.match(/"[^"]*"|'[^']*'|\S+/g);
+  return matches ?? [];
+}
+
+function trimMatchingQuotes(token: string): string {
+  if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+    return token.slice(1, -1);
+  }
+  return token;
+}
+
+function hasImportSpecifier(existingOptions: string, importSpecifier: string): boolean {
+  const tokens = tokenizeNodeOptions(existingOptions).map(trimMatchingQuotes);
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens.at(index);
+    if (!token) {
+      continue;
+    }
+
+    // eslint-disable-next-line security/detect-possible-timing-attacks -- comparison against a local CLI flag string
+    if (token === `--import=${importSpecifier}`) {
+      return true;
+    }
+
+    if (token === '--import' && tokens.at(index + 1) === importSpecifier) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function buildNodeOptionsWithImport(existingOptions: string, importSpecifier: string): string {
+  const importFlag = `--import=${importSpecifier}`;
+  if (hasImportSpecifier(existingOptions, importSpecifier)) {
+    return existingOptions;
+  }
+
+  const trimmedOptions = existingOptions.trim();
+  if (trimmedOptions.length === 0) {
+    return importFlag;
+  }
+
+  return `${trimmedOptions} ${importFlag}`;
 }
 
 /**
@@ -86,13 +133,9 @@ function buildChildEnv(
 
   // Inject NODE_OPTIONS for Node child processes
   const preloadPath = getPreloadPath();
+  const preloadSpecifier = pathToFileURL(preloadPath).href;
   const nodeOptions = env.NODE_OPTIONS || '';
-
-  // Check if already includes our preload (avoid double-loading)
-  if (!nodeOptions.includes('broker-interceptor')) {
-    const requireFlag = `--require "${preloadPath}"`;
-    env.NODE_OPTIONS = nodeOptions ? `${nodeOptions} ${requireFlag}` : requireFlag;
-  }
+  env.NODE_OPTIONS = buildNodeOptionsWithImport(nodeOptions, preloadSpecifier);
 
   // On Linux, we could also inject LD_PRELOAD for native interception
   // This requires building a native shared library (future work)

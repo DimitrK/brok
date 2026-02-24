@@ -31,7 +31,7 @@ function createRule(
   integrationId: string,
   hosts: string[],
   options?: {
-    ports?: number[];
+    ports?: Array<443>;
     pathGroups?: string[];
   }
 ): MatchRule {
@@ -42,7 +42,7 @@ function createRule(
       hosts,
       schemes: ['https'],
       ports: options?.ports ?? [443],
-      path_groups: options?.pathGroups ?? ['*']
+      path_groups: options?.pathGroups ?? ['/*']
     },
     rewrite: {
       mode: 'execute',
@@ -72,20 +72,19 @@ describe('matchUrl', () => {
       expect(result.matched).toBe(false);
     });
 
-    it('matches wildcard subdomain pattern', () => {
+    it('does not match wildcard subdomain pattern', () => {
       const manifest = createManifest([createRule('openai', ['*.openai.com'])]);
 
-      expect(matchUrl('https://api.openai.com/v1', manifest).matched).toBe(true);
-      expect(matchUrl('https://chat.openai.com/v1', manifest).matched).toBe(true);
-      expect(matchUrl('https://sub.api.openai.com/v1', manifest).matched).toBe(true);
+      expect(matchUrl('https://api.openai.com/v1', manifest).matched).toBe(false);
+      expect(matchUrl('https://chat.openai.com/v1', manifest).matched).toBe(false);
+      expect(matchUrl('https://sub.api.openai.com/v1', manifest).matched).toBe(false);
     });
 
     it('wildcard subdomain does not match root domain', () => {
       const manifest = createManifest([createRule('openai', ['*.openai.com'])]);
 
-      // According to the code, *.openai.com should match openai.com too
       const result = matchUrl('https://openai.com/v1', manifest);
-      expect(result.matched).toBe(true);
+      expect(result.matched).toBe(false);
     });
 
     it('supports multiple hosts in one rule', () => {
@@ -105,29 +104,20 @@ describe('matchUrl', () => {
       expect(matchUrl('https://api.example.com/test', manifest).matched).toBe(true);
     });
 
-    it('matches explicit port', () => {
-      const manifest = createManifest([createRule('test', ['api.example.com'], {ports: [8443]})]);
+    it('does not match non-443 port', () => {
+      const manifest = createManifest([createRule('test', ['api.example.com'], {ports: [443]})]);
 
-      expect(matchUrl('https://api.example.com:8443/test', manifest).matched).toBe(true);
-      expect(matchUrl('https://api.example.com/test', manifest).matched).toBe(false);
-    });
-
-    it('matches multiple ports', () => {
-      const manifest = createManifest([createRule('test', ['api.example.com'], {ports: [443, 8443, 9443]})]);
-
-      expect(matchUrl('https://api.example.com/test', manifest).matched).toBe(true);
-      expect(matchUrl('https://api.example.com:8443/test', manifest).matched).toBe(true);
-      expect(matchUrl('https://api.example.com:9443/test', manifest).matched).toBe(true);
-      expect(matchUrl('https://api.example.com:1234/test', manifest).matched).toBe(false);
+      expect(matchUrl('https://api.example.com:8443/test', manifest).matched).toBe(false);
     });
   });
 
   describe('path matching', () => {
-    it('matches wildcard path (*)', () => {
-      const manifest = createManifest([createRule('test', ['api.example.com'], {pathGroups: ['*']})]);
+    it('matches prefix wildcard path (/v1/*)', () => {
+      const manifest = createManifest([createRule('test', ['api.example.com'], {pathGroups: ['/v1/*']})]);
 
-      expect(matchUrl('https://api.example.com/', manifest).matched).toBe(true);
-      expect(matchUrl('https://api.example.com/any/path/here', manifest).matched).toBe(true);
+      expect(matchUrl('https://api.example.com/v1', manifest).matched).toBe(false);
+      expect(matchUrl('https://api.example.com/v1/any/path/here', manifest).matched).toBe(true);
+      expect(matchUrl('https://api.example.com/v2/any/path/here', manifest).matched).toBe(false);
     });
 
     it('matches exact path', () => {
@@ -135,6 +125,7 @@ describe('matchUrl', () => {
 
       expect(matchUrl('https://api.example.com/v1/chat', manifest).matched).toBe(true);
       expect(matchUrl('https://api.example.com/v1/completions', manifest).matched).toBe(false);
+      expect(matchUrl('https://api.example.com/v1/chat/completions', manifest).matched).toBe(false);
     });
 
     it('matches path prefix with wildcard', () => {
@@ -171,8 +162,7 @@ describe('matchUrl', () => {
       const manifest = createManifest([createRule('test', ['api.example.com'])]);
 
       expect(matchUrl('https://api.example.com/test', manifest).matched).toBe(true);
-      // HTTP should not match since rules only have 'https' scheme
-      // expect(matchUrl('http://api.example.com/test', manifest).matched).toBe(false)
+      expect(matchUrl('http://api.example.com/test', manifest).matched).toBe(false);
     });
   });
 
@@ -240,5 +230,9 @@ describe('shouldIntercept', () => {
     const manifest = createManifest([createRule('test', ['api.example.com'])]);
 
     expect(shouldIntercept('https://other.example.com/v1', manifest)).toBe(false);
+  });
+
+  it('returns false when manifest is null', () => {
+    expect(shouldIntercept('https://api.example.com/v1', null)).toBe(false);
   });
 });

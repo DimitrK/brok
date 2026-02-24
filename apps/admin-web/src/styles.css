@@ -618,6 +618,61 @@ button:not(:disabled):hover {
   gap: 0.8rem;
 }
 
+.version-history-card {
+  gap: 0.72rem;
+}
+
+.version-diff {
+  border: 1px solid color-mix(in srgb, var(--line) 82%, #fff 18%);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.7rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.version-diff h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.version-diff-list {
+  gap: 0.4rem;
+}
+
+.version-diff-line {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.38rem;
+  align-items: center;
+}
+
+.version-diff-label {
+  font-weight: 700;
+}
+
+.diff-pill {
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--line) 84%, #fff 16%);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.diff-pill.added {
+  color: #0f6244;
+  background: #d9f2e6;
+  border-color: #8fc9af;
+}
+
+.diff-pill.removed {
+  color: #8b2e1f;
+  background: #f9e1dd;
+  border-color: #e3aaa0;
+}
+
 .editor-card-header {
   display: flex;
   justify-content: space-between;
@@ -903,6 +958,16 @@ button:not(:disabled):hover {
 .data-table th {
   color: var(--muted);
   font-weight: 700;
+}
+
+.table-link-button {
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  font-weight: 700;
+  padding: 0;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .row-actions {

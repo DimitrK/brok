@@ -33,7 +33,7 @@
  * export BROKER_MTLS_CERT_PATH=/path/to/workload.crt
  * export BROKER_MTLS_KEY_PATH=/path/to/workload.key
  * export BROKER_MTLS_CA_PATH=/path/to/ca-chain.pem
- * export NODE_OPTIONS="--require @broker-interceptor/interceptor-node/preload"
+ * export NODE_OPTIONS="--import @broker-interceptor/interceptor-node/preload"
  * node app.js
  * ```
  *
@@ -51,6 +51,8 @@ import {
   defaultLogger,
   type InterceptorConfig,
   type InterceptorState,
+  type ManifestFailurePolicy,
+  type ManifestStateKind,
   type ParsedManifest,
   type Logger,
   type SessionTokenProvider
@@ -65,11 +67,12 @@ export {
   type ExecuteResponse,
   type ExecuteResponseExecuted,
   type ExecuteResponseApprovalRequired,
-  type ExecuteResponseDenied,
-  type MatchRule
+  type MatchRule,
+  type ManifestFailurePolicy,
+  type ManifestRuntimeState
 } from './types.js';
 
-export {ApprovalRequiredError, RequestDeniedError} from './broker-client.js';
+export {ApprovalRequiredError, RequestDeniedError, ManifestUnavailableError} from './broker-client.js';
 export {matchUrl, shouldIntercept, type MatchResult, type RuleMismatchDetail} from './matcher.js';
 
 // Global state
@@ -79,6 +82,39 @@ let globalState: InterceptorState | null = null;
  * Result of initializing the interceptor.
  */
 export type InitializeResult = {ok: true; manifest: ParsedManifest} | {ok: false; error: string};
+
+function getManifestStateFromCurrentManifest(manifest: ParsedManifest | null): ManifestStateKind {
+  if (!manifest) {
+    return 'missing';
+  }
+
+  const expiresAt = new Date(manifest.expires_at);
+  return expiresAt.getTime() > Date.now() ? 'valid' : 'expired';
+}
+
+function setCurrentManifest(state: InterceptorState, manifest: ParsedManifest): void {
+  state.manifest = manifest;
+  state.manifestRuntime.currentManifest = manifest;
+  state.manifestRuntime.currentManifestExpiresAt = new Date(manifest.expires_at);
+  state.manifestRuntime.lastRefreshAttemptAt = new Date();
+  state.manifestRuntime.manifestState = getManifestStateFromCurrentManifest(manifest);
+}
+
+function markManifestRefreshFailure(state: InterceptorState, policy: ManifestFailurePolicy): void {
+  state.manifestRuntime.lastRefreshAttemptAt = new Date();
+
+  if (policy === 'fail_open') {
+    state.manifestRuntime.manifestState = state.manifest ? 'stale' : 'missing';
+    return;
+  }
+
+  if (policy === 'fail_closed') {
+    state.manifestRuntime.manifestState = 'expired';
+    return;
+  }
+
+  state.manifestRuntime.manifestState = getManifestStateFromCurrentManifest(state.manifest) === 'expired' ? 'expired' : 'stale';
+}
 
 /**
  * Initialize the broker interceptor.
@@ -144,6 +180,12 @@ export async function initializeInterceptor(config: InterceptorConfig): Promise<
   globalState = {
     config: resolvedConfig,
     manifest: null,
+    manifestRuntime: {
+      currentManifest: null,
+      currentManifestExpiresAt: null,
+      lastRefreshAttemptAt: null,
+      manifestState: 'missing'
+    },
     logger,
     refreshTimer: null,
     initialized: false,
@@ -159,8 +201,9 @@ export async function initializeInterceptor(config: InterceptorConfig): Promise<
       return {ok: false, error: manifestResult.error};
     }
     logger.warn(`Manifest fetch failed: ${manifestResult.error}`);
+    markManifestRefreshFailure(globalState, resolvedConfig.manifestFailurePolicy);
   } else {
-    globalState.manifest = manifestResult.manifest;
+    setCurrentManifest(globalState, manifestResult.manifest);
     logger.info(`Manifest loaded: ${manifestResult.manifest.match_rules.length} rules`);
   }
 
@@ -186,24 +229,28 @@ export async function initializeInterceptor(config: InterceptorConfig): Promise<
   }
 
   // Start manifest refresh
-  if (manifestResult.ok) {
-    globalState.refreshTimer = startManifestRefresh(
-      resolvedConfig,
-      logger,
-      manifest => {
-        if (globalState) {
-          globalState.manifest = manifest;
-          updateState(globalState);
-          updateFetchState(globalState);
-          updateChildProcessState(globalState);
-        }
-      },
-      error => {
-        logger.error(`Manifest refresh failed: ${error}`);
-      },
-      sessionManager ?? undefined
-    );
-  }
+  globalState.refreshTimer = startManifestRefresh(
+    resolvedConfig,
+    logger,
+    manifest => {
+      if (globalState) {
+        setCurrentManifest(globalState, manifest);
+        updateState(globalState);
+        updateFetchState(globalState);
+        updateChildProcessState(globalState);
+      }
+    },
+    error => {
+      if (globalState) {
+        markManifestRefreshFailure(globalState, resolvedConfig.manifestFailurePolicy);
+        updateState(globalState);
+        updateFetchState(globalState);
+        updateChildProcessState(globalState);
+      }
+      logger.error(`Manifest refresh failed: ${error}`);
+    },
+    sessionManager ?? undefined
+  );
 
   globalState.initialized = true;
 
@@ -266,12 +313,17 @@ export async function refreshManifest(): Promise<InitializeResult> {
   const result = await fetchManifest(globalState.config, globalState.logger, globalState.sessionManager ?? undefined);
 
   if (result.ok) {
-    globalState.manifest = result.manifest;
+    setCurrentManifest(globalState, result.manifest);
     updateState(globalState);
     updateFetchState(globalState);
     updateChildProcessState(globalState);
     return {ok: true, manifest: result.manifest};
   }
+
+  markManifestRefreshFailure(globalState, globalState.config.manifestFailurePolicy);
+  updateState(globalState);
+  updateFetchState(globalState);
+  updateChildProcessState(globalState);
 
   return {ok: false, error: result.error};
 }

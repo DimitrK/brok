@@ -10,6 +10,7 @@ describe('InterceptorConfigSchema', () => {
     it('validates valid config', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123'
       };
 
@@ -18,12 +19,14 @@ describe('InterceptorConfigSchema', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.brokerUrl).toBe('https://broker.example.com');
+        expect(result.data.workloadId).toBe('w_test');
         expect(result.data.sessionToken).toBe('tok_abc123');
       }
     });
 
     it('requires brokerUrl', () => {
       const config = {
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123'
       };
 
@@ -32,7 +35,7 @@ describe('InterceptorConfigSchema', () => {
       expect(result.success).toBe(false);
     });
 
-    it('requires sessionToken', () => {
+    it('requires session token or mTLS credentials', () => {
       const config = {
         brokerUrl: 'https://broker.example.com'
       };
@@ -45,6 +48,7 @@ describe('InterceptorConfigSchema', () => {
     it('requires brokerUrl to be a valid URL', () => {
       const config = {
         brokerUrl: 'not-a-valid-url',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123'
       };
 
@@ -56,6 +60,7 @@ describe('InterceptorConfigSchema', () => {
     it('requires sessionToken to be non-empty', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: ''
       };
 
@@ -69,6 +74,7 @@ describe('InterceptorConfigSchema', () => {
     it('allows manifestPath', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123',
         manifestPath: '/path/to/manifest.json'
       };
@@ -84,6 +90,7 @@ describe('InterceptorConfigSchema', () => {
     it('allows mTLS paths', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123',
         mtlsCertPath: '/path/to/cert.pem',
         mtlsKeyPath: '/path/to/key.pem',
@@ -105,6 +112,7 @@ describe('InterceptorConfigSchema', () => {
     it('applies default manifestRefreshIntervalMs', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123'
       };
 
@@ -120,6 +128,7 @@ describe('InterceptorConfigSchema', () => {
     it('applies default failOnManifestError', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123'
       };
 
@@ -131,9 +140,25 @@ describe('InterceptorConfigSchema', () => {
       }
     });
 
+    it('applies default manifestFailurePolicy', () => {
+      const config = {
+        brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
+        sessionToken: 'tok_abc123'
+      };
+
+      const result = InterceptorConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.manifestFailurePolicy).toBe('use_last_valid');
+      }
+    });
+
     it('allows overriding manifestRefreshIntervalMs', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123',
         manifestRefreshIntervalMs: 60000 // 1 minute
       };
@@ -149,6 +174,7 @@ describe('InterceptorConfigSchema', () => {
     it('allows setting failOnManifestError to false', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123',
         failOnManifestError: false
       };
@@ -166,6 +192,7 @@ describe('InterceptorConfigSchema', () => {
     it('rejects non-positive values', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123',
         manifestRefreshIntervalMs: 0
       };
@@ -178,6 +205,7 @@ describe('InterceptorConfigSchema', () => {
     it('rejects negative values', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123',
         manifestRefreshIntervalMs: -1000
       };
@@ -190,6 +218,7 @@ describe('InterceptorConfigSchema', () => {
     it('rejects non-integer values', () => {
       const config = {
         brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
         sessionToken: 'tok_abc123',
         manifestRefreshIntervalMs: 1000.5
       };

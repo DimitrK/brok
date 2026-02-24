@@ -6,7 +6,7 @@
  */
 
 import {matchUrl} from './matcher.js';
-import {executeRequest, ApprovalRequiredError, RequestDeniedError} from './broker-client.js';
+import {executeRequest, ApprovalRequiredError, ManifestUnavailableError, RequestDeniedError} from './broker-client.js';
 import type {InterceptorState} from './types.js';
 
 // Store original fetch
@@ -14,6 +14,41 @@ let originalFetch: typeof globalThis.fetch | null = null;
 
 // Global state reference
 let interceptorState: InterceptorState | null = null;
+
+function normalizeExecuteMethod(method: string): 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | null {
+  const normalized = method.toUpperCase();
+  switch (normalized) {
+    case 'GET':
+    case 'POST':
+    case 'PUT':
+    case 'PATCH':
+    case 'DELETE':
+      return normalized;
+    default:
+      return null;
+  }
+}
+
+function resolveManifestForInterception(
+  state: InterceptorState
+): {mode: 'use'} | {mode: 'passthrough'} | {mode: 'block'; reason: string} {
+  if (!state.manifest) {
+    if (state.config.manifestFailurePolicy === 'fail_open') {
+      return {mode: 'passthrough'};
+    }
+    return {mode: 'block', reason: 'no verified manifest is available'};
+  }
+
+  const manifestExpired = new Date(state.manifest.expires_at).getTime() <= Date.now();
+  if (manifestExpired && state.config.manifestFailurePolicy !== 'fail_open') {
+    return {mode: 'block', reason: 'last verified manifest is expired'};
+  }
+  if (manifestExpired) {
+    return {mode: 'passthrough'};
+  }
+
+  return {mode: 'use'};
+}
 
 /** HTTP status text lookup */
 const HTTP_STATUS_TEXT = new Map<number, string>([
@@ -101,6 +136,82 @@ function headersToObject(
   return Object.fromEntries(result);
 }
 
+function normalizeChunkToBuffer(chunk: unknown): Buffer {
+  if (typeof chunk === 'string') {
+    return Buffer.from(chunk);
+  }
+
+  if (chunk instanceof ArrayBuffer) {
+    return Buffer.from(chunk);
+  }
+
+  if (ArrayBuffer.isView(chunk)) {
+    return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  }
+
+  throw new Error('Unsupported async iterable body chunk type for interception');
+}
+
+async function bodyInitToBuffer(body: RequestInit['body'] | null | undefined): Promise<Buffer | undefined> {
+  if (body === undefined || body === null) {
+    return undefined;
+  }
+
+  if (typeof body === 'string') {
+    return Buffer.from(body);
+  }
+
+  if (body instanceof URLSearchParams) {
+    return Buffer.from(body.toString());
+  }
+
+  if (body instanceof Blob) {
+    return Buffer.from(await body.arrayBuffer());
+  }
+
+  if (body instanceof ArrayBuffer) {
+    return Buffer.from(body);
+  }
+
+  if (ArrayBuffer.isView(body)) {
+    return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  }
+
+  if (body instanceof ReadableStream) {
+    const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+    const chunks: Uint8Array[] = [];
+    let done = false;
+    while (!done) {
+      const readResult = await reader.read();
+      if (readResult.value) {
+        chunks.push(readResult.value);
+      }
+      done = readResult.done;
+    }
+    return chunks.length > 0 ? Buffer.concat(chunks) : undefined;
+  }
+
+  if (typeof body === 'object' && body !== null && Symbol.asyncIterator in body) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of body as AsyncIterable<unknown>) {
+      chunks.push(normalizeChunkToBuffer(chunk));
+    }
+    return chunks.length > 0 ? Buffer.concat(chunks) : undefined;
+  }
+
+  throw new Error('Unsupported request body type for interception');
+}
+
+async function requestBodyToBuffer(request: Request): Promise<Buffer | undefined> {
+  if (!request.body) {
+    return undefined;
+  }
+
+  const clonedRequest = request.clone();
+  const body = Buffer.from(await clonedRequest.arrayBuffer());
+  return body.length > 0 ? body : undefined;
+}
+
 /**
  * Patched fetch function.
  * Uses explicit type handling to avoid TypeScript issues with global types.
@@ -108,73 +219,50 @@ function headersToObject(
 async function patchedFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
   const state = interceptorState;
 
-  // If not initialized or no manifest, pass through
-  if (!state || !state.initialized || !state.manifest) {
+  // If not initialized, pass through
+  if (!state || !state.initialized) {
     return originalFetch!(input, init);
   }
 
-  // Parse the URL
+  const manifestDecision = resolveManifestForInterception(state);
+  if (manifestDecision.mode === 'passthrough') {
+    return originalFetch!(input, init);
+  }
+  if (manifestDecision.mode === 'block') {
+    throw new ManifestUnavailableError(manifestDecision.reason);
+  }
+
+  // Parse the URL and request metadata without consuming any request body.
   let url: URL;
-  let method: string = init?.method || 'GET';
-  let headers: Record<string, string | string[]> = {};
-  let bodyBuffer: Buffer | undefined;
+  let requestInput: Request | null = null;
 
   if (typeof input === 'string') {
     url = new URL(input);
-    headers = headersToObject(init?.headers as Headers | [string, string][] | Record<string, string> | undefined);
   } else if (input instanceof URL) {
     url = input;
-    headers = headersToObject(init?.headers as Headers | [string, string][] | Record<string, string> | undefined);
   } else if (input instanceof Request) {
+    requestInput = input;
     url = new URL(input.url);
-    method = input.method;
-    headers = headersToObject(input.headers);
-    if (input.body) {
-      // Read the body - explicitly type the reader for proper chunk handling
-      const reader = input.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
-      const chunks: Uint8Array[] = [];
-      let done = false;
-      while (!done) {
-        const readResult = await reader.read();
-        if (readResult.value) {
-          chunks.push(readResult.value);
-        }
-        done = readResult.done;
-      }
-      bodyBuffer = Buffer.concat(chunks);
-    }
   } else {
     // Unknown input type, pass through
     return originalFetch!(input as string, init);
   }
 
-  // Handle body from init
-  if (!bodyBuffer && init?.body) {
-    if (typeof init.body === 'string') {
-      bodyBuffer = Buffer.from(init.body);
-    } else if (init.body instanceof ArrayBuffer) {
-      bodyBuffer = Buffer.from(init.body);
-    } else if (init.body instanceof Uint8Array) {
-      bodyBuffer = Buffer.from(init.body);
-    } else if (init.body instanceof Blob) {
-      bodyBuffer = Buffer.from(await init.body.arrayBuffer());
-    } else if (init.body instanceof ReadableStream) {
-      const reader = (init.body as ReadableStream<Uint8Array>).getReader();
-      const chunks: Uint8Array[] = [];
-      let done = false;
-      while (!done) {
-        const readResult = await reader.read();
-        if (readResult.value) {
-          chunks.push(readResult.value);
-        }
-        done = readResult.done;
-      }
-      bodyBuffer = Buffer.concat(chunks);
-    }
-  }
+  const method = init?.method ?? requestInput?.method ?? 'GET';
+  const headers =
+    init?.headers !== undefined
+      ? headersToObject(init.headers as Headers | [string, string][] | Record<string, string>)
+      : requestInput
+        ? headersToObject(requestInput.headers)
+        : {};
 
   // Check if we should intercept
-  const matchResult = matchUrl(url, state.manifest);
+  const manifest = state.manifest;
+  if (!manifest) {
+    throw new ManifestUnavailableError('no verified manifest is available');
+  }
+
+  const matchResult = matchUrl(url, manifest);
 
   if (!matchResult.matched) {
     if (matchResult.details && matchResult.details.length > 0) {
@@ -191,7 +279,13 @@ async function patchedFetch(input: string | URL | Request, init?: RequestInit): 
   state.logger.debug(`fetch: Intercepting ${method} ${url.href} (integration: ${matchResult.integrationId})`);
 
   // Convert method to expected format
-  const normalizedMethod = method.toUpperCase() as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  const normalizedMethod = normalizeExecuteMethod(method);
+  if (!normalizedMethod) {
+    throw new Error(`Unsupported HTTP method for interception: ${method}`);
+  }
+
+  const bodyBuffer =
+    init?.body !== undefined ? await bodyInitToBuffer(init.body) : requestInput ? await requestBodyToBuffer(requestInput) : undefined;
 
   // Execute through broker
   const executeResult = await executeRequest(
@@ -202,7 +296,7 @@ async function patchedFetch(input: string | URL | Request, init?: RequestInit): 
       headers: headers as Record<string, string | string[] | undefined>,
       body: bodyBuffer
     },
-    state.manifest,
+    manifest,
     state.config,
     state.logger,
     state.sessionManager ?? undefined
@@ -221,7 +315,7 @@ async function patchedFetch(input: string | URL | Request, init?: RequestInit): 
   }
 
   if (executeResult.denied) {
-    throw new RequestDeniedError(executeResult.denied.reason, executeResult.denied.correlation_id);
+    throw new RequestDeniedError(executeResult.denied.reason, executeResult.denied.correlationId);
   }
 
   throw new Error(executeResult.error);

@@ -11,11 +11,16 @@ import * as https from 'node:https';
 import * as http from 'node:http';
 import {randomUUID} from 'node:crypto';
 
+import {
+  OpenApiErrorSchema,
+  OpenApiExecuteRequestSchema,
+  OpenApiExecuteResponseApprovalRequiredSchema,
+  OpenApiExecuteResponseExecutedSchema
+} from '@broker-interceptor/schemas/dist/generated/schemas.js';
+
 import type {
   ExecuteRequest,
-  ExecuteResponse,
   ExecuteResponseApprovalRequired,
-  ExecuteResponseDenied,
   ExecuteResponseExecuted,
   Logger,
   ParsedManifest,
@@ -44,7 +49,7 @@ export interface ExecuteOptions {
  */
 export type ExecuteResult =
   | {ok: true; response: ExecuteResponseExecuted}
-  | {ok: false; error: string; approvalRequired?: ExecuteResponseApprovalRequired; denied?: ExecuteResponseDenied};
+  | {ok: false; error: string; approvalRequired?: ExecuteResponseApprovalRequired; denied?: {reason: string; correlationId: string}};
 
 /**
  * Convert headers object to array format expected by broker.
@@ -179,9 +184,18 @@ export async function executeRequest(
   manifest: ParsedManifest,
   config: ResolvedInterceptorConfig,
   logger: Logger,
-  sessionTokenProvider?: SessionTokenProvider
+  sessionTokenProvider?: SessionTokenProvider,
+  requestImpl: typeof rawBrokerRequest = rawBrokerRequest
 ): Promise<ExecuteResult> {
-  const mtls = loadMtlsCredentials(config);
+  let mtls: {cert?: Buffer; key?: Buffer; ca?: Buffer};
+  try {
+    mtls = loadMtlsCredentials(config);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Failed to load mTLS credentials: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
   const executeUrl = manifest.broker_execute_url;
 
   // Get session token - either from config or from provider
@@ -212,11 +226,15 @@ export async function executeRequest(
       source: 'interceptor-node'
     }
   };
+  const parsedPayload = OpenApiExecuteRequestSchema.safeParse(payload);
+  if (!parsedPayload.success) {
+    return {ok: false, error: `Execute request failed schema validation: ${parsedPayload.error.message}`};
+  }
 
   logger.debug(`Executing request to ${options.url} via broker`);
 
   try {
-    const response = await rawBrokerRequest(executeUrl, {
+    const response = await requestImpl(executeUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -229,47 +247,92 @@ export async function executeRequest(
     });
 
     if (response.status === 200) {
-      const executeResponse = JSON.parse(response.body) as ExecuteResponse;
-
-      if (executeResponse.status === 'executed') {
-        logger.debug(`Request executed successfully, correlation_id: ${executeResponse.correlation_id}`);
-        return {ok: true, response: executeResponse};
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(response.body);
+      } catch {
+        return {ok: false, error: 'Broker returned invalid JSON for execute success response'};
       }
 
-      if (executeResponse.status === 'approval_required') {
-        logger.warn(
-          `Request requires approval: ${executeResponse.approval_id} ` +
-            `(${executeResponse.summary.risk_tier} risk, action: ${executeResponse.summary.action_group})`
-        );
-        return {
-          ok: false,
-          error: `Approval required: ${executeResponse.approval_id}`,
-          approvalRequired: executeResponse
-        };
+      const executeResponse = OpenApiExecuteResponseExecutedSchema.safeParse(parsedBody);
+      if (!executeResponse.success) {
+        return {ok: false, error: `Broker execute success response failed schema validation: ${executeResponse.error.message}`};
       }
 
-      if (executeResponse.status === 'denied') {
-        logger.warn(`Request denied: ${executeResponse.reason}`);
-        return {
-          ok: false,
-          error: `Request denied: ${executeResponse.reason}`,
-          denied: executeResponse
-        };
+      logger.debug(`Request executed successfully, correlation_id: ${executeResponse.data.correlation_id}`);
+      return {ok: true, response: executeResponse.data};
+    }
+
+    if (response.status === 202) {
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(response.body);
+      } catch {
+        return {ok: false, error: 'Broker returned invalid JSON for approval-required response'};
       }
 
-      return {ok: false, error: `Unknown response status: ${(executeResponse as ExecuteResponse).status}`};
+      const approvalResponse = OpenApiExecuteResponseApprovalRequiredSchema.safeParse(parsedBody);
+      if (!approvalResponse.success) {
+        return {ok: false, error: `Broker approval-required response failed schema validation: ${approvalResponse.error.message}`};
+      }
+
+      logger.warn(
+        `Request requires approval: ${approvalResponse.data.approval_id} ` +
+          `(${approvalResponse.data.summary.risk_tier} risk, action: ${approvalResponse.data.summary.action_group})`
+      );
+      return {
+        ok: false,
+        error: `Approval required: ${approvalResponse.data.approval_id}`,
+        approvalRequired: approvalResponse.data
+      };
     }
 
     // Handle error responses
-    if (response.status === 401 || response.status === 403) {
-      return {ok: false, error: `Authentication failed: HTTP ${response.status}`};
+    let parsedErrorBody: unknown;
+    try {
+      parsedErrorBody = JSON.parse(response.body);
+    } catch {
+      if (response.status === 401) {
+        return {ok: false, error: 'Authentication failed: HTTP 401'};
+      }
+      if (response.status === 429) {
+        return {ok: false, error: 'Rate limited by broker'};
+      }
+      return {ok: false, error: `Broker request failed: HTTP ${response.status}`};
+    }
+
+    const parsedError = OpenApiErrorSchema.safeParse(parsedErrorBody);
+    if (!parsedError.success) {
+      return {ok: false, error: `Broker request failed: HTTP ${response.status}`};
+    }
+
+    if (response.status === 401) {
+      return {ok: false, error: `Authentication failed: ${parsedError.data.message}`};
     }
 
     if (response.status === 429) {
       return {ok: false, error: 'Rate limited by broker'};
     }
 
-    return {ok: false, error: `Broker request failed: HTTP ${response.status}`};
+    const errorCode = parsedError.data.error.toLowerCase();
+    const isPolicyDenied =
+      response.status === 403 ||
+      errorCode.includes('deny') ||
+      errorCode.includes('policy') ||
+      errorCode.includes('approval');
+
+    if (isPolicyDenied) {
+      return {
+        ok: false,
+        error: `Request denied: ${parsedError.data.message}`,
+        denied: {
+          reason: parsedError.data.message,
+          correlationId: parsedError.data.correlation_id
+        }
+      };
+    }
+
+    return {ok: false, error: `Broker returned ${parsedError.data.error}: ${parsedError.data.message}`};
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(`Broker request error: ${message}`);
@@ -301,5 +364,12 @@ export class RequestDeniedError extends Error {
   ) {
     super(`Request denied: ${reason}`);
     this.name = 'RequestDeniedError';
+  }
+}
+
+export class ManifestUnavailableError extends Error {
+  constructor(public readonly reason: string) {
+    super(`Manifest unavailable: ${reason}`);
+    this.name = 'ManifestUnavailableError';
   }
 }

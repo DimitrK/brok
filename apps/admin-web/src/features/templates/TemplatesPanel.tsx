@@ -16,11 +16,15 @@ import {
   toLineList
 } from './templateHelpers';
 import {
-  checkPathGroupCurlRequest,
   checkTemplateCurlRequest,
-  type PathGroupRequestCheck,
   type TemplateRequestCheck
 } from './pathGroupRequestCheck';
+import {
+  buildTemplateVersionIndex,
+  getLatestTemplateVersions,
+  summarizeTemplateVersionDiff
+} from './templateVersioning';
+import {parseTemplateDiffSummaryLine} from './templateDiffPresentation';
 
 const httpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const templateDraftRouteSchema = z
@@ -260,6 +264,8 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
     normalizeTemplateIdSuffix(initialTemplateDraft?.template_id_suffix ?? defaultTemplateName)
   );
   const [templateIdLocked, setTemplateIdLocked] = useState(Boolean(initialTemplateDraft));
+  const [editingTemplateId, setEditingTemplateId] = useState<string | undefined>(undefined);
+  const [selectedHistoryVersion, setSelectedHistoryVersion] = useState<number | undefined>(undefined);
   const [version, setVersion] = useState('1');
   const [provider, setProvider] = useState(initialTemplateDraft?.provider ?? 'openai');
   const [description, setDescription] = useState(initialTemplateDraft?.description ?? '');
@@ -293,10 +299,55 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
     queryFn: ({signal}) => api.listTemplates(signal)
   });
 
+  const templateVersionIndex = useMemo(
+    () => buildTemplateVersionIndex(templatesQuery.data?.templates ?? []),
+    [templatesQuery.data?.templates]
+  );
+  const latestTemplates = useMemo(() => getLatestTemplateVersions(templateVersionIndex), [templateVersionIndex]);
+  const editorTemplateHistory = useMemo(() => {
+    if (editorMode !== 'edit' || !editingTemplateId) {
+      return [] as OpenApiTemplate[];
+    }
+
+    return templateVersionIndex.get(editingTemplateId) ?? [];
+  }, [editorMode, editingTemplateId, templateVersionIndex]);
+  const latestEditorTemplate = editorTemplateHistory[0];
+  const selectedHistoryTemplate = useMemo(() => {
+    if (editorTemplateHistory.length === 0) {
+      return undefined;
+    }
+
+    if (selectedHistoryVersion === undefined) {
+      return editorTemplateHistory[0];
+    }
+
+    return editorTemplateHistory.find(template => template.version === selectedHistoryVersion) ?? editorTemplateHistory[0];
+  }, [editorTemplateHistory, selectedHistoryVersion]);
+  const selectedHistoryPreviousTemplate = useMemo(() => {
+    if (!selectedHistoryTemplate) {
+      return undefined;
+    }
+
+    return editorTemplateHistory.find(template => template.version === selectedHistoryTemplate.version - 1);
+  }, [editorTemplateHistory, selectedHistoryTemplate]);
+  const selectedHistoryDiffSummary = useMemo(() => {
+    if (!selectedHistoryTemplate || !selectedHistoryPreviousTemplate) {
+      return [] as string[];
+    }
+
+    return summarizeTemplateVersionDiff(selectedHistoryPreviousTemplate, selectedHistoryTemplate);
+  }, [selectedHistoryPreviousTemplate, selectedHistoryTemplate]);
+  const selectedHistoryParsedDiff = useMemo(
+    () => selectedHistoryDiffSummary.map(parseTemplateDiffSummaryLine),
+    [selectedHistoryDiffSummary]
+  );
+
   const resetEditor = () => {
     setTemplateName(defaultTemplateName);
     setTemplateIdSuffix(normalizeTemplateIdSuffix(defaultTemplateName));
     setTemplateIdLocked(false);
+    setEditingTemplateId(undefined);
+    setSelectedHistoryVersion(undefined);
     setVersion('1');
     setProvider('openai');
     setDescription('');
@@ -304,11 +355,11 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
     setPathGroups([createPathGroupDraft()]);
   };
 
-  const applyTemplate = (template: OpenApiTemplate) => {
+  const applyTemplate = (template: OpenApiTemplate, nextVersion?: number) => {
     setTemplateName(template.description?.trim() || splitTemplateId(template.template_id).replace(/_/g, ' '));
     setTemplateIdSuffix(splitTemplateId(template.template_id));
     setTemplateIdLocked(true);
-    setVersion(String(template.version + 1));
+    setVersion(String(nextVersion ?? template.version + 1));
     setProvider(template.provider);
     setDescription(template.description ?? '');
     setAllowedHosts(template.allowed_hosts.join(', '));
@@ -375,6 +426,7 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
     },
     onSuccess: async () => {
       setShowEditor(false);
+      resetEditor();
       await queryClient.invalidateQueries({queryKey: ['templates']});
     }
   });
@@ -385,10 +437,28 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
     setShowEditor(true);
   };
 
-  const openEditEditor = (template: OpenApiTemplate) => {
+  const openEditEditor = (templateId: string) => {
+    const history = templateVersionIndex.get(templateId);
+    if (!history || history.length === 0) {
+      return;
+    }
+
+    const latestTemplate = history[0];
+    const nextVersion = latestTemplate.version + 1;
     setEditorMode('edit');
-    applyTemplate(template);
+    setEditingTemplateId(templateId);
+    setSelectedHistoryVersion(latestTemplate.version);
+    applyTemplate(latestTemplate, nextVersion);
     setShowEditor(true);
+  };
+
+  const restoreHistoricalVersion = (template: OpenApiTemplate) => {
+    if (!latestEditorTemplate) {
+      return;
+    }
+
+    applyTemplate(template, latestEditorTemplate.version + 1);
+    setSelectedHistoryVersion(template.version);
   };
 
   const fullTemplateId = useMemo(() => buildTemplateId(templateIdSuffix), [templateIdSuffix]);
@@ -447,7 +517,12 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
 
             <label className="field">
               <span>Version</span>
-              <input value={version} onChange={event => setVersion(event.currentTarget.value)} inputMode="numeric" />
+              <input
+                value={version}
+                onChange={event => setVersion(event.currentTarget.value)}
+                inputMode="numeric"
+                readOnly={editorMode === 'edit'}
+              />
             </label>
 
             <label className="field">
@@ -478,7 +553,122 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
               Regenerate ID from name
             </button>
             <p className="helper-text">Final template ID: `{fullTemplateId}` (must match `tpl_[a-z0-9_]+`).</p>
+            {editorMode === 'edit' ? (
+              <p className="helper-text">
+                Version is auto-set to the next publish version for this template lineage.
+              </p>
+            ) : null}
           </div>
+
+          {editorMode === 'edit' && latestEditorTemplate ? (
+            <section className="editor-card version-history-card" aria-label="Template version history">
+              <header className="editor-card-header">
+                <h4>Version history for {latestEditorTemplate.template_id}</h4>
+              </header>
+              <p className="helper-text">
+                List view shows only the latest version. Select any historical version, review its diff against the
+                previous version, then restore it as a new forward version.
+              </p>
+
+              <div className="table-shell">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Version</th>
+                      <th>Allowed hosts</th>
+                      <th>Path groups</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {editorTemplateHistory.map(template => {
+                      const isSelected = selectedHistoryTemplate?.version === template.version;
+                      return (
+                        <tr key={`${template.template_id}:${template.version}`} className={isSelected ? 'selected-row' : ''}>
+                          <td>
+                            v{template.version}
+                            {template.version === latestEditorTemplate.version ? ' (latest)' : ''}
+                          </td>
+                          <td>{template.allowed_hosts.join(', ') || '(none)'}</td>
+                          <td>{template.path_groups.length}</td>
+                          <td>
+                            <div className="row-actions">
+                              <button
+                                type="button"
+                                className="btn-secondary"
+                                onClick={() => setSelectedHistoryVersion(template.version)}
+                              >
+                                View diff
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {selectedHistoryTemplate ? (
+                <div className="version-diff">
+                  <h4>
+                    Diff for v{selectedHistoryTemplate.version}
+                    {selectedHistoryPreviousTemplate ? ` vs v${selectedHistoryPreviousTemplate.version}` : ''}
+                  </h4>
+                  {selectedHistoryPreviousTemplate ? (
+                    <ul className="request-check-list version-diff-list">
+                      {selectedHistoryParsedDiff.map((line, index) => (
+                        <li key={`${selectedHistoryTemplate.version}:${index}`}>
+                          {line.kind === 'list' ? (
+                            <p className="version-diff-line">
+                              <span className="version-diff-label">{line.label}:</span>
+                              {line.removed.map(value => (
+                                <span key={`removed:${value}`} className="diff-pill removed">
+                                  - {value}
+                                </span>
+                              ))}
+                              {line.added.map(value => (
+                                <span key={`added:${value}`} className="diff-pill added">
+                                  + {value}
+                                </span>
+                              ))}
+                            </p>
+                          ) : null}
+                          {line.kind === 'change' ? (
+                            <p className="version-diff-line">
+                              <span className="version-diff-label">{line.label}:</span>
+                              <span className="diff-pill removed">- {line.before}</span>
+                              <span className="diff-pill added">+ {line.after}</span>
+                            </p>
+                          ) : null}
+                          {line.kind === 'plain' ? <p className="version-diff-line">{line.text}</p> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="helper-text">
+                      v{selectedHistoryTemplate.version} is the first published version and has no previous version to
+                      diff against.
+                    </p>
+                  )}
+                  <p className="helper-text">
+                    Restoring publishes the selected state as a new version (v{latestEditorTemplate.version + 1}).
+                  </p>
+                  {selectedHistoryTemplate.version !== latestEditorTemplate.version ? (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => restoreHistoricalVersion(selectedHistoryTemplate)}
+                    >
+                      Restore this as v{latestEditorTemplate.version + 1}
+                    </button>
+                  ) : (
+                    <p className="helper-text">Latest version is already selected; there is nothing to restore.</p>
+                  )}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
 
           <div className="stack-form">
             <h3>Path groups</h3>
@@ -683,32 +873,47 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
           <thead>
             <tr>
               <th>Template ID</th>
-              <th>Version</th>
+              <th>Latest version</th>
               <th>Provider</th>
               <th>Allowed hosts</th>
               <th>Path groups</th>
+              <th>History</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {(templatesQuery.data?.templates ?? []).map(template => {
+            {latestTemplates.map(template => {
               const patternCount = template.path_groups.reduce(
                 (count, pathGroup) => count + pathGroup.path_patterns.length,
                 0
               );
+              const historySize = templateVersionIndex.get(template.template_id)?.length ?? 1;
 
               return (
                 <tr key={`${template.template_id}:${template.version}`}>
-                  <td>{template.template_id}</td>
-                  <td>{template.version}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="table-link-button"
+                      onClick={() => openEditEditor(template.template_id)}
+                    >
+                      {template.template_id}
+                    </button>
+                  </td>
+                  <td>v{template.version}</td>
                   <td>{template.provider}</td>
                   <td>{template.allowed_hosts.join(', ')}</td>
                   <td>
                     {template.path_groups.length} groups / {patternCount} patterns
                   </td>
+                  <td>{historySize} version(s)</td>
                   <td>
                     <div className="row-actions">
-                      <button type="button" className="btn-secondary" onClick={() => openEditEditor(template)}>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => openEditEditor(template.template_id)}
+                      >
                         Edit
                       </button>
                     </div>

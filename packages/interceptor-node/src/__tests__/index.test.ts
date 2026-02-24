@@ -9,6 +9,7 @@ import {
   getManifest,
   isInitialized,
   ApprovalRequiredError,
+  ManifestUnavailableError,
   RequestDeniedError,
   matchUrl,
   shouldIntercept
@@ -39,6 +40,11 @@ describe('exports', () => {
   it('exports RequestDeniedError class', () => {
     expect(RequestDeniedError).toBeDefined();
     expect(RequestDeniedError.prototype instanceof Error).toBe(true);
+  });
+
+  it('exports ManifestUnavailableError class', () => {
+    expect(ManifestUnavailableError).toBeDefined();
+    expect(ManifestUnavailableError.prototype instanceof Error).toBe(true);
   });
 
   it('exports matchUrl function', () => {

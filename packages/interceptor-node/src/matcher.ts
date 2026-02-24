@@ -60,24 +60,10 @@ function parseUrl(url: string | URL): {
 /**
  * Check if a host matches a pattern.
  *
- * Supports exact matches and wildcard subdomains (e.g., *.openai.com).
+ * Supports exact matches only.
  */
 function hostMatches(actualHost: string, pattern: string): boolean {
-  // Exact match
-  if (actualHost === pattern) {
-    return true;
-  }
-
-  // Wildcard subdomain match (e.g., *.openai.com matches api.openai.com)
-  if (pattern.startsWith('*.')) {
-    const baseDomain = pattern.slice(2); // Remove "*."
-    // Check if actualHost ends with .baseDomain or equals baseDomain
-    if (actualHost === baseDomain || actualHost.endsWith(`.${baseDomain}`)) {
-      return true;
-    }
-  }
-
-  return false;
+  return actualHost === pattern;
 }
 
 /**
@@ -85,32 +71,23 @@ function hostMatches(actualHost: string, pattern: string): boolean {
  *
  * Supports:
  * - Regex patterns (e.g., ^/v1/chat/completions$)
- * - Glob-like patterns (e.g., /v1/*, *)
+ * - Prefix wildcard patterns (e.g., /v1/*)
  * - Exact paths (e.g., /v1/chat/completions)
  */
 function pathMatchesGroups(actualPath: string, pathGroups: string[]): boolean {
   for (const pattern of pathGroups) {
     // Regex pattern (starts with ^)
     if (pattern.startsWith('^')) {
-      try {
-        // eslint-disable-next-line security/detect-non-literal-regexp -- pattern comes from signed manifest
-        const regex = new RegExp(pattern);
-        if (regex.test(actualPath)) {
-          return true;
-        }
-      } catch {
-        // Invalid regex, skip
+      // eslint-disable-next-line security/detect-non-literal-regexp -- pattern validated during manifest load
+      const regex = new RegExp(pattern);
+      if (regex.test(actualPath)) {
+        return true;
       }
       continue;
     }
 
-    // Wildcard matching all paths
-    if (pattern === '*' || pattern === '/*') {
-      return true;
-    }
-
-    // Glob-like suffix wildcard (e.g., /v1/*)
-    if (pattern.endsWith('*')) {
+    // Prefix wildcard (e.g., /v1/*)
+    if (pattern.endsWith('/*')) {
       const prefix = pattern.slice(0, -1);
       if (actualPath.startsWith(prefix)) {
         return true;
@@ -118,8 +95,8 @@ function pathMatchesGroups(actualPath: string, pathGroups: string[]): boolean {
       continue;
     }
 
-    // Exact match or path prefix
-    if (actualPath === pattern || actualPath.startsWith(pattern + '/')) {
+    // Exact match
+    if (actualPath === pattern) {
       return true;
     }
   }
@@ -145,12 +122,12 @@ function matchesRuleWithDetails(
   }
 
   // Check port
-  if (!rule.match.ports.includes(port)) {
+  if (!rule.match.ports.includes(port as 443)) {
     mismatches.push(`port ${port} not in [${rule.match.ports.join(', ')}]`);
   }
 
   // Check host
-  const hostMatch = rule.match.hosts.some(h => hostMatches(host, h));
+  const hostMatch = rule.match.hosts.some((h: string) => hostMatches(host, h));
   if (!hostMatch) {
     mismatches.push(`host '${host}' not matching [${rule.match.hosts.join(', ')}, ${host}]`);
   }
