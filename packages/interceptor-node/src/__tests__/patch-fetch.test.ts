@@ -263,6 +263,24 @@ describe('patch-fetch', () => {
     expect(passthroughFetch).not.toHaveBeenCalled();
   });
 
+  it('does not block broker-origin fetch requests when manifest is expired', async () => {
+    const passthroughFetch = vi.fn(() => Promise.resolve(new Response('broker-refresh', {status: 200})));
+    globalThis.fetch = passthroughFetch as typeof globalThis.fetch;
+
+    applyFetchPatch(
+      createState({
+        manifest: createManifest({expires_at: new Date(Date.now() - 30_000).toISOString()}),
+        config: {manifestFailurePolicy: 'use_last_valid'}
+      })
+    );
+
+    const response = await fetch('https://broker.example.com/v1/workloads/w_test/manifest');
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('broker-refresh');
+    expect(passthroughFetch).toHaveBeenCalled();
+    expect(mockedExecuteRequest).not.toHaveBeenCalled();
+  });
+
   it('passes through when manifest is missing and policy is fail_open', async () => {
     const passthroughFetch = vi.fn(() => Promise.resolve(new Response('fail-open', {status: 200})));
     globalThis.fetch = passthroughFetch as typeof globalThis.fetch;

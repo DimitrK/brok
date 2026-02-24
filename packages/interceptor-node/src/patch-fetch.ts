@@ -50,6 +50,32 @@ function resolveManifestForInterception(
   return {mode: 'use'};
 }
 
+function normalizedPort(url: URL): string {
+  if (url.port) {
+    return url.port;
+  }
+  if (url.protocol === 'https:') {
+    return '443';
+  }
+  if (url.protocol === 'http:') {
+    return '80';
+  }
+  return '';
+}
+
+function isBrokerOriginRequest(url: URL, brokerUrl: string): boolean {
+  try {
+    const broker = new URL(brokerUrl);
+    return (
+      url.protocol === broker.protocol &&
+      url.hostname === broker.hostname &&
+      normalizedPort(url) === normalizedPort(broker)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** HTTP status text lookup */
 const HTTP_STATUS_TEXT = new Map<number, string>([
   [200, 'OK'],
@@ -224,14 +250,6 @@ async function patchedFetch(input: string | URL | Request, init?: RequestInit): 
     return originalFetch!(input, init);
   }
 
-  const manifestDecision = resolveManifestForInterception(state);
-  if (manifestDecision.mode === 'passthrough') {
-    return originalFetch!(input, init);
-  }
-  if (manifestDecision.mode === 'block') {
-    throw new ManifestUnavailableError(manifestDecision.reason);
-  }
-
   // Parse the URL and request metadata without consuming any request body.
   let url: URL;
   let requestInput: Request | null = null;
@@ -246,6 +264,19 @@ async function patchedFetch(input: string | URL | Request, init?: RequestInit): 
   } else {
     // Unknown input type, pass through
     return originalFetch!(input as string, init);
+  }
+
+  if (isBrokerOriginRequest(url, state.config.brokerUrl)) {
+    state.logger.debug(`fetch: Skipping interception for broker-origin request ${url.href}`);
+    return originalFetch!(input, init);
+  }
+
+  const manifestDecision = resolveManifestForInterception(state);
+  if (manifestDecision.mode === 'passthrough') {
+    return originalFetch!(input, init);
+  }
+  if (manifestDecision.mode === 'block') {
+    throw new ManifestUnavailableError(manifestDecision.reason);
   }
 
   const method = init?.method ?? requestInput?.method ?? 'GET';

@@ -70,6 +70,32 @@ function resolveManifestForInterception(
   return {mode: 'use', manifest};
 }
 
+function normalizedPort(url: URL): string {
+  if (url.port) {
+    return url.port;
+  }
+  if (url.protocol === 'https:') {
+    return '443';
+  }
+  if (url.protocol === 'http:') {
+    return '80';
+  }
+  return '';
+}
+
+function isBrokerOriginRequest(url: URL, brokerUrl: string): boolean {
+  try {
+    const broker = new URL(brokerUrl);
+    return (
+      url.protocol === broker.protocol &&
+      url.hostname === broker.hostname &&
+      normalizedPort(url) === normalizedPort(broker)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Check if patching has been applied.
  */
@@ -396,6 +422,11 @@ function createPatchedRequest(
     const state = interceptorState;
     if (!state || !state.initialized) {
       // Not initialized, pass through
+      return originalFn.call(null, urlOrOptions as string, optionsOrCallback as http.RequestOptions, maybeCallback);
+    }
+
+    if (isBrokerOriginRequest(url, state.config.brokerUrl)) {
+      state.logger.debug(`Skipping interception for broker-origin request: ${url.href}`);
       return originalFn.call(null, urlOrOptions as string, optionsOrCallback as http.RequestOptions, maybeCallback);
     }
 

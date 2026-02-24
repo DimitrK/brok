@@ -9,6 +9,7 @@
  */
 
 import * as child_process from 'node:child_process';
+import {createRequire, syncBuiltinESMExports} from 'node:module';
 import * as path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import type {
@@ -22,6 +23,10 @@ import type {
 } from 'node:child_process';
 
 import type {InterceptorState, ResolvedInterceptorConfig} from './types.js';
+
+const require = createRequire(import.meta.url);
+// eslint-disable-next-line security/detect-child-process -- loading mutable builtin module namespace for safe patching
+const mutableChildProcess = require('node:child_process') as typeof import('node:child_process');
 
 // Store original implementations
 let originalSpawn: typeof child_process.spawn | null = null;
@@ -320,18 +325,18 @@ export function applyChildProcessPatches(state: InterceptorState): void {
   interceptorState = state;
 
   // Store originals
-  originalSpawn = child_process.spawn;
-  originalSpawnSync = child_process.spawnSync;
-  originalExec = child_process.exec;
-  originalExecSync = child_process.execSync;
-  originalExecFile = child_process.execFile;
-  originalExecFileSync = child_process.execFileSync;
-  originalFork = child_process.fork;
+  originalSpawn = mutableChildProcess.spawn;
+  originalSpawnSync = mutableChildProcess.spawnSync;
+  originalExec = mutableChildProcess.exec;
+  originalExecSync = mutableChildProcess.execSync;
+  originalExecFile = mutableChildProcess.execFile;
+  originalExecFileSync = mutableChildProcess.execFileSync;
+  originalFork = mutableChildProcess.fork;
 
   // Helper to safely patch a property with fallback strategies
   const safePatch = (prop: string, value: unknown): boolean => {
     try {
-      Object.defineProperty(child_process, prop, {
+      Object.defineProperty(mutableChildProcess, prop, {
         value,
         writable: true,
         configurable: true
@@ -341,7 +346,7 @@ export function applyChildProcessPatches(state: InterceptorState): void {
       // Property might be non-configurable, try direct assignment
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, security/detect-object-injection
-        (child_process as any)[prop] = value;
+        (mutableChildProcess as any)[prop] = value;
         return true;
       } catch (err) {
         state.logger.warn(`Cannot patch child_process.${prop}: ${err instanceof Error ? err.message : String(err)}`);
@@ -355,6 +360,7 @@ export function applyChildProcessPatches(state: InterceptorState): void {
   safePatch('spawnSync', createPatchedSpawnSync());
   safePatch('exec', createPatchedExec());
   safePatch('fork', createPatchedFork());
+  syncBuiltinESMExports();
   // execFile and execFileSync follow similar patterns but are less commonly used
   // We can add them later if needed
 
@@ -372,7 +378,7 @@ export function removeChildProcessPatches(): void {
   // Helper to safely restore a property
   const safeRestore = (prop: string, value: unknown): void => {
     try {
-      Object.defineProperty(child_process, prop, {
+      Object.defineProperty(mutableChildProcess, prop, {
         value,
         writable: true,
         configurable: true
@@ -380,7 +386,7 @@ export function removeChildProcessPatches(): void {
     } catch {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, security/detect-object-injection
-        (child_process as any)[prop] = value;
+        (mutableChildProcess as any)[prop] = value;
       } catch {
         // Ignore - we can't restore
       }
@@ -394,6 +400,7 @@ export function removeChildProcessPatches(): void {
   if (originalExecFile) safeRestore('execFile', originalExecFile);
   if (originalExecFileSync) safeRestore('execFileSync', originalExecFileSync);
   if (originalFork) safeRestore('fork', originalFork);
+  syncBuiltinESMExports();
 
   originalSpawn = null;
   originalSpawnSync = null;

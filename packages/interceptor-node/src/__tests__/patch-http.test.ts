@@ -199,4 +199,32 @@ describe('patch-http', () => {
     expect(err).toBeInstanceOf(ManifestUnavailableError);
     expect(mockedExecuteRequest).not.toHaveBeenCalled();
   });
+
+  it('does not block broker-origin requests when manifest is expired', async () => {
+    applyPatches(
+      createState({
+        manifest: createManifest({expires_at: new Date(Date.now() - 60_000).toISOString()}),
+        config: {
+          manifestFailurePolicy: 'use_last_valid',
+          brokerUrl: 'https://127.0.0.1:1'
+        }
+      })
+    );
+
+    const err = await new Promise<unknown>(resolve => {
+      const req = https.request('https://127.0.0.1:1/v1/workloads/w_test/manifest');
+      const timer = setTimeout(() => {
+        req.destroy(new Error('timeout'));
+      }, 2_000);
+
+      req.on('error', error => {
+        clearTimeout(timer);
+        resolve(error);
+      });
+      req.end();
+    });
+
+    expect(err).not.toBeInstanceOf(ManifestUnavailableError);
+    expect(mockedExecuteRequest).not.toHaveBeenCalled();
+  });
 });
