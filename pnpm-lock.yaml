@@ -142,8 +142,8 @@ importers:
         specifier: ^1.12.3
         version: 1.14.3
       '@prisma/client':
-        specifier: ^6.16.3
-        version: 6.16.3(prisma@6.16.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+        specifier: ^7.4.0
+        version: 7.4.0(prisma@6.16.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       express:
         specifier: ^5.2.1
         version: 5.2.1
@@ -227,8 +227,8 @@ importers:
         specifier: ^11.1.13
         version: 11.1.13(@nestjs/common@11.1.13(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.13)
       '@prisma/client':
-        specifier: ^6.16.3
-        version: 6.16.3(prisma@6.16.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+        specifier: ^7.4.0
+        version: 7.4.0(prisma@6.16.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       express:
         specifier: ^5.2.1
         version: 5.2.1
@@ -370,8 +370,8 @@ importers:
         specifier: workspace:*
         version: link:../schemas
       '@prisma/client':
-        specifier: ^6.16.3
-        version: 6.16.3(prisma@6.16.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+        specifier: ^7.4.0
+        version: 7.4.0(prisma@6.16.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -1126,12 +1126,15 @@ packages:
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
     engines: {node: '>=14'}
 
-  '@prisma/client@6.16.3':
-    resolution: {integrity: sha512-JfNfAtXG+/lIopsvoZlZiH2k5yNx87mcTS4t9/S5oufM1nKdXYxOvpDC1XoTCFBa5cQh7uXnbMPsmZrwZY80xw==}
-    engines: {node: '>=18.18'}
+  '@prisma/client-runtime-utils@7.4.0':
+    resolution: {integrity: sha512-jTmWAOBGBSCT8n7SMbpjCpHjELgcDW9GNP/CeK6CeqjUFlEL6dn8Cl81t/NBDjJdXDm85XDJmc+PEQqqQee3xw==}
+
+  '@prisma/client@7.4.0':
+    resolution: {integrity: sha512-Sc+ncr7+ph1hMf1LQfn6UyEXDEamCd5pXMsx8Q3SBH0NGX+zjqs3eaABt9hXwbcK9l7f8UyK8ldxOWA2LyPynQ==}
+    engines: {node: ^20.19 || ^22.12 || >=24.0}
     peerDependencies:
       prisma: '*'
-      typescript: '>=5.1.0'
+      typescript: '>=5.4.0'
     peerDependenciesMeta:
       prisma:
         optional: true
@@ -3783,7 +3786,11 @@ snapshots:
   '@pkgjs/parseargs@0.11.0':
     optional: true
 
-  '@prisma/client@6.16.3(prisma@6.16.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)':
+  '@prisma/client-runtime-utils@7.4.0': {}
+
+  '@prisma/client@7.4.0(prisma@6.16.3(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)':
+    dependencies:
+      '@prisma/client-runtime-utils': 7.4.0
     optionalDependencies:
       prisma: 6.16.3(magicast@0.3.5)(typescript@5.9.3)
       typescript: 5.9.3
