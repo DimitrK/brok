@@ -1,0 +1,33 @@
+{
+  "name": "@broker-interceptor/interceptor-ebpf",
+  "private": true,
+  "version": "0.0.1",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "docker:ebpf-lab:up": "bash scripts/ebpf-lab-up.sh",
+    "docker:ebpf-lab:down": "bash scripts/ebpf-lab-down.sh",
+    "docker:ebpf-lab:status": "bash scripts/ebpf-lab-status.sh",
+    "docker:ebpf-lab": "pnpm run docker:ebpf-lab:up",
+    "docker:test-service:build": "docker build -f docker/interceptor-node-test.Dockerfile -t interceptor-node-test:local ../..",
+    "docker:test-service:run": "docker run --rm -p 3000:3000 -e BROKER_URL=${BROKER_URL:-https://localhost:8081} -e BROKER_WORKLOAD_ID=${BROKER_WORKLOAD_ID:-w_f73d1dc18e9c41bc89c5928d5bc67230} -e OPENAI_API_KEY=${OPENAI_API_KEY:-int_c7baa65e33244fb8b8bcd51a7072b57f} -e BROKER_MTLS_CERT_PATH=${BROKER_MTLS_CERT_PATH:-./test-service/certs/workload.crt} -e BROKER_MTLS_KEY_PATH=${BROKER_MTLS_KEY_PATH:-./test-service/certs/workload.key} -e BROKER_MTLS_CA_PATH=${BROKER_MTLS_CA_PATH:-./test-service/certs/ca-chain.pem} -e BROKER_LOG_LEVEL=${BROKER_LOG_LEVEL:-debug} -e BROKER_FAIL_ON_MANIFEST_ERROR=${BROKER_FAIL_ON_MANIFEST_ERROR:-false} interceptor-node-test:local pnpm test:service:intercepted",
+    "docker:test-service": "pnpm run docker:test-service:build && pnpm run docker:test-service:run"
+  },
+  "prettier": "@broker-interceptor/prettier-config",
+  "devDependencies": {
+    "@broker-interceptor/eslint-config": "workspace:*",
+    "@broker-interceptor/prettier-config": "workspace:*",
+    "@types/node": "^25.2.3",
+    "@vitest/coverage-v8": "^2.1.8",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}
