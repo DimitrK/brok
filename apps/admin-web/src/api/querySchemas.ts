@@ -32,8 +32,8 @@ export const adminAccessRequestFilterSchema = paginationFilterSchema
   .strict();
 export type AdminAccessRequestFilter = z.infer<typeof adminAccessRequestFilterSchema>;
 
-export const auditFilterSchema = z
-  .object({
+export const auditFilterSchema = paginationFilterSchema
+  .extend({
     time_min: z.string().datetime({offset: true}).optional(),
     time_max: z.string().datetime({offset: true}).optional(),
     workload_id: z.string().min(1).optional(),

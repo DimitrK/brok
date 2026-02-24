@@ -2,11 +2,11 @@ import {Controller, Get, Inject, Req, Res} from '@nestjs/common'
 import type {Request, Response} from 'express'
 import {OpenApiAuditEventListResponseSchema} from '@broker-interceptor/schemas'
 
+import {auditListQuerySchema, paginateAuditEvents} from '../../auditPagination'
 import {requireAnyRole} from '../../auth'
 import {badRequest} from '../../errors'
 import {parseQuery, sendJson} from '../../http'
 import {AdminApiControllerContext, toDate} from '../controllerContext'
-import {auditFilterSchema} from '../../repository'
 
 @Controller()
 export class AuditController {
@@ -21,7 +21,7 @@ export class AuditController {
         const principal = await this.context.authenticateRequest({request})
         requireAnyRole({principal, allowed: ['owner', 'admin', 'auditor']})
 
-        const query = parseQuery({searchParams: url.searchParams, schema: auditFilterSchema})
+        const query = parseQuery({searchParams: url.searchParams, schema: auditListQuerySchema})
         const tenantId = this.context.normalizeTenantAuditFilter({
           principal,
           requestedTenantId: query.tenant_id
@@ -45,7 +45,12 @@ export class AuditController {
           }
         })
 
-        const payload = OpenApiAuditEventListResponseSchema.parse({events})
+        const paged = paginateAuditEvents({
+          events,
+          limit: query.limit,
+          cursor: query.cursor
+        })
+        const payload = OpenApiAuditEventListResponseSchema.parse(paged)
         sendJson({
           response,
           status: 200,

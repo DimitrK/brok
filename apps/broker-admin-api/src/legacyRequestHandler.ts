@@ -61,10 +61,10 @@ import {z} from 'zod';
 import {requireAnyRole, requireTenantScope, type AdminPrincipal} from './auth';
 import type {OidcAuthConfig, ServiceConfig} from './config';
 import type {DependencyBridge} from './dependencyBridge';
+import {auditListQuerySchema, paginateAuditEvents} from './auditPagination';
 import {badRequest, isAppError, notFound} from './errors';
 import {
   approvalStatusFilterSchema,
-  auditFilterSchema,
   ControlPlaneRepository,
   type ApprovalStatusFilter
 } from './repository';
@@ -1889,7 +1889,7 @@ export const createAdminApiRequestHandler = ({
       if (method === 'GET' && pathname === '/v1/audit/events') {
         requireAnyRole({principal, allowed: ['owner', 'admin', 'auditor']});
 
-        const query = parseQuery({searchParams: url.searchParams, schema: auditFilterSchema});
+        const query = parseQuery({searchParams: url.searchParams, schema: auditListQuerySchema});
         const tenantId = normalizeTenantAuditFilter({
           principal,
           requestedTenantId: query.tenant_id
@@ -1913,7 +1913,13 @@ export const createAdminApiRequestHandler = ({
           }
         });
 
-        const payload = OpenApiAuditEventListResponseSchema.parse({events});
+        const payload = OpenApiAuditEventListResponseSchema.parse(
+          paginateAuditEvents({
+            events,
+            limit: query.limit,
+            cursor: query.cursor
+          })
+        );
         sendJson({
           response,
           status: 200,

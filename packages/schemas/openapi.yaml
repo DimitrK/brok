@@ -531,6 +531,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AuditEvent'
+        next_cursor:
+          type: string
       additionalProperties: false
     SessionRequest:
       type: object
@@ -1284,6 +1286,19 @@ paths:
           schema:
             type: string
             enum: [allowed, denied, approval_required, throttled]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           description: Audit events

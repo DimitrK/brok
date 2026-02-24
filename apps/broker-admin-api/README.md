@@ -88,7 +88,7 @@ Vault issuer hardening env (vault mode only):
 - `GET /v1/approvals`
 - `POST /v1/approvals/{approvalId}/approve`
 - `POST /v1/approvals/{approvalId}/deny`
-- `GET /v1/audit/events`
+- `GET /v1/audit/events` (supports `limit` + `cursor` query params and `next_cursor` pagination)
 - `GET /v1/keys/manifest`
 - `GET /v1/admin/auth/providers`
 - `POST /v1/admin/auth/oauth/start`

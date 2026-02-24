@@ -1,11 +1,23 @@
 import React, {useMemo, useState} from 'react';
-import {useQuery} from '@tanstack/react-query';
+import type {OpenApiAuditEvent} from '@broker-interceptor/schemas';
 import {useNavigate} from 'react-router-dom';
 
 import {BrokerAdminApiClient} from '../../api/client';
 import {auditFilterSchema, type AuditFilter} from '../../api/querySchemas';
 import {ErrorNotice} from '../../components/ErrorNotice';
 import {Panel} from '../../components/Panel';
+import {useCursorInfiniteQuery} from '../../components/useCursorInfiniteQuery';
+import {
+  VirtualizedInfiniteTable,
+  type VirtualizedInfiniteTableColumn
+} from '../../components/VirtualizedInfiniteTable';
+import {
+  AUDIT_LOAD_MORE_THRESHOLD_ROWS,
+  AUDIT_OVERSCAN_ROWS,
+  AUDIT_ROW_HEIGHT_PX,
+  AUDIT_VIEWPORT_ROWS
+} from './auditEventListWindow';
+import {DEFAULT_AUDIT_PAGE_LIMIT, fetchAuditEventPage} from './auditEventPaging';
 import {
   buildPathPatternSuggestion,
   buildTemplateDraftFromAuditEvent,
@@ -19,6 +31,51 @@ import {
 type AuditPanelProps = {
   api: BrokerAdminApiClient;
 };
+
+const auditColumns: VirtualizedInfiniteTableColumn<OpenApiAuditEvent>[] = [
+  {
+    id: 'timestamp',
+    header: 'Timestamp',
+    width: 'minmax(0, 1.25fr)',
+    renderCell: event => event.timestamp
+  },
+  {
+    id: 'event_type',
+    header: 'Event type',
+    width: 'minmax(0, 1fr)',
+    renderCell: event => event.event_type
+  },
+  {
+    id: 'tenant_id',
+    header: 'Tenant',
+    width: 'minmax(0, 1fr)',
+    renderCell: event => event.tenant_id
+  },
+  {
+    id: 'workload_id',
+    header: 'Workload',
+    width: 'minmax(0, 1fr)',
+    renderCell: event => event.workload_id ?? '-'
+  },
+  {
+    id: 'integration_id',
+    header: 'Integration',
+    width: 'minmax(0, 1fr)',
+    renderCell: event => event.integration_id ?? '-'
+  },
+  {
+    id: 'decision',
+    header: 'Decision',
+    width: 'minmax(0, 0.9fr)',
+    renderCell: event => event.decision ?? '-'
+  },
+  {
+    id: 'correlation_id',
+    header: 'Correlation',
+    width: 'minmax(0, 1.4fr)',
+    renderCell: event => event.correlation_id
+  }
+];
 
 export const AuditPanel = ({api}: AuditPanelProps) => {
   const navigate = useNavigate();
@@ -43,12 +100,22 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
 
   const filterHash = useMemo(() => JSON.stringify(appliedFilter), [appliedFilter]);
 
-  const auditQuery = useQuery({
+  const auditQuery = useCursorInfiniteQuery({
     queryKey: ['audit-events', filterHash],
-    queryFn: ({signal}) => api.listAuditEvents({filter: appliedFilter, signal})
+    queryPage: ({cursor, signal}) =>
+      fetchAuditEventPage({
+        api,
+        filter: appliedFilter,
+        cursor,
+        limit: DEFAULT_AUDIT_PAGE_LIMIT,
+        signal
+      }),
+    getItems: page => page.events,
+    getNextCursor: page => page.next_cursor,
+    getItemKey: event => event.event_id
   });
 
-  const events = useMemo(() => auditQuery.data?.events ?? [], [auditQuery.data]);
+  const events = auditQuery.items;
   const failingEvents = useMemo(() => events.filter(isFailingAuditEvent), [events]);
 
   const resolvedSelectedEventId =
@@ -120,6 +187,7 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
           });
 
           setAppliedFilter(nextFilter);
+          setSelectedEventId(undefined);
         }}
       >
         <label className="field">
@@ -170,7 +238,7 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
           </select>
         </label>
 
-        <button type="submit" disabled={auditQuery.isFetching}>
+        <button type="submit" disabled={auditQuery.isFetching && !auditQuery.isFetchingNextPage}>
           Apply filter
         </button>
       </form>
@@ -182,41 +250,41 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
         regex patterns.
       </p>
 
-      <div className="table-shell">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Event type</th>
-              <th>Tenant</th>
-              <th>Workload</th>
-              <th>Integration</th>
-              <th>Decision</th>
-              <th>Correlation</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map(event => {
-              const selected = event.event_id === resolvedSelectedEventId;
-              return (
-                <tr
-                  key={event.event_id}
-                  className={`interactive-row${selected ? ' selected-row' : ''}`}
-                  onClick={() => setSelectedEventId(event.event_id)}
-                >
-                  <td>{event.timestamp}</td>
-                  <td>{event.event_type}</td>
-                  <td>{event.tenant_id}</td>
-                  <td>{event.workload_id ?? '-'}</td>
-                  <td>{event.integration_id ?? '-'}</td>
-                  <td>{event.decision ?? '-'}</td>
-                  <td>{event.correlation_id}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="audit-list-controls">
+        <p className="helper-text">Loaded {events.length} event(s).</p>
+        <p className="helper-text">
+          {auditQuery.hasNextPage
+            ? auditQuery.isFetchingNextPage
+              ? 'Loading more events...'
+              : 'Scroll down in the list to load more events.'
+            : 'End of list reached.'}
+        </p>
       </div>
+
+      <VirtualizedInfiniteTable
+        ariaLabel="Audit events list"
+        columns={auditColumns}
+        items={events}
+        rowKey={event => event.event_id}
+        rowHeightPx={AUDIT_ROW_HEIGHT_PX}
+        viewportRows={AUDIT_VIEWPORT_ROWS}
+        overscanRows={AUDIT_OVERSCAN_ROWS}
+        hasMore={Boolean(auditQuery.hasNextPage)}
+        isLoadingMore={auditQuery.isFetchingNextPage}
+        onLoadMore={() => {
+          if (auditQuery.hasNextPage && !auditQuery.isFetchingNextPage) {
+            void auditQuery.fetchNextPage();
+          }
+        }}
+        loadMoreThresholdRows={AUDIT_LOAD_MORE_THRESHOLD_ROWS}
+        selectedRowKey={resolvedSelectedEventId}
+        onRowClick={event => setSelectedEventId(event.event_id)}
+        emptyState="No audit events matched this filter."
+      />
+
+      <p className="helper-text audit-list-end">
+        {auditQuery.hasNextPage ? `Scroll to load more (${events.length} loaded).` : `End of list (${events.length} loaded).`}
+      </p>
 
       {selectedEvent ? (
         <section className="management-surface">

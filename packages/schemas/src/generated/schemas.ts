@@ -116,7 +116,7 @@ export type OpenApiApprovalResponse = z.infer<typeof OpenApiApprovalResponseSche
 export const OpenApiAuditEventSchema = z.lazy(() => AuditEventSchema)
 export type OpenApiAuditEvent = z.infer<typeof OpenApiAuditEventSchema>
 
-export const OpenApiAuditEventListResponseSchema = z.object({"events": z.array(z.lazy(() => OpenApiAuditEventSchema))}).strict()
+export const OpenApiAuditEventListResponseSchema = z.object({"events": z.array(z.lazy(() => OpenApiAuditEventSchema)), "next_cursor": z.string().optional()}).strict()
 export type OpenApiAuditEventListResponse = z.infer<typeof OpenApiAuditEventListResponseSchema>
 
 export const OpenApiCanonicalRequestDescriptorSchema = z.lazy(() => CanonicalRequestDescriptorSchema)

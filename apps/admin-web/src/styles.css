@@ -609,6 +609,83 @@ button:not(:disabled):hover {
   overflow-x: auto;
 }
 
+.audit-list-controls {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.audit-list-end {
+  margin-top: 0.35rem;
+}
+
+.virtualized-table-shell {
+  border: 1px solid color-mix(in srgb, var(--line) 80%, #fff 20%);
+  border-radius: 12px;
+  background: #fff;
+  overflow: clip;
+}
+
+.virtualized-table-header,
+.virtualized-table-row {
+  display: grid;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.virtualized-table-header {
+  padding: 0.55rem 0.65rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 82%, #fff 18%);
+}
+
+.virtualized-table-viewport {
+  overflow: auto;
+}
+
+.virtualized-table-spacer {
+  position: relative;
+  min-height: 1px;
+}
+
+.virtualized-table-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 86%, #fff 14%);
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.35rem 0.65rem;
+  color: var(--ink);
+}
+
+.virtualized-table-row:hover {
+  background: color-mix(in srgb, var(--accent) 7%, #fff 93%);
+}
+
+.virtualized-table-row.selected {
+  background: color-mix(in srgb, var(--accent) 12%, #fff 88%);
+}
+
+.virtualized-table-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.virtualized-table-empty {
+  margin: 0;
+  padding: 0.8rem;
+}
+
 .editor-card {
   border: 1px solid color-mix(in srgb, var(--line) 82%, #fff 18%);
   border-radius: 12px;

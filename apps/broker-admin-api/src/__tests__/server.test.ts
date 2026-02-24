@@ -5,7 +5,7 @@ import path from 'node:path'
 import {Readable} from 'node:stream'
 
 import type {StructuredLogger} from '@broker-interceptor/logging'
-import {OpenApiAdminOAuthStartResponseSchema, type OpenApiTemplate} from '@broker-interceptor/schemas'
+import {OpenApiAdminOAuthStartResponseSchema, type OpenApiAuditEvent, type OpenApiTemplate} from '@broker-interceptor/schemas'
 import {afterEach, describe, expect, it, vi} from 'vitest'
 
 import {AdminAuthenticator} from '../auth'
@@ -421,7 +421,7 @@ const buildApprovalFixtureState = () => {
         }
       }
     ],
-    audit_events: [],
+    audit_events: [] as OpenApiAuditEvent[],
     enrollment_tokens: [],
     secrets: [
       {
@@ -448,6 +448,34 @@ const buildApprovalFixtureState = () => {
     manifest_keys: {keys: []}
   }
 }
+
+const makeAuditEvent = ({
+  eventId,
+  timestamp,
+  tenantId = 't_1'
+}: {
+  eventId: string
+  timestamp: string
+  tenantId?: string
+}): OpenApiAuditEvent => ({
+  event_id: eventId,
+  timestamp,
+  tenant_id: tenantId,
+  workload_id: null,
+  integration_id: null,
+  correlation_id: `corr_${eventId}`,
+  event_type: 'admin_action',
+  decision: null,
+  action_group: null,
+  risk_tier: null,
+  destination: null,
+  latency_ms: null,
+  upstream_status_code: null,
+  canonical_descriptor: null,
+  policy: null,
+  message: `audit ${eventId}`,
+  metadata: null
+})
 
 describe('broker-admin-api server routes', () => {
   it('logs request route without query parameters', async () => {
@@ -1312,6 +1340,49 @@ describe('broker-admin-api server routes', () => {
     expect(auditForbiddenTenant.body).toMatchObject({error: 'tenant_filter_forbidden'})
   })
 
+  it('paginates audit events with an opaque cursor', async () => {
+    const fixture = buildApprovalFixtureState()
+    fixture.audit_events = [
+      makeAuditEvent({
+        eventId: 'evt_oldest',
+        timestamp: '2026-01-01T00:00:00.000Z'
+      }),
+      makeAuditEvent({
+        eventId: 'evt_middle',
+        timestamp: '2026-01-02T00:00:00.000Z'
+      }),
+      makeAuditEvent({
+        eventId: 'evt_latest',
+        timestamp: '2026-01-03T00:00:00.000Z'
+      })
+    ]
+
+    const statePath = await writeStateFixture(fixture)
+    const context = await createContext({statePath})
+
+    const firstPage = await context.request({
+      method: 'GET',
+      path: '/v1/audit/events?limit=2'
+    })
+    expect(firstPage.status).toBe(200)
+    expect(firstPage.body).toMatchObject({
+      events: [{event_id: 'evt_latest'}, {event_id: 'evt_middle'}]
+    })
+    const nextCursor = (firstPage.body as {next_cursor?: string}).next_cursor
+    expect(typeof nextCursor).toBe('string')
+    expect(nextCursor?.length).toBeGreaterThan(0)
+
+    const secondPage = await context.request({
+      method: 'GET',
+      path: `/v1/audit/events?limit=2&cursor=${encodeURIComponent(nextCursor ?? '')}`
+    })
+    expect(secondPage.status).toBe(200)
+    expect(secondPage.body).toMatchObject({
+      events: [{event_id: 'evt_oldest'}]
+    })
+    expect((secondPage.body as {next_cursor?: string}).next_cursor).toBeUndefined()
+  })
+
   it('returns deterministic validation and routing errors', async () => {
     const context = await createContext()
 
@@ -1354,6 +1425,13 @@ describe('broker-admin-api server routes', () => {
     })
     expect(invalidTimeRange.status).toBe(400)
     expect(invalidTimeRange.body).toMatchObject({error: 'time_range_invalid'})
+
+    const invalidAuditCursor = await context.request({
+      method: 'GET',
+      path: '/v1/audit/events?cursor=not-a-valid-cursor'
+    })
+    expect(invalidAuditCursor.status).toBe(400)
+    expect(invalidAuditCursor.body).toMatchObject({error: 'audit_cursor_invalid'})
 
     const routeNotFound = await context.request({
       method: 'GET',

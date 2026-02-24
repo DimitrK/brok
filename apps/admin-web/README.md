@@ -29,6 +29,9 @@ Guided builders are available for integrations, templates, policies, and approva
 for common provider and policy setups.
 Audit workflow now supports selecting failing events and drafting template contracts with prefilled traits.
 Template editor includes template-level and per-path-group cURL request checks for fast regex/method/host validation.
+Audit events list now uses a reusable `VirtualizedInfiniteTable` (12-row viewport, virtualized rows, infinite load on
+scroll, end-of-list indicator) plus reusable cursor-page fetch composition (`useCursorInfiniteQuery`) backed by
+`/v1/audit/events?limit=&cursor=`.
 
 ## Routing
 
