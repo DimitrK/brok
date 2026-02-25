@@ -10,8 +10,11 @@ import {
 
 import type {AdminAccessRequestFilter, AdminUserFilter} from '../../api/querySchemas';
 import {BrokerAdminApiClient} from '../../api/client';
+import {AppIcon} from '../../components/AppIcon';
 import {ErrorNotice} from '../../components/ErrorNotice';
+import {MobileEntityList} from '../../components/MobileEntityList';
 import {Panel} from '../../components/Panel';
+import {useOverlayDismiss} from '../../components/useOverlayDismiss';
 import {AdminSignupPolicyControls} from '../auth/AdminSignupPolicyControls';
 import {useAdminStore} from '../../store/adminStore';
 
@@ -56,6 +59,16 @@ const summarizeTenantIds = (tenantIds: string[]) => {
   }
 
   return sortTenantIds(tenantIds).join(', ');
+};
+
+const summarizeTenantNames = (tenantIds: string[], tenantNameById: Map<string, string>) => {
+  if (tenantIds.length === 0) {
+    return 'all tenants';
+  }
+
+  return sortTenantIds(tenantIds)
+    .map(tenantId => tenantNameById.get(tenantId) ?? tenantId)
+    .join(', ');
 };
 
 const resolveSignInMethod = (issuer: string) => {
@@ -271,6 +284,27 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
     });
   };
 
+  const closeUserEditor = () => {
+    setUserDraft(undefined);
+    setUserDraftError(undefined);
+  };
+
+  const startAccessRequestReview = (request: OpenApiAdminAccessRequest) => {
+    setRequestDraftError(undefined);
+    setRequestDraft({
+      requestId: request.request_id,
+      roles: sortRoles(request.requested_roles),
+      tenantIds: sortTenantIds(request.requested_tenant_ids),
+      approveReason: '',
+      denyReason: ''
+    });
+  };
+
+  const closeAccessRequestReview = () => {
+    setRequestDraft(undefined);
+    setRequestDraftError(undefined);
+  };
+
   const updateUserMutation = useMutation({
     mutationFn: async (draft: UserEditDraft) =>
       api.updateAdminUser({
@@ -282,7 +316,7 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
         }
       }),
     onSuccess: async () => {
-      setUserDraft(undefined);
+      closeUserEditor();
       await queryClient.invalidateQueries({queryKey: ['admin-users']});
       await queryClient.invalidateQueries({queryKey: ['admin-access-requests']});
       await queryClient.invalidateQueries({queryKey: ['admin-session']});
@@ -300,7 +334,7 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
         }
       }),
     onSuccess: async () => {
-      setRequestDraft(undefined);
+      closeAccessRequestReview();
       await queryClient.invalidateQueries({queryKey: ['admin-users']});
       await queryClient.invalidateQueries({queryKey: ['admin-access-requests']});
     }
@@ -315,7 +349,7 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
         }
       }),
     onSuccess: async () => {
-      setRequestDraft(undefined);
+      closeAccessRequestReview();
       await queryClient.invalidateQueries({queryKey: ['admin-access-requests']});
     }
   });
@@ -334,6 +368,22 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
   );
 
   const canSaveUserDraft = Boolean(userDraft && userDraft.roles.length > 0);
+  const users = usersQuery.data?.users ?? [];
+  const accessRequests = accessRequestsQuery.data?.requests ?? [];
+  const tenantNameById = useMemo(
+    () => new Map((tenantsQuery.data?.tenants ?? []).map(tenant => [tenant.tenant_id, tenant.name])),
+    [tenantsQuery.data?.tenants]
+  );
+  const userEditorOverlay = useOverlayDismiss({
+    isOpen: Boolean(userDraft && activeUser),
+    onClose: closeUserEditor,
+    scope: 'users-editor'
+  });
+  const requestReviewOverlay = useOverlayDismiss({
+    isOpen: Boolean(requestDraft && activeAccessRequest),
+    onClose: closeAccessRequestReview,
+    scope: 'users-access-request-review'
+  });
 
   if (!canViewPanel) {
     return (
@@ -359,7 +409,7 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
           <p>Review existing admins and update status, roles, and tenant assignments.</p>
         </header>
 
-        <form className="inline-form" onSubmit={event => event.preventDefault()}>
+        <form className="inline-form mobile-filter-form" onSubmit={event => event.preventDefault()}>
           <label className="field">
             <span>Status</span>
             <select
@@ -408,7 +458,67 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
 
         <ErrorNotice error={usersQuery.error} />
 
-        <div className="table-shell">
+        <MobileEntityList
+          ariaLabel="Admin users list"
+          items={users}
+          emptyState="No admin users found."
+          getItemKey={user => user.identity_id}
+          getSummary={user => ({
+            title: user.email,
+            subtitle: user.identity_id,
+            statusTone: user.status === 'active' ? 'positive' : 'neutral',
+            meta: [{label: 'Sign-in', value: resolveSignInMethod(user.issuer)}]
+          })}
+          renderDetail={(user, controls) => {
+            const canManage = canManageUser(user);
+            const isSelf = user.subject === actorIdentity;
+            return (
+              <div className="stack-form">
+                <label className="field">
+                  <span>Email</span>
+                  <input value={user.email} readOnly />
+                </label>
+                <label className="field">
+                  <span>Identity ID</span>
+                  <input value={user.identity_id} readOnly />
+                </label>
+                <label className="field">
+                  <span>Status</span>
+                  <input value={user.status} readOnly />
+                </label>
+                <label className="field">
+                  <span>Sign-in</span>
+                  <input value={resolveSignInMethod(user.issuer)} readOnly />
+                </label>
+                <label className="field wide">
+                  <span>Roles</span>
+                  <input value={summarizeRoles(user.roles)} readOnly />
+                </label>
+                <label className="field wide">
+                  <span>Tenant scope</span>
+                  <input
+                    value={summarizeTenantNames(user.tenant_ids, tenantNameById)}
+                    title={user.tenant_ids.length > 0 ? summarizeTenantIds(user.tenant_ids) : undefined}
+                    readOnly
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={!canManage}
+                  onClick={() => {
+                    startEditUser(user);
+                    controls.close();
+                  }}
+                >
+                  {isSelf ? 'Edit self' : 'Edit user'}
+                </button>
+              </div>
+            );
+          }}
+        />
+
+        <div className="table-shell desktop-table-shell">
           <table className="data-table">
             <thead>
               <tr>
@@ -422,7 +532,7 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
               </tr>
             </thead>
             <tbody>
-              {(usersQuery.data?.users ?? []).map(user => {
+              {users.map(user => {
                 const canManage = canManageUser(user);
                 const isSelf = user.subject === actorIdentity;
                 return (
@@ -434,7 +544,9 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
                     <td>{resolveSignInMethod(user.issuer)}</td>
                     <td>{user.status}</td>
                     <td>{summarizeRoles(user.roles)}</td>
-                    <td>{summarizeTenantIds(user.tenant_ids)}</td>
+                    <td title={user.tenant_ids.length > 0 ? summarizeTenantIds(user.tenant_ids) : undefined}>
+                      {summarizeTenantNames(user.tenant_ids, tenantNameById)}
+                    </td>
                     <td>{user.updated_at}</td>
                     <td>
                       <button type="button" className="btn-secondary" onClick={() => startEditUser(user)} disabled={!canManage}>
@@ -448,174 +560,6 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
           </table>
         </div>
 
-        {userDraft && activeUser ? (
-          <section className="editor-card">
-            <header className="editor-card-header">
-              <h4>Edit {activeUser.email}</h4>
-              <button type="button" className="btn-secondary" onClick={() => setUserDraft(undefined)}>
-                Close editor
-              </button>
-            </header>
-
-            <div className="editor-grid">
-              <label className="field">
-                <span>Status</span>
-                <select
-                  value={userDraft.status}
-                  onChange={event => {
-                    const nextStatus = event.currentTarget.value as OpenApiAdminUserStatus;
-                    const isLastOwner = activeUser.roles.includes('owner') && ownerCount <= 1;
-                    if (isLastOwner && nextStatus !== 'active') {
-                      setUserDraftError('At least one active owner must remain.');
-                      return;
-                    }
-
-                    setUserDraftError(undefined);
-                    setUserDraft(current => (current ? {...current, status: nextStatus} : current));
-                  }}
-                >
-                  {adminUserStatuses.map(status => (
-                    <option key={status} value={status}>
-                      {status}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="field wide">
-                <span>Roles</span>
-                <div className="checkbox-grid">
-                  {adminRoleOrder.map(role => {
-                    const selected = userDraft.roles.includes(role);
-                    const isLastOwnerRole = role === 'owner' && activeUser.roles.includes('owner') && ownerCount <= 1;
-                    const disabled =
-                      !allowedAssignableRoles.includes(role) ||
-                      (selected && userDraft.roles.length === 1) ||
-                      isLastOwnerRole;
-
-                    return (
-                      <label key={role} className="chip-checkbox chip-checkbox-role">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          disabled={disabled}
-                          onChange={() => {
-                            setUserDraftError(undefined);
-                            setUserDraft(current => {
-                              if (!current) {
-                                return current;
-                              }
-
-                              const hasRole = current.roles.includes(role);
-                              const nextRoles = hasRole
-                                ? current.roles.filter(candidate => candidate !== role)
-                                : [...current.roles, role];
-
-                              return {
-                                ...current,
-                                roles: sortRoles(nextRoles)
-                              };
-                            });
-                          }}
-                        />
-                        <span className="chip-label" title={role}>
-                          {role}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="field wide">
-                <span>Tenant assignments</span>
-                <div className="checkbox-grid">
-                  {(tenantsQuery.data?.tenants ?? []).map(tenant => {
-                    const checked = userDraft.tenantIds.includes(tenant.tenant_id);
-                    const disabled = !isOwner && !actorTenantIdSet.has(tenant.tenant_id);
-                    const checkboxId = `edit-user-tenant-${tenant.tenant_id}`;
-                    return (
-                      <div key={tenant.tenant_id} className="chip-checkbox chip-checkbox-tenant">
-                        <input
-                          id={checkboxId}
-                          aria-label={`Assign tenant ${tenant.name}`}
-                          type="checkbox"
-                          checked={checked}
-                          disabled={disabled}
-                          onChange={() => {
-                            setUserDraftError(undefined);
-                            setUserDraft(current => {
-                              if (!current) {
-                                return current;
-                              }
-
-                              const hasTenant = current.tenantIds.includes(tenant.tenant_id);
-                              const nextTenantIds = hasTenant
-                                ? current.tenantIds.filter(candidate => candidate !== tenant.tenant_id)
-                                : [...current.tenantIds, tenant.tenant_id];
-
-                              return {
-                                ...current,
-                                tenantIds: sortTenantIds(nextTenantIds)
-                              };
-                            });
-                          }}
-                        />
-                        <label className="chip-text" htmlFor={checkboxId}>
-                          <span className="chip-label" title={tenant.name}>
-                            {tenant.name}
-                          </span>
-                          <small title={tenant.tenant_id}>{tenant.tenant_id}</small>
-                        </label>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            <p className="helper-text">
-              Updates are explicit replacements for status, roles, and tenant scope and are validated server-side.
-            </p>
-
-            {userDraftError ? <p className="error-notice">{userDraftError}</p> : null}
-            <ErrorNotice error={updateUserMutation.error} />
-
-            <div className="row-actions">
-              <button
-                type="button"
-                disabled={!canSaveUserDraft || updateUserMutation.isPending}
-                onClick={() => {
-                  if (!userDraft) {
-                    return;
-                  }
-
-                  if (!isOwner) {
-                    if (userDraft.roles.includes('owner')) {
-                      setUserDraftError('Only owner can grant owner role.');
-                      return;
-                    }
-
-                    if (userDraft.tenantIds.length === 0) {
-                      setUserDraftError('Admin-assigned users must have explicit tenant scope.');
-                      return;
-                    }
-
-                    if (userDraft.tenantIds.some(tenantId => !actorTenantIdSet.has(tenantId))) {
-                      setUserDraftError('Admin assignments must stay within your tenant scope.');
-                      return;
-                    }
-                  }
-
-                  setUserDraftError(undefined);
-                  updateUserMutation.mutate(userDraft);
-                }}
-              >
-                Save user changes
-              </button>
-            </div>
-          </section>
-        ) : null}
       </section>
 
       <section className="management-surface">
@@ -624,7 +568,7 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
           <p>Approve or deny pending signup requests with optional role and tenant overrides.</p>
         </header>
 
-        <form className="inline-form" onSubmit={event => event.preventDefault()}>
+        <form className="inline-form mobile-filter-form" onSubmit={event => event.preventDefault()}>
           <label className="field">
             <span>Status</span>
             <select
@@ -678,7 +622,63 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
 
         <ErrorNotice error={accessRequestsQuery.error} />
 
-        <div className="table-shell">
+        <MobileEntityList
+          ariaLabel="Access request list"
+          items={accessRequests}
+          emptyState="No access requests found."
+          getItemKey={request => request.request_id}
+          getSummary={request => ({
+            title: request.email,
+            subtitle: request.request_id,
+            statusTone: request.status === 'approved' ? 'positive' : 'neutral',
+            meta: [{label: 'Status', value: request.status}]
+          })}
+          renderDetail={(request, controls) => (
+            <div className="stack-form">
+              <label className="field">
+                <span>Requester</span>
+                <input value={request.email} readOnly />
+              </label>
+              <label className="field">
+                <span>Request ID</span>
+                <input value={request.request_id} readOnly />
+              </label>
+              <label className="field">
+                <span>Status</span>
+                <input value={request.status} readOnly />
+              </label>
+              <label className="field wide">
+                <span>Requested roles</span>
+                <input value={summarizeRoles(request.requested_roles)} readOnly />
+              </label>
+              <label className="field wide">
+                <span>Requested tenant scope</span>
+                <input
+                  value={summarizeTenantNames(request.requested_tenant_ids, tenantNameById)}
+                  title={request.requested_tenant_ids.length > 0 ? summarizeTenantIds(request.requested_tenant_ids) : undefined}
+                  readOnly
+                />
+              </label>
+              <label className="field">
+                <span>Created</span>
+                <input value={request.created_at} readOnly />
+              </label>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={request.status !== 'pending' || !canManageAccessRequest(request)}
+                onClick={() => {
+                  startAccessRequestReview(request);
+                  controls.close();
+                }}
+              >
+                Review
+              </button>
+            </div>
+          )}
+        />
+
+        <div className="table-shell desktop-table-shell">
           <table className="data-table">
             <thead>
               <tr>
@@ -691,7 +691,7 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
               </tr>
             </thead>
             <tbody>
-              {(accessRequestsQuery.data?.requests ?? []).map(request => (
+              {accessRequests.map(request => (
                 <tr key={request.request_id}>
                   <td>
                     <strong>{request.email}</strong>
@@ -699,23 +699,16 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
                   </td>
                   <td>{request.status}</td>
                   <td>{summarizeRoles(request.requested_roles)}</td>
-                  <td>{summarizeTenantIds(request.requested_tenant_ids)}</td>
+                  <td title={request.requested_tenant_ids.length > 0 ? summarizeTenantIds(request.requested_tenant_ids) : undefined}>
+                    {summarizeTenantNames(request.requested_tenant_ids, tenantNameById)}
+                  </td>
                   <td>{request.created_at}</td>
                   <td>
                     <button
                       type="button"
                       className="btn-secondary"
                       disabled={request.status !== 'pending' || !canManageAccessRequest(request)}
-                      onClick={() => {
-                        setRequestDraftError(undefined);
-                        setRequestDraft({
-                          requestId: request.request_id,
-                          roles: sortRoles(request.requested_roles),
-                          tenantIds: sortTenantIds(request.requested_tenant_ids),
-                          approveReason: '',
-                          denyReason: ''
-                        });
-                      }}
+                      onClick={() => startAccessRequestReview(request)}
                     >
                       Review
                     </button>
@@ -726,208 +719,414 @@ export const UserManagementPanel = ({api}: UserManagementPanelProps) => {
           </table>
         </div>
 
-        {requestDraft && activeAccessRequest ? (
-          <section className="editor-card">
-            <header className="editor-card-header">
-              <h4>Review request from {activeAccessRequest.email}</h4>
-              <button type="button" className="btn-secondary" onClick={() => setRequestDraft(undefined)}>
-                Close review
-              </button>
-            </header>
-
-            <div className="editor-grid">
-              <div className="field wide">
-                <span>Approved roles</span>
-                <div className="checkbox-grid">
-                  {adminRoleOrder.map(role => {
-                    const selected = requestDraft.roles.includes(role);
-                    const disabled =
-                      !allowedAssignableRoles.includes(role) || (selected && requestDraft.roles.length === 1);
-
-                    return (
-                      <label key={role} className="chip-checkbox chip-checkbox-role">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          disabled={disabled}
-                          onChange={() => {
-                            setRequestDraftError(undefined);
-                            setRequestDraft(current => {
-                              if (!current) {
-                                return current;
-                              }
-
-                              const hasRole = current.roles.includes(role);
-                              const nextRoles = hasRole
-                                ? current.roles.filter(candidate => candidate !== role)
-                                : [...current.roles, role];
-
-                              return {
-                                ...current,
-                                roles: sortRoles(nextRoles)
-                              };
-                            });
-                          }}
-                        />
-                        <span className="chip-label" title={role}>
-                          {role}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="field wide">
-                <span>Approved tenant scope</span>
-                <div className="checkbox-grid">
-                  {(tenantsQuery.data?.tenants ?? []).map(tenant => {
-                    const checked = requestDraft.tenantIds.includes(tenant.tenant_id);
-                    const disabled = !isOwner && !actorTenantIdSet.has(tenant.tenant_id);
-                    const checkboxId = `approve-request-tenant-${tenant.tenant_id}`;
-                    return (
-                      <div key={tenant.tenant_id} className="chip-checkbox chip-checkbox-tenant">
-                        <input
-                          id={checkboxId}
-                          aria-label={`Approve tenant scope ${tenant.name}`}
-                          type="checkbox"
-                          checked={checked}
-                          disabled={disabled}
-                          onChange={() => {
-                            setRequestDraftError(undefined);
-                            setRequestDraft(current => {
-                              if (!current) {
-                                return current;
-                              }
-
-                              const hasTenant = current.tenantIds.includes(tenant.tenant_id);
-                              const nextTenantIds = hasTenant
-                                ? current.tenantIds.filter(candidate => candidate !== tenant.tenant_id)
-                                : [...current.tenantIds, tenant.tenant_id];
-
-                              return {
-                                ...current,
-                                tenantIds: sortTenantIds(nextTenantIds)
-                              };
-                            });
-                          }}
-                        />
-                        <label className="chip-text" htmlFor={checkboxId}>
-                          <span className="chip-label" title={tenant.name}>
-                            {tenant.name}
-                          </span>
-                          <small title={tenant.tenant_id}>{tenant.tenant_id}</small>
-                        </label>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <label className="field wide">
-                <span>Approval reason (optional)</span>
-                <textarea
-                  value={requestDraft.approveReason}
-                  onChange={event => {
-                    const nextApproveReason = event.currentTarget.value;
-                    setRequestDraft(current =>
-                      current
-                        ? {
-                            ...current,
-                            approveReason: nextApproveReason
-                          }
-                        : current
-                    );
-                  }}
-                  placeholder="Optional note attached to approval audit trail"
-                  rows={3}
-                />
-              </label>
-
-              <label className="field wide">
-                <span>Deny reason (required for deny)</span>
-                <textarea
-                  value={requestDraft.denyReason}
-                  onChange={event => {
-                    const nextDenyReason = event.currentTarget.value;
-                    setRequestDraft(current =>
-                      current
-                        ? {
-                            ...current,
-                            denyReason: nextDenyReason
-                          }
-                        : current
-                    );
-                  }}
-                  placeholder="Explain why this request is denied"
-                  rows={3}
-                />
-              </label>
-            </div>
-
-            <p className="helper-text">
-              Approve and deny operations are idempotent server-side and audited with actor + target metadata.
-            </p>
-
-            {requestDraftError ? <p className="error-notice">{requestDraftError}</p> : null}
-            <ErrorNotice error={approveRequestMutation.error ?? denyRequestMutation.error} />
-
-            <div className="row-actions">
-              <button
-                type="button"
-                disabled={requestDraft.roles.length === 0 || approveRequestMutation.isPending}
-                onClick={() => {
-                  if (!requestDraft) {
-                    return;
-                  }
-
-                  if (!isOwner) {
-                    if (requestDraft.roles.includes('owner')) {
-                      setRequestDraftError('Only owner can approve owner role assignments.');
-                      return;
-                    }
-
-                    if (requestDraft.tenantIds.length === 0) {
-                      setRequestDraftError('Approved scope must be explicit for tenant-scoped admins.');
-                      return;
-                    }
-
-                    if (requestDraft.tenantIds.some(tenantId => !actorTenantIdSet.has(tenantId))) {
-                      setRequestDraftError('Approved tenant scope must stay within your own scope.');
-                      return;
-                    }
-                  }
-
-                  setRequestDraftError(undefined);
-                  approveRequestMutation.mutate(requestDraft);
-                }}
-              >
-                Approve request
-              </button>
-              <button
-                type="button"
-                className="btn-danger"
-                disabled={!normalizeSearch(requestDraft.denyReason) || denyRequestMutation.isPending}
-                onClick={() => {
-                  if (!requestDraft) {
-                    return;
-                  }
-
-                  if (!normalizeSearch(requestDraft.denyReason)) {
-                    setRequestDraftError('Deny reason is required.');
-                    return;
-                  }
-
-                  setRequestDraftError(undefined);
-                  denyRequestMutation.mutate(requestDraft);
-                }}
-              >
-                Deny request
-              </button>
-            </div>
-          </section>
-        ) : null}
       </section>
+
+      {userDraft && activeUser ? (
+        <section className="entity-screen">
+          <header className="entity-screen-header">
+            <button
+              type="button"
+              className="icon-back-button"
+              aria-label="Back to admin users list"
+              onClick={userEditorOverlay.requestClose}
+            >
+              <AppIcon name="arrow-left" />
+            </button>
+            <strong className="entity-screen-title">Edit admin user</strong>
+            <span className="entity-screen-spacer" aria-hidden />
+          </header>
+
+          <div className="entity-screen-content">
+            <section className="management-surface">
+              <div className="management-surface-header">
+                <h3>{activeUser.email}</h3>
+                <p>Update status, roles, and tenant assignments.</p>
+              </div>
+
+              <div className="editor-grid">
+                <label className="field">
+                  <span>Status</span>
+                  <select
+                    value={userDraft.status}
+                    onChange={event => {
+                      const nextStatus = event.currentTarget.value as OpenApiAdminUserStatus;
+                      const isLastOwner = activeUser.roles.includes('owner') && ownerCount <= 1;
+                      if (isLastOwner && nextStatus !== 'active') {
+                        setUserDraftError('At least one active owner must remain.');
+                        return;
+                      }
+
+                      setUserDraftError(undefined);
+                      setUserDraft(current => (current ? {...current, status: nextStatus} : current));
+                    }}
+                  >
+                    {adminUserStatuses.map(status => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="field wide">
+                  <span>Roles</span>
+                  <div className="checkbox-grid">
+                    {adminRoleOrder.map(role => {
+                      const selected = userDraft.roles.includes(role);
+                      const isLastOwnerRole = role === 'owner' && activeUser.roles.includes('owner') && ownerCount <= 1;
+                      const disabled =
+                        !allowedAssignableRoles.includes(role) ||
+                        (selected && userDraft.roles.length === 1) ||
+                        isLastOwnerRole;
+
+                      return (
+                        <label key={role} className="chip-checkbox chip-checkbox-role">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            disabled={disabled}
+                            onChange={() => {
+                              setUserDraftError(undefined);
+                              setUserDraft(current => {
+                                if (!current) {
+                                  return current;
+                                }
+
+                                const hasRole = current.roles.includes(role);
+                                const nextRoles = hasRole
+                                  ? current.roles.filter(candidate => candidate !== role)
+                                  : [...current.roles, role];
+
+                                return {
+                                  ...current,
+                                  roles: sortRoles(nextRoles)
+                                };
+                              });
+                            }}
+                          />
+                          <span className="chip-label" title={role}>
+                            {role}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="field wide">
+                  <span>Tenant assignments</span>
+                  <div className="checkbox-grid">
+                    {(tenantsQuery.data?.tenants ?? []).map(tenant => {
+                      const checked = userDraft.tenantIds.includes(tenant.tenant_id);
+                      const disabled = !isOwner && !actorTenantIdSet.has(tenant.tenant_id);
+                      const checkboxId = `edit-user-tenant-${tenant.tenant_id}`;
+                      return (
+                        <div key={tenant.tenant_id} className="chip-checkbox chip-checkbox-tenant">
+                          <input
+                            id={checkboxId}
+                            aria-label={`Assign tenant ${tenant.name}`}
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={() => {
+                              setUserDraftError(undefined);
+                              setUserDraft(current => {
+                                if (!current) {
+                                  return current;
+                                }
+
+                                const hasTenant = current.tenantIds.includes(tenant.tenant_id);
+                                const nextTenantIds = hasTenant
+                                  ? current.tenantIds.filter(candidate => candidate !== tenant.tenant_id)
+                                  : [...current.tenantIds, tenant.tenant_id];
+
+                                return {
+                                  ...current,
+                                  tenantIds: sortTenantIds(nextTenantIds)
+                                };
+                              });
+                            }}
+                          />
+                          <label className="chip-text" htmlFor={checkboxId}>
+                            <span className="chip-label" title={tenant.name}>
+                              {tenant.name}
+                            </span>
+                            <small title={tenant.tenant_id}>{tenant.tenant_id}</small>
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <p className="helper-text">
+                Updates are explicit replacements for status, roles, and tenant scope and are validated server-side.
+              </p>
+
+              {userDraftError ? <p className="error-notice">{userDraftError}</p> : null}
+              <ErrorNotice error={updateUserMutation.error} />
+
+              <div className="row-actions">
+                <button
+                  type="button"
+                  disabled={!canSaveUserDraft || updateUserMutation.isPending}
+                  onClick={() => {
+                    if (!userDraft) {
+                      return;
+                    }
+
+                    if (!isOwner) {
+                      if (userDraft.roles.includes('owner')) {
+                        setUserDraftError('Only owner can grant owner role.');
+                        return;
+                      }
+
+                      if (userDraft.tenantIds.length === 0) {
+                        setUserDraftError('Admin-assigned users must have explicit tenant scope.');
+                        return;
+                      }
+
+                      if (userDraft.tenantIds.some(tenantId => !actorTenantIdSet.has(tenantId))) {
+                        setUserDraftError('Admin assignments must stay within your tenant scope.');
+                        return;
+                      }
+                    }
+
+                    setUserDraftError(undefined);
+                    updateUserMutation.mutate(userDraft);
+                  }}
+                >
+                  Save user changes
+                </button>
+                <button type="button" className="btn-secondary" onClick={userEditorOverlay.requestClose}>
+                  Cancel
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+      ) : null}
+
+      {requestDraft && activeAccessRequest ? (
+        <section className="entity-screen">
+          <header className="entity-screen-header">
+            <button
+              type="button"
+              className="icon-back-button"
+              aria-label="Back to access request queue"
+              onClick={requestReviewOverlay.requestClose}
+            >
+              <AppIcon name="arrow-left" />
+            </button>
+            <strong className="entity-screen-title">Review access request</strong>
+            <span className="entity-screen-spacer" aria-hidden />
+          </header>
+
+          <div className="entity-screen-content">
+            <section className="management-surface">
+              <div className="management-surface-header">
+                <h3>{activeAccessRequest.email}</h3>
+                <p>Approve or deny this request with optional role and tenant overrides.</p>
+              </div>
+
+              <div className="editor-grid">
+                <div className="field wide">
+                  <span>Approved roles</span>
+                  <div className="checkbox-grid">
+                    {adminRoleOrder.map(role => {
+                      const selected = requestDraft.roles.includes(role);
+                      const disabled =
+                        !allowedAssignableRoles.includes(role) || (selected && requestDraft.roles.length === 1);
+
+                      return (
+                        <label key={role} className="chip-checkbox chip-checkbox-role">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            disabled={disabled}
+                            onChange={() => {
+                              setRequestDraftError(undefined);
+                              setRequestDraft(current => {
+                                if (!current) {
+                                  return current;
+                                }
+
+                                const hasRole = current.roles.includes(role);
+                                const nextRoles = hasRole
+                                  ? current.roles.filter(candidate => candidate !== role)
+                                  : [...current.roles, role];
+
+                                return {
+                                  ...current,
+                                  roles: sortRoles(nextRoles)
+                                };
+                              });
+                            }}
+                          />
+                          <span className="chip-label" title={role}>
+                            {role}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="field wide">
+                  <span>Approved tenant scope</span>
+                  <div className="checkbox-grid">
+                    {(tenantsQuery.data?.tenants ?? []).map(tenant => {
+                      const checked = requestDraft.tenantIds.includes(tenant.tenant_id);
+                      const disabled = !isOwner && !actorTenantIdSet.has(tenant.tenant_id);
+                      const checkboxId = `approve-request-tenant-${tenant.tenant_id}`;
+                      return (
+                        <div key={tenant.tenant_id} className="chip-checkbox chip-checkbox-tenant">
+                          <input
+                            id={checkboxId}
+                            aria-label={`Approve tenant scope ${tenant.name}`}
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={() => {
+                              setRequestDraftError(undefined);
+                              setRequestDraft(current => {
+                                if (!current) {
+                                  return current;
+                                }
+
+                                const hasTenant = current.tenantIds.includes(tenant.tenant_id);
+                                const nextTenantIds = hasTenant
+                                  ? current.tenantIds.filter(candidate => candidate !== tenant.tenant_id)
+                                  : [...current.tenantIds, tenant.tenant_id];
+
+                                return {
+                                  ...current,
+                                  tenantIds: sortTenantIds(nextTenantIds)
+                                };
+                              });
+                            }}
+                          />
+                          <label className="chip-text" htmlFor={checkboxId}>
+                            <span className="chip-label" title={tenant.name}>
+                              {tenant.name}
+                            </span>
+                            <small title={tenant.tenant_id}>{tenant.tenant_id}</small>
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <label className="field wide">
+                  <span>Approval reason (optional)</span>
+                  <textarea
+                    value={requestDraft.approveReason}
+                    onChange={event => {
+                      const nextApproveReason = event.currentTarget.value;
+                      setRequestDraft(current =>
+                        current
+                          ? {
+                              ...current,
+                              approveReason: nextApproveReason
+                            }
+                          : current
+                      );
+                    }}
+                    placeholder="Optional note attached to approval audit trail"
+                    rows={3}
+                  />
+                </label>
+
+                <label className="field wide">
+                  <span>Deny reason (required for deny)</span>
+                  <textarea
+                    value={requestDraft.denyReason}
+                    onChange={event => {
+                      const nextDenyReason = event.currentTarget.value;
+                      setRequestDraft(current =>
+                        current
+                          ? {
+                              ...current,
+                              denyReason: nextDenyReason
+                            }
+                          : current
+                      );
+                    }}
+                    placeholder="Explain why this request is denied"
+                    rows={3}
+                  />
+                </label>
+              </div>
+
+              <p className="helper-text">
+                Approve and deny operations are idempotent server-side and audited with actor + target metadata.
+              </p>
+
+              {requestDraftError ? <p className="error-notice">{requestDraftError}</p> : null}
+              <ErrorNotice error={approveRequestMutation.error ?? denyRequestMutation.error} />
+
+              <div className="row-actions">
+                <button
+                  type="button"
+                  disabled={requestDraft.roles.length === 0 || approveRequestMutation.isPending}
+                  onClick={() => {
+                    if (!requestDraft) {
+                      return;
+                    }
+
+                    if (!isOwner) {
+                      if (requestDraft.roles.includes('owner')) {
+                        setRequestDraftError('Only owner can approve owner role assignments.');
+                        return;
+                      }
+
+                      if (requestDraft.tenantIds.length === 0) {
+                        setRequestDraftError('Approved scope must be explicit for tenant-scoped admins.');
+                        return;
+                      }
+
+                      if (requestDraft.tenantIds.some(tenantId => !actorTenantIdSet.has(tenantId))) {
+                        setRequestDraftError('Approved tenant scope must stay within your own scope.');
+                        return;
+                      }
+                    }
+
+                    setRequestDraftError(undefined);
+                    approveRequestMutation.mutate(requestDraft);
+                  }}
+                >
+                  Approve request
+                </button>
+                <button
+                  type="button"
+                  className="btn-danger"
+                  disabled={!normalizeSearch(requestDraft.denyReason) || denyRequestMutation.isPending}
+                  onClick={() => {
+                    if (!requestDraft) {
+                      return;
+                    }
+
+                    if (!normalizeSearch(requestDraft.denyReason)) {
+                      setRequestDraftError('Deny reason is required.');
+                      return;
+                    }
+
+                    setRequestDraftError(undefined);
+                    denyRequestMutation.mutate(requestDraft);
+                  }}
+                >
+                  Deny request
+                </button>
+                <button type="button" className="btn-secondary" onClick={requestReviewOverlay.requestClose}>
+                  Cancel
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+      ) : null}
     </Panel>
   );
 };

@@ -1,12 +1,16 @@
-import React, {useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import type {OpenApiAuditEvent} from '@broker-interceptor/schemas';
+import {useQuery} from '@tanstack/react-query';
 import {useNavigate} from 'react-router-dom';
 
 import {BrokerAdminApiClient} from '../../api/client';
 import {auditFilterSchema, type AuditFilter} from '../../api/querySchemas';
+import {AppIcon} from '../../components/AppIcon';
 import {ErrorNotice} from '../../components/ErrorNotice';
 import {Panel} from '../../components/Panel';
+import {useOverlayDismiss} from '../../components/useOverlayDismiss';
 import {useCursorInfiniteQuery} from '../../components/useCursorInfiniteQuery';
+import {useAdminStore} from '../../store/adminStore';
 import {
   VirtualizedInfiniteTable,
   type VirtualizedInfiniteTableColumn
@@ -32,53 +36,30 @@ type AuditPanelProps = {
   api: BrokerAdminApiClient;
 };
 
-const auditColumns: VirtualizedInfiniteTableColumn<OpenApiAuditEvent>[] = [
+const mobileAuditColumns: VirtualizedInfiniteTableColumn<OpenApiAuditEvent>[] = [
   {
     id: 'timestamp',
     header: 'Timestamp',
-    width: 'minmax(0, 1.25fr)',
+    width: 'minmax(0, 1.2fr)',
     renderCell: event => event.timestamp
   },
   {
     id: 'event_type',
     header: 'Event type',
-    width: 'minmax(0, 1fr)',
+    width: 'minmax(0, 1.1fr)',
     renderCell: event => event.event_type
-  },
-  {
-    id: 'tenant_id',
-    header: 'Tenant',
-    width: 'minmax(0, 1fr)',
-    renderCell: event => event.tenant_id
-  },
-  {
-    id: 'workload_id',
-    header: 'Workload',
-    width: 'minmax(0, 1fr)',
-    renderCell: event => event.workload_id ?? '-'
-  },
-  {
-    id: 'integration_id',
-    header: 'Integration',
-    width: 'minmax(0, 1fr)',
-    renderCell: event => event.integration_id ?? '-'
   },
   {
     id: 'decision',
     header: 'Decision',
-    width: 'minmax(0, 0.9fr)',
+    width: 'minmax(0, 0.8fr)',
     renderCell: event => event.decision ?? '-'
-  },
-  {
-    id: 'correlation_id',
-    header: 'Correlation',
-    width: 'minmax(0, 1.4fr)',
-    renderCell: event => event.correlation_id
   }
 ];
 
 export const AuditPanel = ({api}: AuditPanelProps) => {
   const navigate = useNavigate();
+  const selectedTenantId = useAdminStore(state => state.selectedTenantId);
 
   const [timeMin, setTimeMin] = useState('');
   const [timeMax, setTimeMax] = useState('');
@@ -87,6 +68,9 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
   const [integrationId, setIntegrationId] = useState('');
   const [actionGroup, setActionGroup] = useState('');
   const [decision, setDecision] = useState<'allowed' | 'denied' | 'approval_required' | 'throttled' | ''>('');
+  const [isMobileAuditList, setIsMobileAuditList] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 700px)').matches : false
+  );
 
   const [appliedFilter, setAppliedFilter] = useState<AuditFilter>({});
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>();
@@ -97,6 +81,34 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
   const [includeActionGroup, setIncludeActionGroup] = useState(true);
   const [includeRiskTier, setIncludeRiskTier] = useState(true);
   const [useSuggestedPathPattern, setUseSuggestedPathPattern] = useState(true);
+  const tenantsQuery = useQuery({
+    queryKey: ['tenants'],
+    queryFn: ({signal}) => api.listTenants(signal)
+  });
+  const workloadsQuery = useQuery({
+    queryKey: ['workloads', selectedTenantId],
+    enabled: Boolean(selectedTenantId),
+    queryFn: ({signal}) => api.listWorkloads({tenantId: selectedTenantId ?? '', signal})
+  });
+  const integrationsQuery = useQuery({
+    queryKey: ['integrations', selectedTenantId],
+    enabled: Boolean(selectedTenantId),
+    queryFn: ({signal}) => api.listIntegrations({tenantId: selectedTenantId ?? '', signal})
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia('(max-width: 700px)');
+    const applyMatch = (matches: boolean) => setIsMobileAuditList(matches);
+    applyMatch(mediaQuery.matches);
+
+    const handleChange = (event: MediaQueryListEvent) => applyMatch(event.matches);
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, []);
 
   const filterHash = useMemo(() => JSON.stringify(appliedFilter), [appliedFilter]);
 
@@ -116,17 +128,12 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
   });
 
   const events = auditQuery.items;
-  const failingEvents = useMemo(() => events.filter(isFailingAuditEvent), [events]);
-
-  const resolvedSelectedEventId =
-    selectedEventId && events.some(event => event.event_id === selectedEventId)
-      ? selectedEventId
-      : (failingEvents[0]?.event_id ?? events[0]?.event_id);
-
-  const selectedEvent = useMemo(
-    () => events.find(event => event.event_id === resolvedSelectedEventId),
-    [events, resolvedSelectedEventId]
-  );
+  const selectedEvent = useMemo(() => {
+    if (!selectedEventId) {
+      return undefined;
+    }
+    return events.find(event => event.event_id === selectedEventId);
+  }, [events, selectedEventId]);
 
   const matchingFailingEvents = useMemo(
     () => (selectedEvent ? collectMatchingFailingEvents(selectedEvent, events) : []),
@@ -165,6 +172,89 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
     selectedEvent,
     useSuggestedPathPattern
   ]);
+  const tenantNameById = useMemo(
+    () => new Map((tenantsQuery.data?.tenants ?? []).map(tenant => [tenant.tenant_id, tenant.name])),
+    [tenantsQuery.data?.tenants]
+  );
+  const workloadNameById = useMemo(
+    () => new Map((workloadsQuery.data?.workloads ?? []).map(workload => [workload.workload_id, workload.name])),
+    [workloadsQuery.data?.workloads]
+  );
+  const integrationNameById = useMemo(
+    () => new Map((integrationsQuery.data?.integrations ?? []).map(integration => [integration.integration_id, integration.name])),
+    [integrationsQuery.data?.integrations]
+  );
+  const resolveEntityCell = (entityId: string | null | undefined, fallback: string) => {
+    if (!entityId) {
+      return '-';
+    }
+    return <span title={entityId}>{fallback}</span>;
+  };
+  const auditColumns = useMemo(
+    () =>
+      isMobileAuditList
+        ? mobileAuditColumns
+        : [
+            {
+              id: 'timestamp',
+              header: 'Timestamp',
+              width: 'minmax(0, 1.25fr)',
+              renderCell: (event: OpenApiAuditEvent) => event.timestamp
+            },
+            {
+              id: 'event_type',
+              header: 'Event type',
+              width: 'minmax(0, 1fr)',
+              renderCell: (event: OpenApiAuditEvent) => event.event_type
+            },
+            {
+              id: 'tenant_id',
+              header: 'Tenant',
+              width: 'minmax(0, 1fr)',
+              renderCell: (event: OpenApiAuditEvent) =>
+                resolveEntityCell(event.tenant_id, tenantNameById.get(event.tenant_id) ?? event.tenant_id)
+            },
+            {
+              id: 'workload_id',
+              header: 'Workload',
+              width: 'minmax(0, 1fr)',
+              renderCell: (event: OpenApiAuditEvent) =>
+                resolveEntityCell(
+                  event.workload_id,
+                  event.workload_id ? workloadNameById.get(event.workload_id) ?? event.workload_id : '-'
+                )
+            },
+            {
+              id: 'integration_id',
+              header: 'Integration',
+              width: 'minmax(0, 1fr)',
+              renderCell: (event: OpenApiAuditEvent) =>
+                resolveEntityCell(
+                  event.integration_id,
+                  event.integration_id ? integrationNameById.get(event.integration_id) ?? event.integration_id : '-'
+                )
+            },
+            {
+              id: 'decision',
+              header: 'Decision',
+              width: 'minmax(0, 0.9fr)',
+              renderCell: (event: OpenApiAuditEvent) => event.decision ?? '-'
+            },
+            {
+              id: 'correlation_id',
+              header: 'Correlation',
+              width: 'minmax(0, 1.4fr)',
+              renderCell: (event: OpenApiAuditEvent) => event.correlation_id
+            }
+          ],
+    [integrationNameById, isMobileAuditList, tenantNameById, workloadNameById]
+  );
+  const closeSelectedEvent = () => setSelectedEventId(undefined);
+  const selectedEventOverlay = useOverlayDismiss({
+    isOpen: Boolean(selectedEvent),
+    onClose: closeSelectedEvent,
+    scope: 'audit-selected-event'
+  });
 
   return (
     <Panel
@@ -172,7 +262,7 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
       subtitle="Review failing events, inspect canonical descriptors, and draft template contracts from real traffic."
     >
       <form
-        className="inline-form"
+        className="inline-form mobile-filter-form"
         onSubmit={event => {
           event.preventDefault();
 
@@ -243,10 +333,10 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
         </button>
       </form>
 
-      <ErrorNotice error={auditQuery.error} />
+      <ErrorNotice error={auditQuery.error ?? tenantsQuery.error ?? workloadsQuery.error ?? integrationsQuery.error} />
 
       <p className="helper-text">
-        Click a failing event row to inspect details and draft a template. Matching failing events suggest reusable path
+        Click an event row to inspect details and draft a template. Matching failing events suggest reusable path
         regex patterns.
       </p>
 
@@ -277,7 +367,7 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
           }
         }}
         loadMoreThresholdRows={AUDIT_LOAD_MORE_THRESHOLD_ROWS}
-        selectedRowKey={resolvedSelectedEventId}
+        selectedRowKey={selectedEventId}
         onRowClick={event => setSelectedEventId(event.event_id)}
         emptyState="No audit events matched this filter."
       />
@@ -287,136 +377,161 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
       </p>
 
       {selectedEvent ? (
-        <section className="management-surface">
-          <div className="management-surface-header">
-            <h3>Selected event details</h3>
-            <p>
-              Event `{selectedEvent.event_id}` | Decision `{selectedEvent.decision ?? 'n/a'}` | Correlation `
-              {selectedEvent.correlation_id}`
-            </p>
-          </div>
-
-          <div className="editor-grid">
-            <label className="field wide">
-              <span>Canonical URL</span>
-              <input value={getCanonicalUrlFromEvent(selectedEvent)} readOnly />
-            </label>
-
-            <label className="field">
-              <span>Path</span>
-              <input value={getPathFromEvent(selectedEvent) ?? 'Unavailable'} readOnly />
-            </label>
-
-            <label className="field">
-              <span>Matched action group</span>
-              <input
-                value={
-                  selectedEvent.canonical_descriptor?.matched_path_group_id ?? selectedEvent.action_group ?? 'Unavailable'
-                }
-                readOnly
-              />
-            </label>
-
-            <label className="field wide">
-              <span>Query keys</span>
-              <input value={(selectedEvent.canonical_descriptor?.query_keys ?? []).join(', ')} readOnly />
-            </label>
-
-            <label className="field wide">
-              <span>Normalized headers</span>
-              <input
-                value={
-                  (selectedEvent.canonical_descriptor?.normalized_headers ?? [])
-                    .map(header => header.name)
-                    .join(', ') || 'none'
-                }
-                readOnly
-              />
-            </label>
-          </div>
-
-          <hr className="divider" />
-
-          <div className="management-surface-header">
-            <h3>Template traits from this event</h3>
-            <p>Select which event traits should be included in the template draft.</p>
-          </div>
-
-          <div className="checkbox-grid">
-            <label className="chip-checkbox">
-              <input
-                type="checkbox"
-                checked={includeAllObservedHosts}
-                onChange={event => setIncludeAllObservedHosts(event.currentTarget.checked)}
-              />
-              <span className="chip-label">Include all matched failing hosts</span>
-            </label>
-
-            <label className="chip-checkbox">
-              <input
-                type="checkbox"
-                checked={useSuggestedPathPattern}
-                onChange={event => setUseSuggestedPathPattern(event.currentTarget.checked)}
-              />
-              <span className="chip-label">Use suggested path regex from matches</span>
-            </label>
-
-            <label className="chip-checkbox">
-              <input type="checkbox" checked={includeQueryKeys} onChange={event => setIncludeQueryKeys(event.currentTarget.checked)} />
-              <span className="chip-label">Include query keys</span>
-            </label>
-
-            <label className="chip-checkbox">
-              <input
-                type="checkbox"
-                checked={includeNormalizedHeaders}
-                onChange={event => setIncludeNormalizedHeaders(event.currentTarget.checked)}
-              />
-              <span className="chip-label">Include normalized header names</span>
-            </label>
-
-            <label className="chip-checkbox">
-              <input
-                type="checkbox"
-                checked={includeActionGroup}
-                onChange={event => setIncludeActionGroup(event.currentTarget.checked)}
-              />
-              <span className="chip-label">Use action group as path-group ID</span>
-            </label>
-
-            <label className="chip-checkbox">
-              <input type="checkbox" checked={includeRiskTier} onChange={event => setIncludeRiskTier(event.currentTarget.checked)} />
-              <span className="chip-label">Include risk tier and approval mode</span>
-            </label>
-          </div>
-
-          <p className="helper-text">
-            Matching failing events: {matchingFailingEvents.length}. Suggested path pattern: `{suggestedPathPattern}`.
-          </p>
-
-          <div className="row-actions">
+        <section className="entity-screen">
+          <header className="entity-screen-header">
             <button
               type="button"
-              disabled={!isFailingAuditEvent(selectedEvent) || !draftRouteState}
-              onClick={() => {
-                if (!draftRouteState) {
-                  return;
-                }
-                if (typeof window !== 'undefined') {
-                  window.sessionStorage.setItem(TEMPLATE_DRAFT_STORAGE_KEY, JSON.stringify(draftRouteState));
-                }
-                navigate('/templates?draft=audit');
-              }}
+              className="icon-back-button"
+              aria-label="Back to audit list"
+              onClick={selectedEventOverlay.requestClose}
             >
-              Open template draft
+              <AppIcon name="arrow-left" />
             </button>
+            <strong className="entity-screen-title">Selected event details</strong>
+            <span className="entity-screen-spacer" aria-hidden />
+          </header>
+
+          <div className="entity-screen-content">
+            <section className="management-surface">
+              <div className="management-surface-header">
+                <p>
+                  Event `{selectedEvent.event_id}` | Decision `{selectedEvent.decision ?? 'n/a'}` | Correlation `
+                  {selectedEvent.correlation_id}`
+                </p>
+              </div>
+
+              <div className="editor-grid">
+                <label className="field wide">
+                  <span>Canonical URL</span>
+                  <input value={getCanonicalUrlFromEvent(selectedEvent)} readOnly />
+                </label>
+
+                <label className="field">
+                  <span>Path</span>
+                  <input value={getPathFromEvent(selectedEvent) ?? 'Unavailable'} readOnly />
+                </label>
+
+                <label className="field">
+                  <span>Matched action group</span>
+                  <input
+                    value={
+                      selectedEvent.canonical_descriptor?.matched_path_group_id ?? selectedEvent.action_group ?? 'Unavailable'
+                    }
+                    readOnly
+                  />
+                </label>
+
+                <label className="field wide">
+                  <span>Query keys</span>
+                  <input value={(selectedEvent.canonical_descriptor?.query_keys ?? []).join(', ')} readOnly />
+                </label>
+
+                <label className="field wide">
+                  <span>Normalized headers</span>
+                  <input
+                    value={
+                      (selectedEvent.canonical_descriptor?.normalized_headers ?? [])
+                        .map(header => header.name)
+                        .join(', ') || 'none'
+                    }
+                    readOnly
+                  />
+                </label>
+              </div>
+
+              <hr className="divider" />
+
+              <div className="management-surface-header">
+                <h3>Template traits from this event</h3>
+                <p>Select which event traits should be included in the template draft.</p>
+              </div>
+
+              <div className="checkbox-grid">
+                <label className="chip-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={includeAllObservedHosts}
+                    onChange={event => setIncludeAllObservedHosts(event.currentTarget.checked)}
+                  />
+                  <span className="chip-label">Include all matched failing hosts</span>
+                </label>
+
+                <label className="chip-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={useSuggestedPathPattern}
+                    onChange={event => setUseSuggestedPathPattern(event.currentTarget.checked)}
+                  />
+                  <span className="chip-label">Use suggested path regex from matches</span>
+                </label>
+
+                <label className="chip-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={includeQueryKeys}
+                    onChange={event => setIncludeQueryKeys(event.currentTarget.checked)}
+                  />
+                  <span className="chip-label">Include query keys</span>
+                </label>
+
+                <label className="chip-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={includeNormalizedHeaders}
+                    onChange={event => setIncludeNormalizedHeaders(event.currentTarget.checked)}
+                  />
+                  <span className="chip-label">Include normalized header names</span>
+                </label>
+
+                <label className="chip-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={includeActionGroup}
+                    onChange={event => setIncludeActionGroup(event.currentTarget.checked)}
+                  />
+                  <span className="chip-label">Use action group as path-group ID</span>
+                </label>
+
+                <label className="chip-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={includeRiskTier}
+                    onChange={event => setIncludeRiskTier(event.currentTarget.checked)}
+                  />
+                  <span className="chip-label">Include risk tier and approval mode</span>
+                </label>
+              </div>
+
+              <p className="helper-text">
+                Matching failing events: {matchingFailingEvents.length}. Suggested path pattern: `
+                {suggestedPathPattern ?? 'n/a'}`.
+              </p>
+
+              <div className="row-actions">
+                <button
+                  type="button"
+                  disabled={!isFailingAuditEvent(selectedEvent) || !draftRouteState}
+                  onClick={() => {
+                    if (!draftRouteState) {
+                      return;
+                    }
+                    if (typeof window !== 'undefined') {
+                      window.sessionStorage.setItem(TEMPLATE_DRAFT_STORAGE_KEY, JSON.stringify(draftRouteState));
+                    }
+                    navigate('/templates?draft=audit');
+                  }}
+                >
+                  Open template draft
+                </button>
+              </div>
+
+              {!isFailingAuditEvent(selectedEvent) ? (
+                <p className="helper-text">Template drafting is available only for failing decisions.</p>
+              ) : null}
+
+              <pre className="json-view">{JSON.stringify(selectedEvent, null, 2)}</pre>
+            </section>
           </div>
-
-          {!isFailingAuditEvent(selectedEvent) ? (
-            <p className="helper-text">Template drafting is available only for failing decisions.</p>
-          ) : null}
-
-          <pre className="json-view">{JSON.stringify(selectedEvent, null, 2)}</pre>
         </section>
       ) : null}
     </Panel>

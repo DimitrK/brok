@@ -4,8 +4,11 @@ import {OpenApiTemplateSchema, type OpenApiTemplate} from '@broker-interceptor/s
 import {z} from 'zod';
 
 import {BrokerAdminApiClient} from '../../api/client';
+import {AppIcon} from '../../components/AppIcon';
 import {ErrorNotice} from '../../components/ErrorNotice';
+import {MobileEntityList} from '../../components/MobileEntityList';
 import {Panel} from '../../components/Panel';
+import {useOverlayDismiss} from '../../components/useOverlayDismiss';
 import {TEMPLATE_DRAFT_STORAGE_KEY} from '../audit/templateSuggestion';
 import {
   TEMPLATE_ID_PREFIX,
@@ -425,8 +428,7 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
       return api.createTemplate({payload});
     },
     onSuccess: async () => {
-      setShowEditor(false);
-      resetEditor();
+      closeEditor();
       await queryClient.invalidateQueries({queryKey: ['templates']});
     }
   });
@@ -452,6 +454,16 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
     setShowEditor(true);
   };
 
+  const closeEditor = () => {
+    setShowEditor(false);
+    resetEditor();
+  };
+  const templateEditorOverlay = useOverlayDismiss({
+    isOpen: showEditor,
+    onClose: closeEditor,
+    scope: 'templates-editor'
+  });
+
   const restoreHistoricalVersion = (template: OpenApiTemplate) => {
     if (!latestEditorTemplate) {
       return;
@@ -469,20 +481,35 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
       title="Templates"
       subtitle="Manage template contracts with multiple path groups and regex patterns."
       action={
-        <button type="button" onClick={openNewEditor}>
-          New template
+        <button type="button" className="btn-tertiary-icon" onClick={openNewEditor}>
+          <AppIcon name="plus" />
+          New
         </button>
       }
     >
       {showEditor ? (
-        <form
-          className="stack-form"
-          onSubmit={event => {
-            event.preventDefault();
-            createTemplateMutation.mutate();
-          }}
-        >
-          <h3>{editorMode === 'new' ? 'Create template' : 'Publish template update'}</h3>
+        <section className="entity-screen">
+          <header className="entity-screen-header">
+            <button
+              type="button"
+              className="icon-back-button"
+              aria-label="Back to templates list"
+              onClick={templateEditorOverlay.requestClose}
+            >
+              <AppIcon name="arrow-left" />
+            </button>
+            <strong className="entity-screen-title">{editorMode === 'new' ? 'Create template' : 'Edit template'}</strong>
+            <span className="entity-screen-spacer" aria-hidden />
+          </header>
+          <div className="entity-screen-content">
+            <form
+              className="stack-form"
+              onSubmit={event => {
+                event.preventDefault();
+                createTemplateMutation.mutate();
+              }}
+            >
+              <h3>{editorMode === 'new' ? 'Create template' : 'Publish template update'}</h3>
 
           <div className="inline-form">
             <label className="field">
@@ -857,28 +884,85 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
             Templates are immutable contracts. Editing publishes a new version and keeps previous versions intact.
           </p>
 
+          <ErrorNotice error={createTemplateMutation.error} />
+
           <div className="row-actions">
             <button type="submit" disabled={createTemplateMutation.isPending}>
               {editorMode === 'new' ? 'Create template' : 'Publish new version'}
             </button>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => {
-                setShowEditor(false);
-                resetEditor();
-              }}
-            >
-              Cancel
-            </button>
+                <button type="button" className="btn-secondary" onClick={templateEditorOverlay.requestClose}>
+                  Cancel
+                </button>
           </div>
-        </form>
+            </form>
+          </div>
+        </section>
       ) : null}
 
-      <ErrorNotice error={templatesQuery.error ?? createTemplateMutation.error} />
+      {!showEditor ? (
+        <>
+          <ErrorNotice error={templatesQuery.error} />
 
-      <div className="table-shell">
-        <table className="data-table">
+          <MobileEntityList
+        ariaLabel="Template list"
+        items={latestTemplates}
+        emptyState="No templates published."
+        getItemKey={template => template.template_id}
+        getSummary={template => {
+          return {
+            title: template.template_id,
+            subtitle: `v${template.version} • ${template.provider}`,
+            meta: [{label: 'Allowed hosts', value: template.allowed_hosts.join(', ') || '-'}]
+          };
+        }}
+        renderDetail={(template, controls) => {
+          const historySize = templateVersionIndex.get(template.template_id)?.length ?? 1;
+          return (
+            <div className="stack-form">
+              <label className="field">
+                <span>Template ID</span>
+                <input value={template.template_id} readOnly />
+              </label>
+              <label className="field">
+                <span>Version</span>
+                <input value={`v${template.version}`} readOnly />
+              </label>
+              <label className="field">
+                <span>Provider</span>
+                <input value={template.provider} readOnly />
+              </label>
+              <label className="field wide">
+                <span>Allowed hosts</span>
+                <input value={template.allowed_hosts.join(', ')} readOnly />
+              </label>
+              <label className="field wide">
+                <span>Path groups</span>
+                <input
+                  value={`${template.path_groups.length} groups / ${template.path_groups.reduce((count, pathGroup) => count + pathGroup.path_patterns.length, 0)} patterns`}
+                  readOnly
+                />
+              </label>
+              <label className="field">
+                <span>History</span>
+                <input value={`${historySize} version(s)`} readOnly />
+              </label>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => {
+                  openEditEditor(template.template_id);
+                  controls.close();
+                }}
+              >
+                Edit template
+              </button>
+            </div>
+          );
+        }}
+          />
+
+          <div className="table-shell desktop-table-shell">
+            <table className="data-table">
           <thead>
             <tr>
               <th>Template ID</th>
@@ -931,8 +1015,10 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
               );
             })}
           </tbody>
-        </table>
-      </div>
+            </table>
+          </div>
+        </>
+      ) : null}
     </Panel>
   );
 };

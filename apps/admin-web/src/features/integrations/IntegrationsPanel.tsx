@@ -3,7 +3,9 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {OpenApiIntegrationWriteSchema} from '@broker-interceptor/schemas';
 
 import {BrokerAdminApiClient} from '../../api/client';
+import {AppIcon} from '../../components/AppIcon';
 import {ErrorNotice} from '../../components/ErrorNotice';
+import {MobileEntityList} from '../../components/MobileEntityList';
 import {Panel} from '../../components/Panel';
 import {ToggleSwitch} from '../../components/ToggleSwitch';
 import {useAdminStore} from '../../store/adminStore';
@@ -82,14 +84,16 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
   });
 
   const templateOptions = useMemo(() => {
-    const byTemplateId = new Map<string, {templateId: string; version: number; provider: string}>();
+    const byTemplateId = new Map<string, {templateId: string; version: number; provider: string; displayName: string}>();
     for (const template of templatesQuery.data?.templates ?? []) {
       const current = byTemplateId.get(template.template_id);
       if (!current || template.version > current.version) {
+        const description = template.description?.trim();
         byTemplateId.set(template.template_id, {
           templateId: template.template_id,
           version: template.version,
-          provider: template.provider
+          provider: template.provider,
+          displayName: description && description.length > 0 ? description : template.template_id
         });
       }
     }
@@ -153,13 +157,44 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
     !normalizedSecretValue ||
     createIntegrationMutation.isPending;
 
+  const integrations = useMemo(() => integrationsQuery.data?.integrations ?? [], [integrationsQuery.data]);
+
+  const getDraftForIntegration = (integration: (typeof integrations)[number]): IntegrationDraft =>
+    draftsByIntegrationId[integration.integration_id] ?? {
+      enabled: integration.enabled,
+      templateId: integration.template_id
+    };
+
+  const setIntegrationDraft = (integration: (typeof integrations)[number], updater: (draft: IntegrationDraft) => IntegrationDraft) => {
+    setDraftsByIntegrationId(current => {
+      const currentDraft = current[integration.integration_id] ?? {
+        enabled: integration.enabled,
+        templateId: integration.template_id
+      };
+
+      return {
+        ...current,
+        [integration.integration_id]: updater(currentDraft)
+      };
+    });
+  };
+
+  const saveIntegrationDraft = (integration: (typeof integrations)[number], draft: IntegrationDraft) => {
+    updateIntegrationMutation.mutate({
+      integrationId: integration.integration_id,
+      enabled: draft.enabled,
+      templateId: draft.templateId.trim()
+    });
+  };
+
   return (
     <Panel
       title="Integrations"
-      subtitle="Create integrations and update template/enabled settings inline."
+      subtitle="Create integrations and manage template binding and enabled status."
       action={
-        <button type="button" onClick={() => setShowCreateForm(current => !current)}>
-          {showCreateForm ? 'Close new integration' : 'New integration'}
+        <button type="button" className="btn-tertiary-icon" onClick={() => setShowCreateForm(current => !current)}>
+          <AppIcon name="plus" />
+          New
         </button>
       }
     >
@@ -203,7 +238,9 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
                 <option value="">Select template</option>
                 {templateOptions.map(template => (
                   <option key={template.templateId} value={template.templateId}>
-                    {template.templateId} (v{template.version}, {template.provider})
+                    {template.displayName === template.templateId
+                      ? `${template.templateId} (v${template.version}, ${template.provider})`
+                      : `${template.displayName} (${template.templateId}) (v${template.version}, ${template.provider})`}
                   </option>
                 ))}
               </select>
@@ -252,7 +289,85 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
         Template disable/enable metadata is not currently exposed by the API, so template selectors list all known templates.
       </p>
 
-      <div className="table-shell">
+      <MobileEntityList
+        ariaLabel="Integration list"
+        items={integrations}
+        emptyState="No integrations available."
+        getItemKey={integration => integration.integration_id}
+        getSummary={integration => {
+          const draft = getDraftForIntegration(integration);
+          return {
+            title: integration.name,
+            subtitle: integration.integration_id,
+            statusTone: draft.enabled ? 'positive' : 'neutral'
+          };
+        }}
+        renderDetail={integration => {
+          const draft = getDraftForIntegration(integration);
+          const isDirty = draft.enabled !== integration.enabled || draft.templateId.trim() !== integration.template_id.trim();
+          return (
+            <div className="stack-form">
+              <label className="field">
+                <span>Integration ID</span>
+                <input value={integration.integration_id} readOnly />
+              </label>
+              <label className="field">
+                <span>Name</span>
+                <input value={integration.name} readOnly />
+              </label>
+              <label className="field">
+                <span>Provider</span>
+                <input value={integration.provider} readOnly />
+              </label>
+              <label className="field">
+                <span>Template</span>
+                <select
+                  value={draft.templateId}
+                  onChange={event => {
+                    const nextTemplateId = event.currentTarget.value;
+                    setIntegrationDraft(integration, current => ({
+                      ...current,
+                      templateId: nextTemplateId
+                    }));
+                  }}
+                >
+                  {templateOptions.map(template => (
+                    <option key={template.templateId} value={template.templateId}>
+                      {template.displayName === template.templateId
+                        ? `${template.templateId} (v${template.version}, ${template.provider})`
+                        : `${template.displayName} (${template.templateId}) (v${template.version}, ${template.provider})`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="field">
+                <span>Enabled</span>
+                <ToggleSwitch
+                  checked={draft.enabled}
+                  label={draft.enabled ? 'Enabled' : 'Disabled'}
+                  disabled={updateIntegrationMutation.isPending}
+                  onChange={nextEnabled =>
+                    setIntegrationDraft(integration, current => ({
+                      ...current,
+                      enabled: nextEnabled
+                    }))
+                  }
+                />
+              </div>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={!isDirty || updateIntegrationMutation.isPending}
+                onClick={() => saveIntegrationDraft(integration, draft)}
+              >
+                Save changes
+              </button>
+            </div>
+          );
+        }}
+      />
+
+      <div className="table-shell desktop-table-shell">
         <table className="data-table">
           <thead>
             <tr>
@@ -265,11 +380,8 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
             </tr>
           </thead>
           <tbody>
-            {(integrationsQuery.data?.integrations ?? []).map(integration => {
-              const draft = draftsByIntegrationId[integration.integration_id] ?? {
-                enabled: integration.enabled,
-                templateId: integration.template_id
-              };
+            {integrations.map(integration => {
+              const draft = getDraftForIntegration(integration);
               const isDirty =
                 draft.enabled !== integration.enabled || draft.templateId.trim() !== integration.template_id.trim();
 
@@ -283,25 +395,17 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
                       value={draft.templateId}
                       onChange={event => {
                         const nextTemplateId = event.currentTarget.value;
-                        setDraftsByIntegrationId(current => {
-                          const currentDraft = current[integration.integration_id] ?? {
-                            enabled: integration.enabled,
-                            templateId: integration.template_id
-                          };
-
-                          return {
-                            ...current,
-                            [integration.integration_id]: {
-                              ...currentDraft,
-                              templateId: nextTemplateId
-                            }
-                          };
-                        });
+                        setIntegrationDraft(integration, current => ({
+                          ...current,
+                          templateId: nextTemplateId
+                        }));
                       }}
                     >
                       {templateOptions.map(template => (
                         <option key={template.templateId} value={template.templateId}>
-                          {template.templateId} (v{template.version}, {template.provider})
+                          {template.displayName === template.templateId
+                            ? `${template.templateId} (v${template.version}, ${template.provider})`
+                            : `${template.displayName} (${template.templateId}) (v${template.version}, ${template.provider})`}
                         </option>
                       ))}
                     </select>
@@ -312,20 +416,10 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
                       label={draft.enabled ? 'Enabled' : 'Disabled'}
                       disabled={updateIntegrationMutation.isPending}
                       onChange={nextEnabled =>
-                        setDraftsByIntegrationId(current => {
-                          const currentDraft = current[integration.integration_id] ?? {
-                            enabled: integration.enabled,
-                            templateId: integration.template_id
-                          };
-
-                          return {
-                            ...current,
-                            [integration.integration_id]: {
-                              ...currentDraft,
-                              enabled: nextEnabled
-                            }
-                          };
-                        })
+                        setIntegrationDraft(integration, current => ({
+                          ...current,
+                          enabled: nextEnabled
+                        }))
                       }
                     />
                   </td>
@@ -334,13 +428,7 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
                       type="button"
                       className="btn-secondary"
                       disabled={!isDirty || updateIntegrationMutation.isPending}
-                      onClick={() =>
-                        updateIntegrationMutation.mutate({
-                          integrationId: integration.integration_id,
-                          enabled: draft.enabled,
-                          templateId: draft.templateId.trim()
-                        })
-                      }
+                      onClick={() => saveIntegrationDraft(integration, draft)}
                     >
                       Save
                     </button>

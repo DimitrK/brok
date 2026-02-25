@@ -3,7 +3,9 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 
 import {BrokerAdminApiClient} from '../../api/client';
 import {ApiClientError} from '../../api/errors';
+import {AppIcon} from '../../components/AppIcon';
 import {ErrorNotice} from '../../components/ErrorNotice';
+import {MobileEntityList} from '../../components/MobileEntityList';
 import {Panel} from '../../components/Panel';
 import {ToggleSwitch} from '../../components/ToggleSwitch';
 import {useAdminStore} from '../../store/adminStore';
@@ -219,13 +221,20 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
     );
   };
 
+  const workloads = workloadsQuery.data?.workloads ?? [];
+
+  const updateWorkloadEnabled = (input: {workloadId: string; enabled: boolean; ipAllowlistValue?: string[]}) => {
+    updateWorkloadMutation.mutate(input);
+  };
+
   return (
     <Panel
       title="Workloads"
       subtitle="Manage tenant workloads, issue enrollment tokens, and submit workload CSRs."
       action={
-        <button type="button" onClick={() => setShowCreateForm(current => !current)}>
-          {showCreateForm ? 'Close new workload' : 'New workload'}
+        <button type="button" className="btn-tertiary-icon" onClick={() => setShowCreateForm(current => !current)}>
+          <AppIcon name="plus" />
+          New
         </button>
       }
     >
@@ -280,9 +289,65 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
 
       <ErrorNotice error={workloadsQuery.error ?? createWorkloadMutation.error ?? updateWorkloadMutation.error} />
 
-      <p className="helper-text">Click any workload row to target it in the enrollment section below.</p>
+      <p className="helper-text">
+        Select a workload to target it in the enrollment section below. On mobile, tap a workload card to open details.
+      </p>
 
-      <div className="table-shell">
+      <MobileEntityList
+        ariaLabel="Workload list"
+        items={workloads}
+        emptyState="No workloads available."
+        getItemKey={workload => workload.workload_id}
+        getSummary={workload => ({
+          title: workload.name,
+          subtitle: workload.workload_id,
+          statusTone: workload.enabled ? 'positive' : 'neutral'
+        })}
+        renderDetail={(workload, controls) => (
+          <div className="stack-form">
+            <p className="helper-text">Manage status and use this workload for enrollment.</p>
+            <label className="field">
+              <span>Workload ID</span>
+              <input value={workload.workload_id} readOnly />
+            </label>
+            <label className="field">
+              <span>Name</span>
+              <input value={workload.name} readOnly />
+            </label>
+            <label className="field">
+              <span>SAN URI</span>
+              <input value={workload.mtls_san_uri} readOnly />
+            </label>
+            <div className="field">
+              <span>Enabled</span>
+              <ToggleSwitch
+                checked={workload.enabled}
+                label={workload.enabled ? 'Enabled' : 'Disabled'}
+                disabled={updateWorkloadMutation.isPending}
+                onChange={nextValue =>
+                  updateWorkloadEnabled({
+                    workloadId: workload.workload_id,
+                    enabled: nextValue,
+                    ...(workload.ip_allowlist ? {ipAllowlistValue: workload.ip_allowlist} : {})
+                  })
+                }
+              />
+            </div>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                selectWorkloadForEnrollment(workload.workload_id);
+                controls.close();
+              }}
+            >
+              Use for enrollment
+            </button>
+          </div>
+        )}
+      />
+
+      <div className="table-shell desktop-table-shell">
         <table className="data-table">
           <thead>
             <tr>
@@ -293,7 +358,7 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
             </tr>
           </thead>
           <tbody>
-            {(workloadsQuery.data?.workloads ?? []).map(workload => (
+            {workloads.map(workload => (
               <tr
                 key={workload.workload_id}
                 className={`interactive-row${enrollWorkloadId === workload.workload_id ? ' selected-row' : ''}`}
@@ -307,7 +372,7 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
                     label={workload.enabled ? 'Enabled' : 'Disabled'}
                     disabled={updateWorkloadMutation.isPending}
                     onChange={nextValue =>
-                      updateWorkloadMutation.mutate({
+                      updateWorkloadEnabled({
                         workloadId: workload.workload_id,
                         enabled: nextValue,
                         ...(workload.ip_allowlist ? {ipAllowlistValue: workload.ip_allowlist} : {})

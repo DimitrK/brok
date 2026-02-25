@@ -1,9 +1,11 @@
-import React, {useState} from 'react';
+import React, {useMemo, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {OpenApiPolicyRuleSchema} from '@broker-interceptor/schemas';
 
 import {BrokerAdminApiClient} from '../../api/client';
+import {AppIcon} from '../../components/AppIcon';
 import {ErrorNotice} from '../../components/ErrorNotice';
+import {MobileEntityList} from '../../components/MobileEntityList';
 import {Panel} from '../../components/Panel';
 import {useAdminStore} from '../../store/adminStore';
 
@@ -146,6 +148,23 @@ export const PoliciesPanel = ({api}: PoliciesPanelProps) => {
   });
 
   const createPolicyDisabled = !hasRequiredPolicyScope || !hasValidRateLimitFields || createPolicyMutation.isPending;
+  const policies = policiesQuery.data?.policies ?? [];
+  const tenantNameById = useMemo(
+    () => new Map((tenantsQuery.data?.tenants ?? []).map(tenant => [tenant.tenant_id, tenant.name])),
+    [tenantsQuery.data?.tenants]
+  );
+  const integrationNameById = useMemo(
+    () => new Map((integrationsQuery.data?.integrations ?? []).map(integration => [integration.integration_id, integration.name])),
+    [integrationsQuery.data?.integrations]
+  );
+
+  const resolveTenantLabel = (tenantId: string) => tenantNameById.get(tenantId) ?? tenantId;
+  const resolveIntegrationLabel = (scopeTenantId: string, scopeIntegrationId: string) => {
+    if (scopeTenantId !== resolvedTenantId) {
+      return scopeIntegrationId;
+    }
+    return integrationNameById.get(scopeIntegrationId) ?? scopeIntegrationId;
+  };
 
   const applyPreset = (preset: PolicyPreset) => {
     setRuleType(preset.ruleType);
@@ -160,8 +179,9 @@ export const PoliciesPanel = ({api}: PoliciesPanelProps) => {
       title="Policies"
       subtitle="Inspect active policy rules and create new rules on demand."
       action={
-        <button type="button" onClick={() => setShowCreateForm(current => !current)}>
-          {showCreateForm ? 'Close new policy' : 'New policy'}
+        <button type="button" className="btn-tertiary-icon" onClick={() => setShowCreateForm(current => !current)}>
+          <AppIcon name="plus" />
+          New
         </button>
       }
     >
@@ -327,13 +347,83 @@ export const PoliciesPanel = ({api}: PoliciesPanelProps) => {
         }
       />
 
-      <div className="table-shell">
+      <MobileEntityList
+        ariaLabel="Policy list"
+        items={policies}
+        emptyState="No policies available."
+        getItemKey={policy =>
+          typeof policy.policy_id === 'string'
+            ? policy.policy_id
+            : `${policy.scope.tenant_id}:${policy.scope.integration_id}:${policy.scope.action_group}:${policy.scope.method}:${policy.scope.host}`
+        }
+        getSummary={policy => ({
+          title: typeof policy.policy_id === 'string' ? policy.policy_id : '(generated)',
+          subtitle: `${policy.rule_type} • ${policy.scope.action_group} • ${policy.scope.method}`,
+          meta: [
+            {
+              label: 'Integration',
+              value: (
+                <span title={policy.scope.integration_id}>
+                  {resolveIntegrationLabel(policy.scope.tenant_id, policy.scope.integration_id)}
+                </span>
+              )
+            }
+          ]
+        })}
+        renderDetail={policy => {
+          const policyId = typeof policy.policy_id === 'string' ? policy.policy_id : undefined;
+          return (
+            <div className="stack-form">
+              <label className="field">
+                <span>Policy ID</span>
+                <input value={policyId ?? '(generated)'} readOnly />
+              </label>
+              <label className="field">
+                <span>Rule type</span>
+                <input value={policy.rule_type} readOnly />
+              </label>
+              <label className="field">
+                <span>Tenant</span>
+                <input value={resolveTenantLabel(policy.scope.tenant_id)} title={policy.scope.tenant_id} readOnly />
+              </label>
+              <label className="field">
+                <span>Integration</span>
+                <input
+                  value={resolveIntegrationLabel(policy.scope.tenant_id, policy.scope.integration_id)}
+                  title={policy.scope.integration_id}
+                  readOnly
+                />
+              </label>
+              <label className="field">
+                <span>Action group</span>
+                <input value={policy.scope.action_group} readOnly />
+              </label>
+              <label className="field">
+                <span>Method</span>
+                <input value={policy.scope.method} readOnly />
+              </label>
+              <label className="field">
+                <span>Host</span>
+                <input value={policy.scope.host} readOnly />
+              </label>
+              {policyId ? (
+                <button className="btn-danger" type="button" onClick={() => deletePolicyMutation.mutate(policyId)}>
+                  Delete policy
+                </button>
+              ) : (
+                <p className="helper-text">Deletion requires a policy_id and this entry does not expose one.</p>
+              )}
+            </div>
+          );
+        }}
+      />
+
+      <div className="table-shell desktop-table-shell">
         <table className="data-table">
           <thead>
             <tr>
               <th>ID</th>
               <th>Rule Type</th>
-              <th>Tenant</th>
               <th>Integration</th>
               <th>Action Group</th>
               <th>Method</th>
@@ -342,14 +432,15 @@ export const PoliciesPanel = ({api}: PoliciesPanelProps) => {
             </tr>
           </thead>
           <tbody>
-            {(policiesQuery.data?.policies ?? []).map(policy => {
+            {policies.map(policy => {
               const policyId = typeof policy.policy_id === 'string' ? policy.policy_id : undefined;
               return (
                 <tr key={policyId ?? `${policy.scope.tenant_id}:${policy.scope.integration_id}:${policy.scope.action_group}`}>
                   <td>{policyId ?? '(generated)'}</td>
                   <td>{policy.rule_type}</td>
-                  <td>{policy.scope.tenant_id}</td>
-                  <td>{policy.scope.integration_id}</td>
+                  <td title={policy.scope.integration_id}>
+                    {resolveIntegrationLabel(policy.scope.tenant_id, policy.scope.integration_id)}
+                  </td>
                   <td>{policy.scope.action_group}</td>
                   <td>{policy.scope.method}</td>
                   <td>{policy.scope.host}</td>

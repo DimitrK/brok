@@ -4,6 +4,7 @@ import {Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate} from
 
 import {BrokerAdminApiClient} from './api/client';
 import {ApiClientError} from './api/errors';
+import {AppIcon, type AppIconName} from './components/AppIcon';
 import {ErrorNotice} from './components/ErrorNotice';
 import {appConfig} from './config';
 import {AdminLoginPage} from './features/auth/AdminLoginPage';
@@ -23,53 +24,68 @@ type SectionRoute = {
   path: string;
   label: string;
   description: string;
+  icon: AppIconName;
+};
+
+type TenantOption = {
+  tenantId: string;
+  name: string;
 };
 
 const sectionRoutes: SectionRoute[] = [
   {
     path: 'tenants',
     label: 'Tenants',
-    description: 'Create tenants and control active admin scope.'
+    description: 'Create tenants and control active admin scope.',
+    icon: 'tenants'
   },
   {
     path: 'users',
     label: 'User Management',
-    description: 'Manage admin users, roles, and access requests.'
+    description: 'Manage admin users, roles, and access requests.',
+    icon: 'users'
   },
   {
     path: 'workloads',
     label: 'Workloads',
-    description: 'Provision workloads and complete certificate enrollment.'
+    description: 'Provision workloads and complete certificate enrollment.',
+    icon: 'workloads'
   },
   {
     path: 'templates',
     label: 'Templates',
-    description: 'Publish canonical outbound access contracts.'
+    description: 'Publish canonical outbound access contracts.',
+    icon: 'templates'
   },
   {
     path: 'integrations',
     label: 'Integrations',
-    description: 'Store provider secrets and bind templates safely.'
+    description: 'Store provider secrets and bind templates safely.',
+    icon: 'integrations'
   },
   {
     path: 'policies',
     label: 'Policies',
-    description: 'Define enforceable allow, deny, approval, and rate rules.'
+    description: 'Define enforceable allow, deny, approval, and rate rules.',
+    icon: 'policies'
   },
   {
     path: 'approvals',
     label: 'Approvals',
-    description: 'Review pending high-risk execution requests.'
+    description: 'Review pending high-risk execution requests.',
+    icon: 'approvals'
   },
   {
     path: 'audit',
     label: 'Audit',
-    description: 'Query immutable decision and execution events.'
+    description: 'Query immutable decision and execution events.',
+    icon: 'audit'
   },
   {
     path: 'manifest',
     label: 'Manifest',
-    description: 'Inspect signing material used for broker manifests.'
+    description: 'Inspect signing material used for broker manifests.',
+    icon: 'manifest'
   }
 ];
 
@@ -122,7 +138,8 @@ type AdminConsoleLayoutProps = {
   onDraftAuthTokenChange: (value: string) => void;
   onApplyConnection: () => void;
   onSignOut: () => Promise<void>;
-  selectedTenantName?: string;
+  tenantOptions: TenantOption[];
+  onTenantChange: (tenantId: string | undefined) => void;
   selectedTenantId?: string;
   healthStatus?: string;
   healthError: unknown;
@@ -139,7 +156,8 @@ const AdminConsoleLayout = ({
   onDraftAuthTokenChange,
   onApplyConnection,
   onSignOut,
-  selectedTenantName,
+  tenantOptions,
+  onTenantChange,
   selectedTenantId,
   healthStatus,
   healthError,
@@ -150,6 +168,28 @@ const AdminConsoleLayout = ({
   const location = useLocation();
   const activeSection = findActiveSection(location.pathname);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const renderTenantSelector = (className?: string) => (
+    <label className={className ? `tenant-selector ${className}` : 'tenant-selector'}>
+      <span>Active tenant</span>
+      <div className="tenant-selector-control">
+        <select
+          value={selectedTenantId ?? ''}
+          title={selectedTenantId ? `Tenant ID: ${selectedTenantId}` : undefined}
+          onChange={event => onTenantChange(event.currentTarget.value || undefined)}
+        >
+          <option value="">{selectedTenantId ? 'No tenant selected' : 'Select tenant'}</option>
+          {tenantOptions.map(tenant => (
+            <option key={tenant.tenantId} value={tenant.tenantId}>
+              {tenant.name}
+            </option>
+          ))}
+        </select>
+        <span className="tenant-selector-caret" aria-hidden>
+          ▾
+        </span>
+      </div>
+    </label>
+  );
 
   return (
     <div className="console-layout">
@@ -166,6 +206,7 @@ const AdminConsoleLayout = ({
         <div className="sidebar-mobile-header">
           <p className="eyebrow">Navigation</p>
           <button type="button" className="btn-secondary sidebar-close" onClick={() => setMobileNavOpen(false)}>
+            <AppIcon name="close" />
             Close
           </button>
         </div>
@@ -191,7 +232,10 @@ const AdminConsoleLayout = ({
               onClick={() => setMobileNavOpen(false)}
             >
               <div className="side-nav-title">
-                <strong>{section.label}</strong>
+                <strong>
+                  <AppIcon name={section.icon} className="side-nav-icon" />
+                  {section.label}
+                </strong>
                 {section.path === 'users' && pendingAccessRequestsCount > 0 ? (
                   <span className="side-nav-badge" aria-label={`${pendingAccessRequestsCount} pending access requests`}>
                     {pendingAccessRequestsCount}
@@ -251,14 +295,18 @@ const AdminConsoleLayout = ({
       </aside>
 
       <div className="console-main">
-        <button
-          type="button"
-          className="btn-secondary mobile-menu-toggle"
-          aria-label="Open navigation menu"
-          onClick={() => setMobileNavOpen(true)}
-        >
-          Menu
-        </button>
+        <div className="workspace-toprow">
+          <button
+            type="button"
+            className="btn-secondary mobile-menu-toggle"
+            aria-label="Open navigation menu"
+            onClick={() => setMobileNavOpen(true)}
+          >
+            <AppIcon name="menu" />
+            Menu
+          </button>
+          {renderTenantSelector('tenant-selector-topbar')}
+        </div>
 
         <header className="workspace-header">
           <div>
@@ -267,15 +315,10 @@ const AdminConsoleLayout = ({
             <p>{activeSection.description}</p>
           </div>
           <div className="workspace-meta">
-            <div
-              className={`tenant-chip${selectedTenantId ? '' : ' muted'}`}
-              title={selectedTenantId ? `Tenant ID: ${selectedTenantId}` : undefined}
-            >
-              {selectedTenantId ? `Active tenant: ${selectedTenantName ?? selectedTenantId}` : 'No tenant selected'}
-            </div>
             <p className={`status-pill compact${healthError ? ' danger' : ''}`}>
               Health status: {healthStatus ?? 'unknown'}
             </p>
+            {renderTenantSelector('tenant-selector-desktop')}
           </div>
         </header>
 
@@ -460,9 +503,10 @@ export const App = () => {
   const adminIdentityLabel =
     adminPrincipal?.name?.trim() || adminPrincipal?.email || adminPrincipal?.subject || 'Unknown admin';
   const adminIdentityRoles = adminPrincipal?.roles?.join(', ') || 'roles unavailable';
-  const selectedTenantName = selectedTenantId
-    ? tenantsQuery.data?.tenants.find(tenant => tenant.tenant_id === selectedTenantId)?.name
-    : undefined;
+  const tenantOptions: TenantOption[] = (tenantsQuery.data?.tenants ?? []).map(tenant => ({
+    tenantId: tenant.tenant_id,
+    name: tenant.name
+  }));
 
   return (
     <Routes>
@@ -481,7 +525,8 @@ export const App = () => {
               onDraftAuthTokenChange={setDraftAuthToken}
               onApplyConnection={applyConnection}
               onSignOut={signOut}
-              selectedTenantName={selectedTenantName}
+              tenantOptions={tenantOptions}
+              onTenantChange={tenantId => setSelectedTenantId(tenantId)}
               selectedTenantId={selectedTenantId}
               healthStatus={healthQuery.data?.status}
               healthError={healthQuery.error}

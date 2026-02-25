@@ -5,7 +5,9 @@ import {OpenApiPolicyConstraintsSchema, type OpenApiPolicyConstraints} from '@br
 import {BrokerAdminApiClient} from '../../api/client';
 import {approvalStatusFilterSchema, type ApprovalStatusFilter} from '../../api/querySchemas';
 import {ErrorNotice} from '../../components/ErrorNotice';
+import {MobileEntityList} from '../../components/MobileEntityList';
 import {Panel} from '../../components/Panel';
+import {useAdminStore} from '../../store/adminStore';
 
 const toCsvList = (value: string) =>
   value
@@ -48,6 +50,7 @@ type ApprovalsPanelProps = {
 
 export const ApprovalsPanel = ({api}: ApprovalsPanelProps) => {
   const queryClient = useQueryClient();
+  const selectedTenantId = useAdminStore(state => state.selectedTenantId);
 
   const [status, setStatus] = useState<ApprovalStatusFilter>('pending');
   const [mode, setMode] = useState<'once' | 'rule'>('once');
@@ -63,6 +66,11 @@ export const ApprovalsPanel = ({api}: ApprovalsPanelProps) => {
         status: approvalStatusFilterSchema.parse(status),
         signal
       })
+  });
+  const integrationsQuery = useQuery({
+    queryKey: ['integrations', selectedTenantId],
+    enabled: Boolean(selectedTenantId),
+    queryFn: ({signal}) => api.listIntegrations({tenantId: selectedTenantId ?? '', signal})
   });
 
   const approveMutation = useMutation({
@@ -111,10 +119,16 @@ export const ApprovalsPanel = ({api}: ApprovalsPanelProps) => {
   });
 
   const approvalsCount = useMemo(() => approvalsQuery.data?.approvals.length ?? 0, [approvalsQuery.data]);
+  const approvals = approvalsQuery.data?.approvals ?? [];
+  const integrationNameById = useMemo(
+    () => new Map((integrationsQuery.data?.integrations ?? []).map(integration => [integration.integration_id, integration.name])),
+    [integrationsQuery.data?.integrations]
+  );
+  const resolveIntegrationLabel = (integrationId: string) => integrationNameById.get(integrationId) ?? integrationId;
 
   return (
     <Panel title="Approvals" subtitle="Review pending requests and decide approve/deny actions with explicit scope.">
-      <form className="stack-form" onSubmit={event => event.preventDefault()}>
+      <form className="stack-form mobile-filter-form" onSubmit={event => event.preventDefault()}>
         <div className="inline-form">
           <label className="field">
             <span>Status</span>
@@ -175,54 +189,121 @@ export const ApprovalsPanel = ({api}: ApprovalsPanelProps) => {
         </p>
       </form>
 
-      <ErrorNotice error={approvalsQuery.error ?? approveMutation.error ?? denyMutation.error} />
+      <ErrorNotice error={approvalsQuery.error ?? integrationsQuery.error ?? approveMutation.error ?? denyMutation.error} />
 
       <p className="muted">Approvals in current filter: {approvalsCount}</p>
 
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Status</th>
-            <th>Integration</th>
-            <th>Action group</th>
-            <th>Risk tier</th>
-            <th>Destination</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(approvalsQuery.data?.approvals ?? []).map(approval => (
-            <tr key={approval.approval_id}>
-              <td>{approval.approval_id}</td>
-              <td>{approval.status}</td>
-              <td>{approval.summary.integration_id}</td>
-              <td>{approval.summary.action_group}</td>
-              <td>{approval.summary.risk_tier}</td>
-              <td>{approval.summary.destination_host}</td>
-              <td>
-                <div className="row-actions">
-                  <button
-                    type="button"
-                    disabled={approval.status !== 'pending' || approveMutation.isPending}
-                    onClick={() => approveMutation.mutate(approval.approval_id)}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    className="btn-danger"
-                    type="button"
-                    disabled={approval.status !== 'pending' || denyMutation.isPending}
-                    onClick={() => denyMutation.mutate(approval.approval_id)}
-                  >
-                    Deny
-                  </button>
-                </div>
-              </td>
+      <MobileEntityList
+        ariaLabel="Approval list"
+        items={approvals}
+        emptyState="No approvals available."
+        getItemKey={approval => approval.approval_id}
+        getSummary={approval => ({
+          title: approval.approval_id,
+          subtitle: `${approval.status} • ${approval.summary.action_group}`,
+          statusTone: approval.status === 'approved' ? 'positive' : 'neutral',
+          meta: [
+            {
+              label: 'Integration',
+              value: <span title={approval.summary.integration_id}>{resolveIntegrationLabel(approval.summary.integration_id)}</span>
+            },
+            {label: 'Risk tier', value: approval.summary.risk_tier},
+            {label: 'Destination', value: approval.summary.destination_host}
+          ]
+        })}
+        renderDetail={approval => (
+          <div className="stack-form">
+            <label className="field">
+              <span>Approval ID</span>
+              <input value={approval.approval_id} readOnly />
+            </label>
+            <label className="field">
+              <span>Status</span>
+              <input value={approval.status} readOnly />
+            </label>
+            <label className="field">
+              <span>Integration</span>
+              <input value={resolveIntegrationLabel(approval.summary.integration_id)} title={approval.summary.integration_id} readOnly />
+            </label>
+            <label className="field">
+              <span>Action group</span>
+              <input value={approval.summary.action_group} readOnly />
+            </label>
+            <label className="field">
+              <span>Risk tier</span>
+              <input value={approval.summary.risk_tier} readOnly />
+            </label>
+            <label className="field">
+              <span>Destination</span>
+              <input value={approval.summary.destination_host} readOnly />
+            </label>
+            <div className="row-actions">
+              <button
+                type="button"
+                disabled={approval.status !== 'pending' || approveMutation.isPending}
+                onClick={() => approveMutation.mutate(approval.approval_id)}
+              >
+                Approve
+              </button>
+              <button
+                className="btn-danger"
+                type="button"
+                disabled={approval.status !== 'pending' || denyMutation.isPending}
+                onClick={() => denyMutation.mutate(approval.approval_id)}
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        )}
+      />
+
+      <div className="table-shell desktop-table-shell">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Status</th>
+              <th>Integration</th>
+              <th>Action group</th>
+              <th>Risk tier</th>
+              <th>Destination</th>
+              <th>Actions</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {approvals.map(approval => (
+              <tr key={approval.approval_id}>
+                <td>{approval.approval_id}</td>
+                <td>{approval.status}</td>
+                <td title={approval.summary.integration_id}>{resolveIntegrationLabel(approval.summary.integration_id)}</td>
+                <td>{approval.summary.action_group}</td>
+                <td>{approval.summary.risk_tier}</td>
+                <td>{approval.summary.destination_host}</td>
+                <td>
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      disabled={approval.status !== 'pending' || approveMutation.isPending}
+                      onClick={() => approveMutation.mutate(approval.approval_id)}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className="btn-danger"
+                      type="button"
+                      disabled={approval.status !== 'pending' || denyMutation.isPending}
+                      onClick={() => denyMutation.mutate(approval.approval_id)}
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Panel>
   );
 };

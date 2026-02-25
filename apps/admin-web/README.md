@@ -32,6 +32,8 @@ Template editor includes template-level and per-path-group cURL request checks f
 Audit events list now uses a reusable `VirtualizedInfiniteTable` (12-row viewport, virtualized rows, infinite load on
 scroll, end-of-list indicator) plus reusable cursor-page fetch composition (`useCursorInfiniteQuery`) backed by
 `/v1/audit/events?limit=&cursor=`.
+Primary table-based management panels also use a reusable `MobileEntityList` pattern on small screens, where each row is
+presented as a tap target that opens a focused detail view with entry-specific actions/forms.
 
 ## Routing
 

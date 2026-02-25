@@ -38,6 +38,26 @@ interface OpenAIMessage {
   content: string;
 }
 
+interface OpenAIEmbeddingRequest {
+  model: string;
+  input: string;
+  encoding_format?: string;
+}
+
+interface OpenAIEmbeddingResponse {
+  data: {
+    object: string;
+    embedding: number[];
+    index: number;
+  };
+  object: string;
+  model: string;
+  usage: {
+    prompt_tokens: number;
+    total_tokens: number;
+  };
+}
+
 interface OpenAIRequest {
   model: string;
   messages: OpenAIMessage[];
@@ -108,6 +128,36 @@ async function callOpenAI(message: string): Promise<string> {
   return data.choices[0].message.content;
 }
 
+async function callOpenAIEmbedding(message: string): Promise<number[]> {
+  const requestBody: OpenAIEmbeddingRequest = {
+    model: 'gpt-4o-mini', // Cheapest capable model
+    encoding_format: 'float',
+    input: message
+  };
+
+  const response = await fetch('https://api.openai.com/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`OpenAI API error: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+
+  const data = (await response.json()) as OpenAIEmbeddingResponse;
+
+  if (!data.data || data.data.embedding.length === 0) {
+    throw new Error('OpenAI returned no embeddings');
+  }
+
+  return data.data.embedding;
+}
+
 /**
  * Parse JSON body from incoming request.
  */
@@ -149,6 +199,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (method === 'GET' && url === '/health') {
     sendJSON(res, 200, {status: 'ok'});
     return;
+  }
+
+  if (method === 'POST' && url === '/embed') {
+    const body = await parseBody(req);
+    const response = await callOpenAIEmbedding(body.message);
+    sendJSON(res, 200, {response});
   }
 
   // Chat endpoint
