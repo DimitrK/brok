@@ -1,94 +1,289 @@
 ---
 name: codespace-feedback-collaboration
-description: Coordinate cross-team feedback workflows for broker-interceptor code spaces. Use when requesting dependencies or clarifications from other apps/packages, responding to feedback requests received in your code space, tracking pending feedback in README, following up on unresolved responses, and cleaning up resolved feedback artifacts.
+description: Enforce MCP-based cross-code-space collaboration. Use when work spans apps/packages, when a needed change is outside your code space, when resolving agent identity for MCP operations, when running startup or liveness queue checks, and when routing, reviewing, or updating cross-team issues.
 ---
 
 # Codespace Feedback Collaboration
 
-Follow this workflow whenever a task spans multiple code spaces.
+Apply this workflow whenever work crosses code-space boundaries.
 
-Rule #1. Your readme file is the point of reference for other teams as well. Whenever you change part of the logic in your codespace keep it update it.
-Describe what your app or package is doing, API endpoints or interfaces it exposes and how could someone use it. If there are depenedencies, env vars or requirements please include these too.
+## MCP Tools
 
-## Enforce Code Space Boundaries
+### Issue Tools
 
-- Treat each `apps/<name>` or `packages/<name>` as a separate code space.
-- Edit implementation files only inside your assigned code space.
-- Write outside your code space only as Markdown in `external_feedback` folders.
-- Keep every request and response scoped to the current implementation task.
+- `issues.create` - Create a new issue
+- `issues.list` - List issues with filters
+- `issues.get` - Get a single issue
+- `issues.update_status` - Change issue status
+- `issues.change_assignee` - Reassign an issue
+- `issues.set_blocked_by` - Set blocker issue dependencies
+- `issues.increase_priority` - Raise issue priority by one level (up to `P0`)
+- `issues.add_reviewers` - Add reviewers
+- `issues.submit_review` - Submit review outcome
+- `issues.my_queue` - Get agent's actionable queue
 
-## Run Feedback Loop In This Order
 
-1. Process incoming feedback requests in your code space.
-2. Check responses for your own pending feedback requests.
-3. Create new outgoing requests for missing dependencies or clarifications.
-4. Update your own codespace `README.md` status and clean up resolved feedback artifacts.
+## Usage Examples
 
-## Process Incoming Requests In Your Code Space
+### Create an Issue
 
-1. Scan `<your_codespace>/external_feedback/broker-interceptor/<requester_codespace>/*.md`.
-2. Read request files that do not end with `_response.md`.
-3. Decide whether to implement, clarify, or reject with rationale. If there is already a `_response.md` file for the request, skip providing feedback response again.
-4. Create a response file next to the request using the same basename plus `_response.md`.
-5. If implementation changed, update your code and `README.md` accordingly.
+```json
+{
+  "name": "issues.create",
+  "arguments": {
+    "actor_id": "agent-1",
+    "title": "Implement login feature",
+    "body_markdown": "## Summary\nAdd authentication...",
+    "assignee_agent_id": "agent-2",
+    "blocked_by": ["#12", "6b95e9f5-4f08-4ec2-b126-4a39f2a2f6f2"]
+  }
+}
+```
 
-Use this response filename rule:
+`issues.create` always starts with status `todo`.
+`assignee_agent_id` is required.
+The creator is automatically included in the reviewers list.
+`assigned_by_agent_id` is managed internally and is not accepted as input.
+`blocked_by` MAY be provided on create as a single issue ref or an array of issue refs.
 
-- Request file: `missing_methods.md`
-- Response file: `missing_methods_response.md`
+### Set blockers for an existing issue
 
-## Request Changes Or Clarifications From Another Code Space
+```json
+{
+  "name": "issues.set_blocked_by",
+  "arguments": {
+    "issue_ref": "#42",
+    "actor_id": "agent-2",
+    "blocked_by": "#91"
+  }
+}
+```
 
-1. Open target code space: `apps/<target>` or `packages/<target>`.
-2. Create target folder if missing: `external_feedback/broker-interceptor/<your_codespace_name>/`.
-3. Create a request file named for the reason, such as `missing_methods.md`.
-4. Write:
-- What is missing.
-- Why it is needed now.
-- How you will use it.
-- Expected method signatures and behavior.
-5. Mark dependent local methods as `*_INCOMPLETE` in your code space.
-6. Add or update `README.md` section `Pending feedback` with:
-- Target code space.
-- Request filename.
-- Waiting reason.
-- Related `*_INCOMPLETE` methods.
+Use this when work has started and the issue becomes blocked by newly created cross-space work.
 
-When missing methods drive the request, always use `missing_methods.md`.
+### List Issues
 
-## Check Responses To Your Pending Requests
+```json
+{
+  "name": "issues.list",
+  "arguments": {
+    "filters": {
+      "open_only": true
+    },
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
 
-1. Read `README.md` section `Pending feedback`.
-2. For each entry, check target path:
-`<target_codespace>/external_feedback/broker-interceptor/<your_codespace_name>/<request_name>_response.md`.
-3. Apply received guidance to code, tests, and interfaces.
-4. If follow-up is needed, run the follow-up procedure.
-5. If resolved, run cleanup and remove waiting entry from `README.md`.
+### Update Status
 
-## Follow Up On Unresolved Feedback
+```json
+{
+  "name": "issues.update_status",
+  "arguments": {
+    "issue_ref": "#1",
+    "actor_id": "agent-2",
+    "new_status": "in_progress"
+  }
+}
+```
 
-1. Archive prior request and response files in the same feedback folder under a new archive subfolder.
-2. If filename collision exists in archive, append `_1`, `_2`, `_3`, and continue incrementing.
-3. Create a new request file with the original filename.
-4. Include:
-- Short summary of previous request.
-- Summary of received response.
-- New follow-up questions or constraints.
-5. Keep `README.md` pending entry updated to the latest request status.
+### Get My Queue
 
-## Clean Up Resolved Feedback
+```json
+{
+  "name": "issues.my_queue",
+  "arguments": {
+    "agent_id": "agent-2",
+    "include_assigned_open": true,
+    "include_review_required": true
+  }
+}
+```
 
-1. Remove resolved item from `README.md` section `Pending feedback`.
-2. Move to archive obsolete request files from the target code space `external_feedback` folder.
-3. Remove `*_INCOMPLETE` suffixes from methods that are now complete.
-4. Keep response files only when audit history is explicitly required.
+## Enforce Runtime Boundaries
 
-## Required Output Checklist For Agent Responses
+- Edit files only inside the assigned code space.
+- Verify every target path is inside the assigned boundary before writing.
+- Never create, modify, rename, or delete files outside the assigned code space.
+- Route all cross-space requests through MCP issues instead of direct edits.
 
-When finishing a task that used this skill, report:
+## Resolve Agent Identity First (Mandatory)
 
-- Which code spaces were contacted.
-- Which code spaces you responded to.
-- Which request files were created or answered.
-- Which pending items remain in `README.md`.
-- Which `*_INCOMPLETE` methods remain and why.
+1. Resolve identity before any MCP queue read or mutation.
+2. Use workspace assignment identifier, or package `name` from `package.json` in monorepos.
+3. If no workspace identity exists, create `.identity` in the current code space and store project role as plain text.
+4. Reuse the resolved value unchanged for the full run.
+5. Use the value as:
+- `agent_id` for queue tools
+- `actor_id` for mutation tools
+
+## Fast MCP Access Path (Mandatory, Timeboxed)
+
+Run this before reading MCP server docs or source code.
+Timebox total discovery to 2 minutes.
+
+1. Use the known issue tracker server first:
+- `codex mcp get issue_tracker_mcp`
+2. If that server is not configured, immediately run fallback discovery:
+- `codex mcp list`
+- `codex mcp get <name-from-list>`
+3. As soon as the issue server is identified, run a minimal end-to-end smoke call sequence:
+- `issues.my_queue` with resolved `agent_id`
+4. Only inspect MCP server code/docs if and only if tool calls fail due to unknown tool names or schema errors.
+5. Do not deep-read codebases to confirm behavior that a direct tool call can confirm faster.
+
+## Run Mandatory MCP Queue Checks (After Fast MCP Access Path)
+
+### Startup Check (Every Run)
+
+Run before implementation work:
+
+1. Fetch assigned open issues and review-required issues for the resolved `agent_id`.
+2. Treat open issues as statuses: `todo`, `in_progress`, `for_acceptance`.
+3. Prioritize:
+- Review-required items blocking other teams
+- Assigned items already `in_progress`
+- Newly assigned open issues
+- Local untracked work only when queue is empty
+4. Report identity and actionable summary in collaboration updates.
+5. If any of your issues is marked as blocked_by use critical thinking. 
+- In case you don't see how it affects other teams, remove the block and proceed on implementation.
+- In case you are indeed blocked but the issue is in `for_acceptance` stage, perform a code review and the acceptance yourself (even if not the assignee).
+  - if it passes acceptance proceed with the implementation of your own issue.
+  - otherwise enrich the description of the failed acceptance ticket with your findings, return it to `todo`.
+
+### Liveness Or Feedback Sync Check
+
+Run on liveness probes or explicit health/sync requests:
+
+1. Re-check assigned open issues and review-required issues.
+2. Summarize waiting dependencies and blockers caused by external teams.
+
+
+## Execute Cross-Space Request Protocol
+
+When needed work is outside the assigned code space:
+
+1. Stop any direct external edit attempt.
+2. Identify owner team/code space and exact requested scope.
+3. Find existing issue tracking the dependency; update it if found.
+4. Otherwise create a new issue with:
+- `actor_id`
+- `title`
+- `body_markdown`
+- `assignee_agent_id` when known
+5. Mark local work as blocked or partially blocked truthfully.
+6. Monitor the dependency through startup and liveness checks.
+
+## Use Required MCP Operations By Situation
+
+- Startup queue: `issues.my_queue` or `issues.list` with filters for assigned open plus review-required.
+- External dependency: `issues.create` or `issues.list` followed by update operations.
+- Work progression: `issues.update_status`.
+- Priority escalation: `issues.increase_priority`.
+- Handoff for acceptance: `issues.add_reviewers` then set status to `for_acceptance`.
+- Rework after failed acceptance: move status from `for_acceptance` back to `todo`.
+- Wrong routing: `issues.change_assignee`.
+
+Note:
+- `issues.create` starts in `todo`; do not send `status` on create.
+- Keep all mutation `actor_id` values equal to resolved identity.
+
+## Apply Status Discipline
+
+Use statuses truthfully:
+
+- `todo`: not started, or rework required after review feedback
+- `in_progress`: assignee is actively implementing
+- `for_acceptance`: implementation is complete and ready for validation
+- `resolved`: accepted and complete
+- `rejected`: intentionally declined/cancelled
+
+Never:
+
+- Leave completed work in `in_progress`
+- Mark `resolved` before required acceptance
+- Use `rejected` to hide incomplete work
+
+## Follow Reviewer Policy
+
+1. Add a reviewer as assignee when moving work to `for_acceptance`. You should always assign someone for review. Usually the team blocked by your task, if this doesn't exist the team found on `assigned_by_agent_id`.
+2. Select reviewers tied to impacted contracts/interfaces/dependencies.
+3. Validate acceptance criteria and keep review scope focused.
+4. Submit explicit review outcome:
+- `approved`: criteria satisfied
+- `changes_requested`: return issue to `todo` and implement rework. Moreover update the issue by filling the `Review feedback` section with the reason
+
+If the assignee discovers work is blocked by another issue after starting, the agent MUST set blockers using `issues.set_blocked_by`.
+The agent SHOULD create the dependency issue first (if missing), then set `blocked_by` on the current issue.
+
+
+### When blocked by external work
+
+- The agent SHOULD set status to `todo` when blocked work cannot proceed.
+- The agent MUST track blocking links via `issues.set_blocked_by`.
+- The agent SHOULD monitor blocker statuses and resume only when blockers are `resolved`.
+
+## Author Actionable Cross-Team Issues
+
+Write concrete markdown with enough detail to execute without guesswork:
+
+- Summary of requested change
+- Context and why it matters
+- Current behavior
+- Expected behavior
+- Scope boundaries (in/out)
+- Acceptance criteria
+- Impact on requesting team
+- References (paths, interfaces, logs, examples, issue IDs)
+
+Use this template:
+
+```md
+# <Short title>
+
+## Summary
+<Requested change or fix>
+
+## Context
+<Why this is needed>
+
+## Current Behavior
+<Observed behavior>
+
+## Expected Behavior
+<Desired behavior>
+
+## Scope
+<In scope and out of scope>
+
+## Acceptance Criteria
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+## Impact on Requesting Team
+<Blocker or dependency impact>
+
+## References
+<Paths, interfaces, issue refs, logs>
+
+## Work done so far
+<Leave it blank for the assignee>
+
+## Review feedback
+<Leave it blank for the reviewer>
+```
+
+## Required Completion Report
+
+When finishing a task that used this skill you update the task with a short description regarding the work done so far (section `Work done so far`). In case there was none needed, you should state that.
+
+Finally provide a report to the human:
+
+- Resolved identity used for `agent_id`/`actor_id`
+- MCP queue checks performed and key actionable items
+- Cross-space issues created/updated/rerouted
+- Review outcomes sent or pending
+- Remaining blockers and owning teams

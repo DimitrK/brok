@@ -1,4 +1,4 @@
 interface:
-  display_name: "Codespace Feedback"
-  short_description: "Manage cross-team feedback handoffs by code space"
-  default_prompt: "Use $codespace-feedback-collaboration to run the external_feedback workflow: process incoming requests, check pending responses, create new requests, and clean up resolved items."
+  display_name: "MCP Codespace Collaboration"
+  short_description: "Enforce cross-code-space collaboration through MCP issues and task tracker. Use when the user asks you to collaborate with other teams or code spaces, when the user asks you to implement a feature and you are unable to do so due to code space boundaries, when the user asks you to review a feature and you are unable to do so due to code space boundaries.
+  default_prompt: "Use $codespace-feedback-collaboration to enforce code-space boundaries, resolve identity, run the 2-minute MCP fast access path first, then run queue checks and create or update cross-space dependency issues with accurate statuses and reviews."
