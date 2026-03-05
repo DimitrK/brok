@@ -29,6 +29,7 @@ pnpm-debug.log*
 
 # Data files (local development state)
 data/
+.data/
 *.sqlite
 
 # Generated files

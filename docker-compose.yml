@@ -204,7 +204,7 @@ services:
       - broker-network
 
   vault:
-    image: hashicorp/vault:1.16
+    image: hashicorp/vault:1.21.3
     container_name: broker-vault
     profiles: ['vault']
     restart: unless-stopped
