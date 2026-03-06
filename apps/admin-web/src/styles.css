@@ -1400,6 +1400,32 @@ button svg {
   white-space: nowrap;
 }
 
+.integrations-table .integration-enabled-cell {
+  min-width: 12rem;
+}
+
+.integrations-table .integration-enabled-stack {
+  gap: 0.3rem;
+}
+
+.integrations-table .integration-enabled-cell .toggle-switch {
+  white-space: nowrap;
+}
+
+.integrations-table .integration-actions-cell {
+  min-width: 6.5rem;
+}
+
+.integrations-table .integration-actions {
+  justify-content: flex-start;
+}
+
+.integrations-table .integration-actions .btn-danger,
+.integrations-table .integration-actions .muted,
+.integrations-table .integration-actions .error-notice {
+  white-space: nowrap;
+}
+
 .table-link-button {
   border: 0;
   background: transparent;

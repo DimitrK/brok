@@ -22,6 +22,7 @@ enum WorkloadEnrollmentMode {
 enum SecretType {
   api_key
   oauth_refresh_token
+  aws_sigv4
 }
 
 enum ManifestSigningAlgorithm {

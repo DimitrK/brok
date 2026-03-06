@@ -4,7 +4,7 @@ import {describe, expect, it} from 'vitest';
 
 import {canonicalizeExecuteRequest} from '../index';
 import type {CanonicalizeExecuteRequestInput} from '../index';
-import {buildTemplate} from './fixtures/canonicalization-vectors';
+import {buildS3Template, buildTemplate} from './fixtures/canonicalization-vectors';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -26,6 +26,27 @@ const buildBaseInput = (): CanonicalizeExecuteRequestInput => ({
         {name: 'X-Custom', value: '  b  '},
         {name: 'x-custom', value: 'a'},
         {name: 'User-Agent', value: 'canonicalizer-test'}
+      ]
+    }
+  }
+});
+
+const buildS3Input = (): CanonicalizeExecuteRequestInput => ({
+  context: {
+    tenant_id: 't_s3',
+    workload_id: 'w_s3',
+    integration_id: 'i_s3'
+  },
+  template: buildS3Template(),
+  execute_request: {
+    integration_id: 'i_s3',
+    request: {
+      method: 'GET',
+      url: 'https://storage.example.com/?prefix=backup%2f2026%2f&list-type=2',
+      headers: [
+        {name: 'x-amz-date', value: '20260301T101500Z'},
+        {name: 'X-Amz-Content-Sha256', value: 'UNSIGNED-PAYLOAD'},
+        {name: 'x-amz-security-token', value: '  session-token  '}
       ]
     }
   }
@@ -516,5 +537,71 @@ describe('canonicalizeExecuteRequest', () => {
     }
     expect(result.error.code).toBe('template_host_wildcard_forbidden');
     expect(result.error.message.length).toBeGreaterThan(0);
+  });
+
+  it('canonicalizes S3 bucket-root list requests with sorted allowlisted query keys', () => {
+    const input = buildS3Input();
+
+    const result = canonicalizeExecuteRequest(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.matched_path_group_id).toBe('s3_list_objects');
+    expect(result.value.canonical_url).toBe(
+      'https://storage.example.com/?list-type=2&prefix=backup%2F2026%2F'
+    );
+    expect(result.value.descriptor.query_keys).toEqual(['list-type', 'prefix']);
+    expect(result.value.descriptor.normalized_headers).toEqual([
+      {name: 'x-amz-content-sha256', value: 'UNSIGNED-PAYLOAD'},
+      {name: 'x-amz-date', value: '20260301T101500Z'},
+      {name: 'x-amz-security-token', value: 'session-token'}
+    ]);
+  });
+
+  it('canonicalizes S3 list requests with continuation-token and fingerprints the normalized query', () => {
+    const input = buildS3Input();
+    input.execute_request.request.url =
+      'https://storage.example.com/?continuation-token=next%2Bpage&prefix=backup%2F2026%2F&list-type=2';
+
+    const result = canonicalizeExecuteRequest(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.canonical_url).toBe(
+      'https://storage.example.com/?continuation-token=next%2Bpage&list-type=2&prefix=backup%2F2026%2F'
+    );
+    expect(result.value.descriptor.query_fingerprint_base64).toBe(
+      crypto
+        .createHash('sha256')
+        .update('continuation-token=next%2Bpage&list-type=2&prefix=backup%2F2026%2F')
+        .digest('base64')
+    );
+  });
+
+  it('preserves encoded S3 object-key separators and uppercases percent-encoding hex', () => {
+    const input = buildS3Input();
+    input.execute_request.request.method = 'GET';
+    input.execute_request.request.url =
+      'https://storage.example.com/tenant-a/backups/folder%2f2026%2fmanifest.json';
+    input.execute_request.request.headers = [
+      {name: 'x-amz-date', value: '20260301T101500Z'},
+      {name: 'x-amz-content-sha256', value: 'UNSIGNED-PAYLOAD'}
+    ];
+
+    const result = canonicalizeExecuteRequest(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.matched_path_group_id).toBe('s3_object_rw');
+    expect(result.value.canonical_url).toBe(
+      'https://storage.example.com/tenant-a/backups/folder%2F2026%2Fmanifest.json'
+    );
+    expect(result.value.descriptor.query_keys).toEqual([]);
   });
 });

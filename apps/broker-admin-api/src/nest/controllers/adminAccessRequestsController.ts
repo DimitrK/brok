@@ -2,6 +2,7 @@ import {Controller, Get, Inject, Post, Req, Res} from '@nestjs/common'
 import type {Request, Response} from 'express'
 import {
   OpenApiAdminAccessRequestApproveRequestSchema,
+  OpenApiAdminAccessRequestCreateRequestSchema,
   OpenApiAdminAccessRequestDenyRequestSchema,
   OpenApiAdminAccessRequestListResponseSchema,
   OpenApiAdminAccessRequestSchema
@@ -19,6 +20,47 @@ import {
 @Controller()
 export class AdminAccessRequestsController {
   public constructor(@Inject(AdminApiControllerContext) private readonly context: AdminApiControllerContext) {}
+
+  @Post('/v1/admin/access-requests')
+  public async create(@Req() request: Request, @Res() response: Response): Promise<void> {
+    await this.context.handleRequest({
+      request,
+      response,
+      handler: async ({correlationId}) => {
+        const principal = await this.context.authenticateRequestWithoutIdentityResolution({request})
+        const body =
+          (await parseJsonBody({
+            request,
+            schema: OpenApiAdminAccessRequestCreateRequestSchema,
+            maxBodyBytes: this.context.config.maxBodyBytes,
+            required: false
+          })) ?? {}
+        const created = await this.context.dependencyBridge.submitAdminAccessRequest({
+          actor: principal,
+          ...(body.reason !== undefined ? {reason: body.reason} : {})
+        })
+
+        const payload = OpenApiAdminAccessRequestSchema.parse(created)
+        sendJson({
+          response,
+          status: 201,
+          correlationId,
+          payload
+        })
+
+        this.context.appendAuditEventNonBlocking({
+          correlationId,
+          event: this.context.repository.createAdminAuditEvent({
+            actor: principal,
+            correlationId,
+            action: 'admin.access_request.create',
+            tenantId: resolveAuditTenantId({principal}),
+            message: `Admin access request ${payload.request_id} submitted`
+          })
+        })
+      }
+    })
+  }
 
   @Get('/v1/admin/access-requests')
   public async list(@Req() request: Request, @Res() response: Response): Promise<void> {
@@ -44,6 +86,30 @@ export class AdminAccessRequestsController {
         })
 
         const payload = OpenApiAdminAccessRequestListResponseSchema.parse(requests)
+        sendJson({
+          response,
+          status: 200,
+          correlationId,
+          payload
+        })
+      }
+    })
+  }
+
+  @Get('/v1/admin/access-requests/:requestId')
+  public async getById(@Req() request: Request, @Res() response: Response): Promise<void> {
+    await this.context.handleRequest({
+      request,
+      response,
+      handler: async ({correlationId}) => {
+        const principal = await this.context.authenticateRequestWithoutIdentityResolution({request})
+        const requestId = decodePathParam(request.params.requestId as string)
+        const accessRequest = await this.context.dependencyBridge.getAdminAccessRequestById({
+          requestId,
+          actor: principal
+        })
+
+        const payload = OpenApiAdminAccessRequestSchema.parse(accessRequest)
         sendJson({
           response,
           status: 200,

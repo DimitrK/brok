@@ -1,11 +1,12 @@
 import * as dbPackage from '@broker-interceptor/db';
 import {describe, expect, it, vi} from 'vitest';
 import type {ExternalCaEnrollmentProvider} from '@broker-interceptor/auth';
+import {OpenApiAuditEventSchema, OpenApiTemplateSchema} from '@broker-interceptor/schemas';
 
 import {AdminAuthenticator, type AdminPrincipal} from '../auth';
 import {CertificateIssuer} from '../certificateIssuer';
 import {DependencyBridge} from '../dependencyBridge';
-import {conflict} from '../errors';
+import {conflict, serviceUnavailable} from '../errors';
 import type {ProcessInfrastructure} from '../infrastructure';
 import {ControlPlaneRepository} from '../repository';
 
@@ -235,6 +236,40 @@ describe('dependency bridge', () => {
   it('validates policies, appends audit events, and rotates manifest keys via crypto package', async () => {
     const {bridge, repository} = await createBridgeFixture();
 
+    await repository.createTemplate({
+      payload: OpenApiTemplateSchema.parse({
+        template_id: 'tpl_openai_core',
+        version: 1,
+        provider: 'openai',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['api.openai.com'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'openai_responses',
+            risk_tier: 'medium',
+            approval_mode: 'none',
+            methods: ['POST'],
+            path_patterns: ['^/v1/responses$'],
+            query_allowlist: ['model'],
+            header_forward_allowlist: ['content-type', 'accept'],
+            body_policy: {
+              max_bytes: 262144,
+              content_types: ['application/json']
+            }
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      })
+    });
+
     const parsedPolicy = bridge.validatePolicyRuleWithPolicyEngine({
       policy: {
         rule_type: 'allow',
@@ -268,23 +303,50 @@ describe('dependency bridge', () => {
       })
     ).toThrow();
 
-    const event = repository.createAdminAuditEvent({
-      actor: {
-        subject: 'owner-user',
-        issuer: 'https://broker-admin.local/static',
-        email: 'owner-user@local.invalid',
-        roles: ['owner'],
-        authContext: {mode: 'static', issuer: 'https://broker-admin.local/static'}
+    const event = OpenApiAuditEventSchema.parse({
+      event_id: 'evt_bridge_1',
+      timestamp: new Date().toISOString(),
+      tenant_id: 't_1',
+      workload_id: 'w_1',
+      integration_id: 'i_1',
+      correlation_id: 'corr_bridge_1',
+      event_type: 'execute',
+      decision: 'denied',
+      action_group: 'openai_responses',
+      risk_tier: 'medium',
+      destination: {
+        scheme: 'https',
+        host: 'api.openai.com',
+        port: 443,
+        path_group: 'openai_responses'
       },
-      correlationId: 'corr_bridge_1',
-      action: 'dependency_bridge.test',
-      tenantId: 't_1'
+      latency_ms: 12,
+      upstream_status_code: 403,
+      canonical_descriptor: {
+        tenant_id: 't_1',
+        workload_id: 'w_1',
+        integration_id: 'i_1',
+        template_id: 'tpl_openai_core',
+        template_version: 1,
+        method: 'POST',
+        canonical_url: 'https://api.openai.com/v1/responses',
+        matched_path_group_id: 'openai_responses',
+        normalized_headers: [{name: 'content-type', value: 'application/json'}],
+        query_keys: ['model']
+      },
+      policy: {
+        rule_type: 'deny',
+        rule_id: 'pol_1',
+        approval_id: null
+      },
+      message: 'Denied by policy',
+      metadata: null
     });
 
     await bridge.appendAuditEventWithAuditPackage({event});
     const events = await repository.listAuditEvents({filter: {tenantId: 't_1'}});
     expect(events).toHaveLength(1);
-    expect(events[0].event_type).toBe('admin_action');
+    expect(events[0].event_type).toBe('execute');
 
     const queriedEvents = await bridge.queryAuditEventsWithAuditPackage({
       query: {
@@ -292,6 +354,21 @@ describe('dependency bridge', () => {
       }
     });
     expect(queriedEvents).toHaveLength(1);
+    expect(queriedEvents[0]).toMatchObject({
+      matched_template_config: {
+        path_group_id: 'openai_responses',
+        risk_tier: 'medium',
+        approval_mode: 'none',
+        methods: ['POST'],
+        path_patterns: ['^/v1/responses$'],
+        query_allowlist: ['model'],
+        header_forward_allowlist: ['content-type', 'accept'],
+        body_policy: {
+          max_bytes: 262144,
+          content_types: ['application/json']
+        }
+      }
+    });
 
     await expect(bridge.persistStateWithDbPackage()).resolves.toBeUndefined();
 
@@ -304,6 +381,97 @@ describe('dependency bridge', () => {
         retainPreviousKeyCount: -1
       })
     ).rejects.toMatchObject({code: 'manifest_key_rotation_invalid'});
+  });
+
+  it('fails audit-event enrichment closed when template lookup errors', async () => {
+    const {bridge, repository} = await createBridgeFixture();
+
+    await repository.createTemplate({
+      payload: OpenApiTemplateSchema.parse({
+        template_id: 'tpl_openai_core',
+        version: 1,
+        provider: 'openai',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['api.openai.com'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'openai_responses',
+            risk_tier: 'medium',
+            approval_mode: 'none',
+            methods: ['POST'],
+            path_patterns: ['^/v1/responses$'],
+            query_allowlist: ['model'],
+            header_forward_allowlist: ['content-type', 'accept'],
+            body_policy: {
+              max_bytes: 262144,
+              content_types: ['application/json']
+            }
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      })
+    });
+
+    const event = OpenApiAuditEventSchema.parse({
+      event_id: 'evt_bridge_2',
+      timestamp: new Date().toISOString(),
+      tenant_id: 't_1',
+      workload_id: 'w_1',
+      integration_id: 'i_1',
+      correlation_id: 'corr_bridge_2',
+      event_type: 'execute',
+      decision: 'denied',
+      action_group: 'openai_responses',
+      risk_tier: 'medium',
+      destination: {
+        scheme: 'https',
+        host: 'api.openai.com',
+        port: 443,
+        path_group: 'openai_responses'
+      },
+      latency_ms: 9,
+      upstream_status_code: 503,
+      canonical_descriptor: {
+        tenant_id: 't_1',
+        workload_id: 'w_1',
+        integration_id: 'i_1',
+        template_id: 'tpl_openai_core',
+        template_version: 1,
+        method: 'POST',
+        canonical_url: 'https://api.openai.com/v1/responses',
+        matched_path_group_id: 'openai_responses',
+        normalized_headers: [{name: 'content-type', value: 'application/json'}],
+        query_keys: ['model']
+      },
+      policy: {
+        rule_type: 'deny',
+        rule_id: 'pol_1',
+        approval_id: null
+      },
+      message: 'Denied by policy',
+      metadata: null
+    });
+
+    await bridge.appendAuditEventWithAuditPackage({event});
+    vi.spyOn(repository, 'getTemplateVersion').mockRejectedValue(
+      serviceUnavailable('db_unavailable', 'template lookup unavailable')
+    );
+
+    await expect(
+      bridge.queryAuditEventsWithAuditPackage({
+        query: {
+          tenant_id: 't_1'
+        }
+      })
+    ).rejects.toMatchObject({code: 'db_unavailable'});
   });
 
   it('persists manifest key rotation using db repositories when infrastructure is enabled', async () => {
@@ -656,6 +824,10 @@ describe('dependency bridge', () => {
         issuer: 'https://issuer.example'
       }
     });
+    const makeOwnerOidcPrincipal = (): AdminPrincipal => ({
+      ...makeOidcPrincipal(),
+      roles: ['owner']
+    });
 
     const makeBridgeWithRepository = ({
       repository
@@ -680,7 +852,7 @@ describe('dependency bridge', () => {
         })
       });
 
-    it('auto-provisions active identity when signup mode is allowed', async () => {
+    it('auto-provisions active identity when signup mode is allowed for owner-claim principals', async () => {
       const repository = {
         appendAuditEvent: vi.fn().mockResolvedValue(undefined),
         listAuditEvents: vi.fn().mockResolvedValue([]),
@@ -698,8 +870,8 @@ describe('dependency bridge', () => {
           subject: 'admin-sub-1',
           email: 'admin@example.com',
           status: 'active',
-          roles: ['admin'],
-          tenant_ids: ['t_1'],
+          roles: ['owner'],
+          tenant_ids: [],
           created_at: '2026-02-14T00:00:00.000Z',
           updated_at: '2026-02-14T00:00:00.000Z'
         })
@@ -707,14 +879,43 @@ describe('dependency bridge', () => {
 
       const bridge = makeBridgeWithRepository({repository});
       const resolved = await bridge.resolveAdminIdentityFromToken({
-        principal: makeOidcPrincipal()
+        principal: makeOwnerOidcPrincipal()
       });
 
-      expect(resolved.roles).toEqual(['admin']);
-      expect(resolved.tenantIds).toEqual(['t_1']);
+      expect(resolved.roles).toEqual(['owner']);
+      expect(resolved.tenantIds).toEqual([]);
     });
 
-    it('creates deterministic access request and denies when signup mode is blocked', async () => {
+    it('requires access request flow for non-owner OIDC principals even when signup mode is allowed', async () => {
+      const createAdminIdentity = vi.fn();
+      const repository = {
+        appendAuditEvent: vi.fn().mockResolvedValue(undefined),
+        listAuditEvents: vi.fn().mockResolvedValue([]),
+        findAdminIdentityByIssuerSubject: vi.fn().mockResolvedValue(null),
+        getAdminSignupPolicy: vi.fn().mockResolvedValue({
+          new_user_mode: 'allowed',
+          require_verified_email: true,
+          allowed_email_domains: ['example.com'],
+          updated_at: '2026-02-14T00:00:00.000Z',
+          updated_by: 'owner-user'
+        }),
+        listAdminAccessRequests: vi.fn().mockResolvedValue({requests: []}),
+        createAdminIdentity
+      } as unknown as ControlPlaneRepository;
+
+      const bridge = makeBridgeWithRepository({repository});
+      await expect(
+        bridge.resolveAdminIdentityFromToken({
+          principal: makeOidcPrincipal()
+        })
+      ).rejects.toMatchObject({code: 'admin_signup_closed'});
+
+      expect((repository as unknown as {listAdminAccessRequests: ReturnType<typeof vi.fn>}).listAdminAccessRequests)
+        .toHaveBeenCalledTimes(1);
+      expect(createAdminIdentity).not.toHaveBeenCalled();
+    });
+
+    it('fails closed without implicit side effects when signup mode is blocked', async () => {
       const repository = {
         appendAuditEvent: vi.fn().mockResolvedValue(undefined),
         listAuditEvents: vi.fn().mockResolvedValue([]),
@@ -726,9 +927,47 @@ describe('dependency bridge', () => {
           updated_at: '2026-02-14T00:00:00.000Z',
           updated_by: 'owner-user'
         }),
-        createAdminAccessRequest: vi.fn(({requestId}: {requestId: string}) => Promise.resolve({
-          request_id: requestId
-        }))
+        listAdminAccessRequests: vi.fn().mockResolvedValue({requests: []})
+      } as unknown as ControlPlaneRepository;
+
+      const bridge = makeBridgeWithRepository({repository});
+      await expect(
+        bridge.resolveAdminIdentityFromToken({
+          principal: makeOidcPrincipal()
+        })
+      ).rejects.toMatchObject({code: 'admin_signup_closed'});
+      expect((repository as unknown as {listAdminAccessRequests: ReturnType<typeof vi.fn>}).listAdminAccessRequests)
+        .toHaveBeenCalledTimes(1);
+    });
+
+    it('returns pending state when blocked signup has an existing access request', async () => {
+      const requestId = 'aar_56e97b27dc336f5a5abb8607';
+      const repository = {
+        appendAuditEvent: vi.fn().mockResolvedValue(undefined),
+        listAuditEvents: vi.fn().mockResolvedValue([]),
+        findAdminIdentityByIssuerSubject: vi.fn().mockResolvedValue(null),
+        getAdminSignupPolicy: vi.fn().mockResolvedValue({
+          new_user_mode: 'blocked',
+          require_verified_email: true,
+          allowed_email_domains: [],
+          updated_at: '2026-02-14T00:00:00.000Z',
+          updated_by: 'owner-user'
+        }),
+        listAdminAccessRequests: vi.fn().mockResolvedValue({
+          requests: [
+            {
+              request_id: requestId,
+              issuer: 'https://issuer.example',
+              subject: 'admin-sub-1',
+              email: 'admin@example.com',
+              requested_roles: ['admin'],
+              requested_tenant_ids: ['t_1'],
+              status: 'pending',
+              created_at: '2026-02-14T00:00:00.000Z',
+              updated_at: '2026-02-14T00:00:00.000Z'
+            }
+          ]
+        })
       } as unknown as ControlPlaneRepository;
 
       const bridge = makeBridgeWithRepository({repository});
@@ -737,8 +976,6 @@ describe('dependency bridge', () => {
           principal: makeOidcPrincipal()
         })
       ).rejects.toMatchObject({code: 'admin_access_request_pending'});
-      expect((repository as unknown as {createAdminAccessRequest: ReturnType<typeof vi.fn>}).createAdminAccessRequest)
-        .toHaveBeenCalledTimes(1);
     });
 
     it('approves admin access requests and creates active identity when missing', async () => {
@@ -966,7 +1203,7 @@ describe('dependency bridge', () => {
 
       const bridge = makeBridgeWithRepository({repository});
       const resolved = await bridge.resolveAdminIdentityFromToken({
-        principal: makeOidcPrincipal()
+        principal: makeOwnerOidcPrincipal()
       });
 
       expect(resolved.roles).toEqual(['operator']);
@@ -991,6 +1228,111 @@ describe('dependency bridge', () => {
       expect(request.status).toBe('pending');
       expect(request.request_id.startsWith('aar_')).toBe(true);
       expect(request.reason).toBe('manual approval');
+    });
+
+    it('submits explicit access requests for non-owner OIDC signup even when signup mode is allowed', async () => {
+      const repository = {
+        appendAuditEvent: vi.fn().mockResolvedValue(undefined),
+        listAuditEvents: vi.fn().mockResolvedValue([]),
+        findAdminIdentityByIssuerSubject: vi.fn().mockResolvedValue(null),
+        getAdminSignupPolicy: vi.fn().mockResolvedValue({
+          new_user_mode: 'allowed',
+          require_verified_email: true,
+          allowed_email_domains: ['example.com'],
+          updated_at: '2026-02-14T00:00:00.000Z',
+          updated_by: 'owner-user'
+        }),
+        createAdminAccessRequest: vi.fn().mockResolvedValue({
+          request_id: 'aar_56e97b27dc336f5a5abb8607',
+          issuer: 'https://issuer.example',
+          subject: 'admin-sub-1',
+          email: 'admin@example.com',
+          requested_roles: ['admin'],
+          requested_tenant_ids: ['t_1'],
+          status: 'pending',
+          reason: 'Need access',
+          created_at: '2026-02-14T00:00:00.000Z',
+          updated_at: '2026-02-14T00:00:00.000Z'
+        })
+      } as unknown as ControlPlaneRepository;
+
+      const bridge = makeBridgeWithRepository({repository});
+      const created = await bridge.submitAdminAccessRequest({
+        actor: makeOidcPrincipal(),
+        reason: 'Need access'
+      });
+      expect(created.request_id).toBe('aar_56e97b27dc336f5a5abb8607');
+
+      await expect(
+        bridge.submitAdminAccessRequest({
+          actor: makeOwnerOidcPrincipal(),
+          reason: 'owner should not require signup request when policy is open'
+        })
+      ).rejects.toMatchObject({code: 'admin_signup_open'});
+
+      await expect(
+        bridge.submitAdminAccessRequest({
+          actor: {
+            subject: 'owner-user',
+            issuer: 'https://broker-admin.local/static',
+            email: 'owner-user@local.invalid',
+            roles: ['owner'],
+            authContext: {mode: 'static', issuer: 'https://broker-admin.local/static'}
+          },
+          reason: 'invalid'
+        })
+      ).rejects.toMatchObject({code: 'admin_access_request_mode_invalid'});
+    });
+
+    it('returns access request by id for owner and scoped requester', async () => {
+      const requestId = 'aar_56e97b27dc336f5a5abb8607';
+      const repository = {
+        appendAuditEvent: vi.fn().mockResolvedValue(undefined),
+        listAuditEvents: vi.fn().mockResolvedValue([]),
+        findAdminIdentityByIssuerSubject: vi.fn().mockResolvedValue(null),
+        listAdminAccessRequests: vi.fn().mockResolvedValue({
+          requests: [
+            {
+              request_id: requestId,
+              issuer: 'https://issuer.example',
+              subject: 'admin-sub-1',
+              email: 'admin@example.com',
+              requested_roles: ['admin'],
+              requested_tenant_ids: ['t_1'],
+              status: 'pending',
+              created_at: '2026-02-14T00:00:00.000Z',
+              updated_at: '2026-02-14T00:00:00.000Z'
+            }
+          ]
+        })
+      } as unknown as ControlPlaneRepository;
+
+      const bridge = makeBridgeWithRepository({repository});
+      const ownerResult = await bridge.getAdminAccessRequestById({
+        requestId,
+        actor: {
+          subject: 'owner-user',
+          issuer: 'https://broker-admin.local/static',
+          email: 'owner-user@local.invalid',
+          roles: ['owner'],
+          authContext: {mode: 'static', issuer: 'https://broker-admin.local/static'}
+        }
+      });
+      expect(ownerResult.request_id).toBe(requestId);
+
+      await expect(
+        bridge.getAdminAccessRequestById({
+          requestId: 'aar_wrong',
+          actor: makeOidcPrincipal()
+        })
+      ).rejects.toMatchObject({code: 'db_not_found'});
+
+      await expect(
+        bridge.getAdminAccessRequestById({
+          requestId: 'aar_arbitrary_owner_claim_id',
+          actor: makeOwnerOidcPrincipal()
+        })
+      ).rejects.toMatchObject({code: 'db_not_found'});
     });
 
     it('upserts role bindings when approving existing active identity', async () => {
@@ -1228,6 +1570,48 @@ describe('dependency bridge', () => {
           }
         })
       ).rejects.toMatchObject({code: 'admin_forbidden'});
+
+      await expect(
+        bridge.deleteAdminUser({
+          identityId: 'adm_1',
+          actor: {
+            subject: 'tenant-admin',
+            issuer: 'https://broker-admin.local/static',
+            email: 'tenant-admin@local.invalid',
+            roles: ['admin'],
+            tenantIds: ['t_1'],
+            authContext: {mode: 'static', issuer: 'https://broker-admin.local/static'}
+          }
+        })
+      ).rejects.toMatchObject({code: 'admin_forbidden'});
+
+      await expect(
+        bridge.deleteIntegration({
+          integrationId: 'int_1',
+          actor: {
+            subject: 'tenant-admin',
+            issuer: 'https://broker-admin.local/static',
+            email: 'tenant-admin@local.invalid',
+            roles: ['admin'],
+            tenantIds: ['t_1'],
+            authContext: {mode: 'static', issuer: 'https://broker-admin.local/static'}
+          }
+        })
+      ).rejects.toMatchObject({code: 'admin_forbidden'});
+
+      await expect(
+        bridge.deleteTemplate({
+          templateId: 'tpl_1',
+          actor: {
+            subject: 'tenant-admin',
+            issuer: 'https://broker-admin.local/static',
+            email: 'tenant-admin@local.invalid',
+            roles: ['admin'],
+            tenantIds: ['t_1'],
+            authContext: {mode: 'static', issuer: 'https://broker-admin.local/static'}
+          }
+        })
+      ).rejects.toMatchObject({code: 'admin_forbidden'});
     });
 
     it('passes admin user listing filters to repository for owner principals', async () => {
@@ -1325,6 +1709,128 @@ describe('dependency bridge', () => {
         status: 'active',
         roles: ['admin'],
         tenantIds: ['t_2']
+      });
+    });
+
+    it('deletes admin users by disabling identity and prevents owner self-delete', async () => {
+      const setAdminUserStatus = vi.fn().mockResolvedValue({
+        identity_id: 'adm_1',
+        issuer: 'https://issuer.example',
+        subject: 'admin-sub-1',
+        email: 'admin@example.com',
+        status: 'disabled',
+        roles: ['admin'],
+        tenant_ids: ['t_2'],
+        created_at: '2026-02-14T00:00:00.000Z',
+        updated_at: '2026-02-14T00:00:00.000Z'
+      });
+      const repository = {
+        appendAuditEvent: vi.fn().mockResolvedValue(undefined),
+        listAuditEvents: vi.fn().mockResolvedValue([]),
+        getAdminUserByIdentityId: vi.fn().mockResolvedValue({
+          identity_id: 'adm_1',
+          issuer: 'https://issuer.example',
+          subject: 'admin-sub-1',
+          email: 'admin@example.com',
+          status: 'active',
+          roles: ['admin'],
+          tenant_ids: ['t_2'],
+          created_at: '2026-02-14T00:00:00.000Z',
+          updated_at: '2026-02-14T00:00:00.000Z'
+        }),
+        setAdminUserStatus
+      } as unknown as ControlPlaneRepository;
+
+      const bridge = makeBridgeWithRepository({repository});
+      const deleted = await bridge.deleteAdminUser({
+        identityId: 'adm_1',
+        actor: {
+          subject: 'owner-user',
+          issuer: 'https://broker-admin.local/static',
+          email: 'owner-user@local.invalid',
+          roles: ['owner'],
+          authContext: {mode: 'static', issuer: 'https://broker-admin.local/static'}
+        }
+      });
+      expect(deleted.status).toBe('disabled');
+      expect(setAdminUserStatus).toHaveBeenCalledWith({
+        identityId: 'adm_1',
+        status: 'disabled'
+      });
+
+      const selfDeleteBridge = makeBridgeWithRepository({
+        repository: {
+          appendAuditEvent: vi.fn().mockResolvedValue(undefined),
+          listAuditEvents: vi.fn().mockResolvedValue([]),
+          getAdminUserByIdentityId: vi.fn().mockResolvedValue({
+            identity_id: 'adm_owner',
+            issuer: 'https://issuer.example',
+            subject: 'owner-sub',
+            email: 'owner@example.com',
+            status: 'active',
+            roles: ['owner'],
+            tenant_ids: [],
+            created_at: '2026-02-14T00:00:00.000Z',
+            updated_at: '2026-02-14T00:00:00.000Z'
+          })
+        } as unknown as ControlPlaneRepository
+      });
+
+      await expect(
+        selfDeleteBridge.deleteAdminUser({
+          identityId: 'adm_owner',
+          actor: {
+            subject: 'owner-sub',
+            issuer: 'https://issuer.example',
+            email: 'owner@example.com',
+            roles: ['owner'],
+            authContext: {mode: 'oidc', issuer: 'https://issuer.example'}
+          }
+        })
+      ).rejects.toMatchObject({code: 'admin_user_delete_self_forbidden'});
+    });
+
+    it('deletes integrations and templates for owner principals', async () => {
+      const deleteIntegration = vi.fn().mockResolvedValue({
+        integration_id: 'int_1',
+        tenant_id: 't_1',
+        provider: 'openai',
+        name: 'openai',
+        template_id: 'tpl_openai',
+        enabled: false
+      });
+      const deleteTemplate = vi.fn().mockResolvedValue(undefined);
+      const repository = {
+        appendAuditEvent: vi.fn().mockResolvedValue(undefined),
+        listAuditEvents: vi.fn().mockResolvedValue([]),
+        deleteIntegration,
+        deleteTemplate
+      } as unknown as ControlPlaneRepository;
+
+      const bridge = makeBridgeWithRepository({repository});
+      const actor: AdminPrincipal = {
+        subject: 'owner-user',
+        issuer: 'https://broker-admin.local/static',
+        email: 'owner-user@local.invalid',
+        roles: ['owner'],
+        authContext: {mode: 'static', issuer: 'https://broker-admin.local/static'}
+      };
+
+      const deletedIntegration = await bridge.deleteIntegration({
+        integrationId: 'int_1',
+        actor
+      });
+      await bridge.deleteTemplate({
+        templateId: 'tpl_openai',
+        actor
+      });
+
+      expect(deletedIntegration.enabled).toBe(false);
+      expect(deleteIntegration).toHaveBeenCalledWith({
+        integrationId: 'int_1'
+      });
+      expect(deleteTemplate).toHaveBeenCalledWith({
+        templateId: 'tpl_openai'
       });
     });
 

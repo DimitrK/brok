@@ -47,6 +47,55 @@ Serialized log records always include one explicit namespace:
 
 This prevents ambiguity in downstream logging and alerting pipelines.
 
+## 4) S3 / AWS SigV4 backup-flow compatibility verification
+
+This package now includes an explicit verification helper for the typed `aws_sigv4` integration contract defined in
+`packages/schemas/openapi.yaml`.
+
+It verifies that:
+
+- bucket-root list requests such as `GET /?list-type=2&prefix=...`
+- paginated bucket-root list requests such as `GET /?list-type=2&prefix=...&continuation-token=...`
+- object upload requests
+- object download requests
+
+remain eBPF-compatible because interception happens at the HTTPS/TCP socket layer, not at the HTTP path/query layer.
+This helper validates DTO compatibility and request-shape assumptions only. It does not perform SigV4 signing,
+region resolution, or secret persistence.
+
+API:
+
+```ts
+import {verifyS3BackupEbpfCompatibility} from '@broker-interceptor/interceptor-ebpf';
+
+const result = verifyS3BackupEbpfCompatibility({
+  secret_material: {
+    type: 'aws_sigv4',
+    access_key_id: 'AKIAIOSFODNN7EXAMPLE',
+    secret_access_key: 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY',
+    region: 'eu-west-1'
+  },
+  constraints: {
+    upstream_auth: {
+      type: 'aws_sigv4',
+      service: 's3',
+      region: 'eu-west-1'
+    }
+  },
+  request: {
+    method: 'GET',
+    url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/?list-type=2&prefix=backups%2Fbroker%2F'
+  }
+});
+```
+
+Expected result:
+
+- `transport: "tcp"`
+- `network_protocol: "https"`
+- `required_hooks: ["connect4", "connect6"]`
+- `http_shape_affects_socket_matching: false`
+
 ## Security contract
 
 1. Control protocol errors may only use `ControlPlaneAuthzErrorCode`.

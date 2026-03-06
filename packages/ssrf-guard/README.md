@@ -47,6 +47,19 @@ Exports from `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-intercepto
 - Any resolved destination in denied ranges causes rejection.
 - Any redirect status (`300-399`) is rejected by `enforceRedirectDenyPolicy`.
 
+## S3-compatible custom hosts
+
+- Custom S3-compatible domains are supported through exact entries in template `allowed_hosts`.
+- Host matching is normalized before comparison:
+  - case-insensitive
+  - trailing-dot-insensitive
+  - IDN-safe through ASCII normalization
+- SSRF guard does not widen host scope for S3 semantics:
+  - allowlisting `storage.example.com` does not also allow `bucket.storage.example.com`
+  - allowlisting `storage.example.com` does not also allow sibling hosts such as `storage-backup.example.com`
+- If a workflow needs virtual-host style bucket routing, each intended hostname must be allowlisted explicitly.
+- Exact host allowlisting does not bypass DNS/IP safety checks. Resolved private, loopback, link-local, and metadata addresses are still rejected fail-closed.
+
 ## Usage
 
 ```ts

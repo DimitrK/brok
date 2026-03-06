@@ -23,6 +23,9 @@ schema/migrations plus repository classes for:
 - AuditEvent
 
 All DTO validation follows `packages/schemas/openapi.yaml` via `@broker-interceptor/schemas` exports.
+Secret envelope storage supports `api_key`, `oauth_refresh_token`, and `aws_sigv4` secret material types; adding
+`aws_sigv4` requires the enum migration in
+`packages/db/prisma/migrations/20260228210000_add_aws_sigv4_secret_type/migration.sql`.
 
 ## Code Space Boundaries
 
@@ -115,6 +118,8 @@ Expected client shape is documented by `DatabaseClient` in `packages/db/src/type
 - `getSecretEnvelopeVersion`
 - `setActiveSecretEnvelopeVersion`
 - `listSecretEnvelopeVersions`
+  - versioned envelope storage is opaque to credential shape and now supports `aws_sigv4` in addition to existing
+    secret types
 - `getActiveManifestSigningKeyRecord`
 - `listManifestVerificationKeysWithEtag`
 - `createManifestSigningKeyRecord`

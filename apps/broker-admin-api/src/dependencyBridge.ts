@@ -151,6 +151,39 @@ const mapManifestKeyRotationError = ({code, message}: {code: string; message: st
   }
 };
 
+const buildMatchedTemplateConfig = ({
+  event,
+  template
+}: {
+  event: OpenApiAuditEvent;
+  template: Awaited<ReturnType<ControlPlaneRepository['getTemplateVersion']>>;
+}) => {
+  const matchedPathGroupId = event.canonical_descriptor?.matched_path_group_id;
+  if (!matchedPathGroupId) {
+    return null;
+  }
+
+  const pathGroup = template.path_groups.find(candidate => candidate.group_id === matchedPathGroupId);
+  if (!pathGroup) {
+    return null;
+  }
+
+  return {
+    path_group_id: pathGroup.group_id,
+    risk_tier: pathGroup.risk_tier,
+    approval_mode: pathGroup.approval_mode,
+    methods: [...pathGroup.methods],
+    path_patterns: [...pathGroup.path_patterns],
+    query_allowlist: [...pathGroup.query_allowlist],
+    header_forward_allowlist: [...pathGroup.header_forward_allowlist],
+    body_policy: {
+      max_bytes: pathGroup.body_policy.max_bytes,
+      content_types: [...pathGroup.body_policy.content_types]
+    },
+    ...(pathGroup.constraints ? {constraints: pathGroup.constraints} : {})
+  };
+};
+
 const mapDbRepositoryError = (error: unknown): never => {
   if (!(error instanceof DbRepositoryError)) {
     throw error;
@@ -292,6 +325,27 @@ const assertOwnerForAdminUserManagement = ({actor, operation}: {actor: AdminPrin
   }
 };
 
+const assertPrincipalMatchesSignupPolicy = ({
+  principal,
+  policy
+}: {
+  principal: AdminPrincipal;
+  policy: OpenApiAdminSignupPolicy;
+}) => {
+  if (policy.require_verified_email && principal.emailVerified !== true) {
+    throw unauthorized('admin_signup_email_unverified', 'Admin sign-in requires a verified email address');
+  }
+
+  const emailDomain = principal.email.toLowerCase().split('@')[1] ?? '';
+  if (
+    Array.isArray(policy.allowed_email_domains) &&
+    policy.allowed_email_domains.length > 0 &&
+    !policy.allowed_email_domains.map(domain => domain.toLowerCase()).includes(emailDomain)
+  ) {
+    throw forbidden('admin_signup_domain_blocked', 'Admin email domain is not allowed');
+  }
+};
+
 export class DependencyBridge {
   private readonly auditService;
 
@@ -412,28 +466,24 @@ export class DependencyBridge {
     }
 
     const policy = await this.dependencies.repository.getAdminSignupPolicy();
-    if (policy.require_verified_email && principal.emailVerified !== true) {
-      throw unauthorized('admin_signup_email_unverified', 'Admin sign-in requires a verified email address');
-    }
+    assertPrincipalMatchesSignupPolicy({
+      principal,
+      policy
+    });
 
-    const emailDomain = principal.email.toLowerCase().split('@')[1] ?? '';
-    if (
-      Array.isArray(policy.allowed_email_domains) &&
-      policy.allowed_email_domains.length > 0 &&
-      !policy.allowed_email_domains.map(domain => domain.toLowerCase()).includes(emailDomain)
-    ) {
-      throw forbidden('admin_signup_domain_blocked', 'Admin email domain is not allowed');
+    if (!principal.roles.includes('owner')) {
+      return this.rejectWithAccessRequestRequired({
+        principal,
+        message:
+          'OIDC sign-in requires owner role claim or owner-approved access request; submit an admin access request'
+      });
     }
 
     if (policy.new_user_mode === 'blocked') {
-      const request = await this.createAdminAccessRequest({
+      return this.rejectWithAccessRequestRequired({
         principal,
-        reason: 'New user signup is blocked; admin approval is required'
+        message: 'New user signup is blocked; submit an admin access request for owner review'
       });
-      throw unauthorized(
-        'admin_access_request_pending',
-        `Admin access request is pending approval (${request.request_id})`
-      );
     }
 
     const sessionPrincipal = toAdminSessionPrincipal({principal});
@@ -511,6 +561,128 @@ export class DependencyBridge {
         updated_at: new Date().toISOString()
       };
     }
+  }
+
+  public async submitAdminAccessRequest({
+    actor,
+    reason
+  }: {
+    actor: AdminPrincipal;
+    reason?: string;
+  }): Promise<RepositoryAdminAccessRequest> {
+    if (actor.authContext.mode !== 'oidc') {
+      throw badRequest('admin_access_request_mode_invalid', 'Access request submission requires OIDC authentication');
+    }
+
+    const existingIdentity = await this.dependencies.repository.findAdminIdentityByIssuerSubject({
+      issuer: actor.issuer,
+      subject: actor.subject
+    });
+    if (existingIdentity) {
+      if (existingIdentity.status === 'disabled') {
+        throw forbidden('admin_identity_disabled', 'Admin identity is disabled');
+      }
+
+      if (existingIdentity.status === 'pending') {
+        throw unauthorized('admin_access_request_pending', 'Admin access request is pending approval');
+      }
+
+      throw conflict('admin_identity_already_active', 'Admin identity is already active');
+    }
+
+    const policy = await this.dependencies.repository.getAdminSignupPolicy();
+    assertPrincipalMatchesSignupPolicy({
+      principal: actor,
+      policy
+    });
+    if (policy.new_user_mode !== 'blocked' && actor.roles.includes('owner')) {
+      throw conflict(
+        'admin_signup_open',
+        'Admin signup policy currently allows new users; access request submission is unnecessary'
+      );
+    }
+
+    return this.createAdminAccessRequest({
+      principal: actor,
+      ...(reason ? {reason} : {})
+    });
+  }
+
+  public async getAdminAccessRequestById({
+    requestId,
+    actor
+  }: {
+    requestId: string;
+    actor: AdminPrincipal;
+  }): Promise<RepositoryAdminAccessRequest> {
+    if (!(await this.canQueryAnyAdminAccessRequest({actor}))) {
+      if (actor.authContext.mode !== 'oidc') {
+        throw forbidden('admin_forbidden', 'Only owner role can query arbitrary admin access requests');
+      }
+
+      const expectedRequestId = this.buildDeterministicAdminAccessRequestIdFromPrincipal({
+        principal: actor
+      });
+      if (expectedRequestId !== requestId) {
+        throw notFound('db_not_found', `Admin access request ${requestId} was not found`);
+      }
+    }
+
+    const request = await this.findAdminAccessRequestByRequestId({requestId});
+    if (!request) {
+      throw notFound('db_not_found', `Admin access request ${requestId} was not found`);
+    }
+
+    return request;
+  }
+
+  private async canQueryAnyAdminAccessRequest({actor}: {actor: AdminPrincipal}): Promise<boolean> {
+    if (!actor.roles.includes('owner')) {
+      return false;
+    }
+
+    if (actor.authContext.mode === 'static') {
+      return true;
+    }
+
+    const identity = await this.dependencies.repository.findAdminIdentityByIssuerSubject({
+      issuer: actor.issuer,
+      subject: actor.subject
+    });
+    return Boolean(identity && identity.status === 'active' && identity.roles.includes('owner'));
+  }
+
+  private buildDeterministicAdminAccessRequestIdFromPrincipal({principal}: {principal: AdminPrincipal}) {
+    return buildDeterministicAdminAccessRequestId({
+      issuer: principal.issuer,
+      subject: principal.subject
+    });
+  }
+
+  private async findAdminAccessRequestByRequestId({requestId}: {requestId: string}) {
+    const requests = await this.dependencies.repository.listAdminAccessRequests({
+      search: requestId,
+      limit: 25
+    });
+    return requests.requests.find(request => request.request_id === requestId);
+  }
+
+  private async rejectWithAccessRequestRequired({
+    principal,
+    message
+  }: {
+    principal: AdminPrincipal;
+    message: string;
+  }): Promise<never> {
+    const requestId = this.buildDeterministicAdminAccessRequestIdFromPrincipal({principal});
+    const pendingRequest = await this.findAdminAccessRequestByRequestId({
+      requestId
+    });
+    if (pendingRequest && pendingRequest.status === 'pending') {
+      throw unauthorized('admin_access_request_pending', `Admin access request is pending approval (${pendingRequest.request_id})`);
+    }
+
+    throw forbidden('admin_signup_closed', message);
   }
 
   public async listAdminUsers({
@@ -615,6 +787,67 @@ export class DependencyBridge {
       ...(roles !== undefined ? {roles} : {}),
       ...(tenantIds !== undefined ? {tenantIds} : {})
     });
+  }
+
+  public async deleteAdminUser({
+    identityId,
+    actor
+  }: {
+    identityId: string;
+    actor: AdminPrincipal;
+  }) {
+    assertOwnerForAdminUserManagement({
+      actor,
+      operation: 'delete admin users'
+    });
+
+    const existing = await this.dependencies.repository.getAdminUserByIdentityId({identityId});
+    if (!existing) {
+      throw notFound('admin_user_not_found', `Admin user ${identityId} was not found`);
+    }
+
+    if (existing.issuer === actor.issuer && existing.subject === actor.subject) {
+      throw forbidden('admin_user_delete_self_forbidden', 'Owner cannot delete the currently authenticated admin user');
+    }
+
+    if (existing.status === 'disabled') {
+      return existing;
+    }
+
+    return this.dependencies.repository.setAdminUserStatus({
+      identityId,
+      status: 'disabled'
+    });
+  }
+
+  public async deleteIntegration({
+    integrationId,
+    actor
+  }: {
+    integrationId: string;
+    actor: AdminPrincipal;
+  }) {
+    assertOwnerForAdminUserManagement({
+      actor,
+      operation: 'delete integrations'
+    });
+
+    return this.dependencies.repository.deleteIntegration({integrationId});
+  }
+
+  public async deleteTemplate({
+    templateId,
+    actor
+  }: {
+    templateId: string;
+    actor: AdminPrincipal;
+  }) {
+    assertOwnerForAdminUserManagement({
+      actor,
+      operation: 'delete templates'
+    });
+
+    return this.dependencies.repository.deleteTemplate({templateId});
   }
 
   public async listAdminAccessRequests({
@@ -814,7 +1047,51 @@ export class DependencyBridge {
       throw mapAuditErrorCodeToAppError(queryResult.error);
     }
 
-    return queryResult.value.events;
+    const templateCache = new Map<string, Awaited<ReturnType<ControlPlaneRepository['getTemplateVersion']>> | null>();
+
+    return Promise.all(
+      queryResult.value.events.map(async event => {
+        const descriptor = event.canonical_descriptor;
+        if (!descriptor) {
+          return event;
+        }
+
+        const cacheKey = `${descriptor.template_id}:${descriptor.template_version}`;
+        let template = templateCache.get(cacheKey);
+        if (template === undefined) {
+          try {
+            template = await this.dependencies.repository.getTemplateVersion({
+              templateId: descriptor.template_id,
+              version: descriptor.template_version
+            });
+          } catch (error) {
+            if (isAppError(error) && error.code === 'template_version_not_found') {
+              template = null;
+            } else {
+              throw error;
+            }
+          }
+          templateCache.set(cacheKey, template);
+        }
+
+        if (!template) {
+          return event;
+        }
+
+        const matchedTemplateConfig = buildMatchedTemplateConfig({
+          event,
+          template
+        });
+        if (!matchedTemplateConfig) {
+          return event;
+        }
+
+        return OpenApiAuditEventSchema.parse({
+          ...event,
+          matched_template_config: matchedTemplateConfig
+        });
+      })
+    );
   }
 
   public persistStateWithDbPackage() {

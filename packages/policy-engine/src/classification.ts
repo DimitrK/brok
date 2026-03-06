@@ -40,6 +40,7 @@ type CompiledPathGroupsResult =
     }
 
 const isAnchoredRegex = (pattern: string) => pattern.startsWith('^') && pattern.endsWith('$')
+const SAFE_GLOB_TOKEN_PATTERN = /(\*\*|\*)/gu
 
 const parseCanonicalMethod = (method: string) =>
   CanonicalRequestDescriptorSchema.shape.method.parse(method)
@@ -52,24 +53,64 @@ const parseCanonicalUrl = (canonicalUrl: string) => {
   }
 }
 
+const hasOnlySafeGlobTokens = (pattern: string) => pattern.startsWith('/') && !pattern.includes('***')
+
+const escapeRegexLiteral = (value: string) => value.replace(/[|\\{}()[\]^$+?.]/gu, '\\$&')
+
+const compileSafeGlobPattern = (pattern: string): CompiledPathPattern | null => {
+  if (!hasOnlySafeGlobTokens(pattern)) {
+    return null
+  }
+
+  const regexSource =
+    '^' +
+    pattern
+      .split(SAFE_GLOB_TOKEN_PATTERN)
+      .filter(segment => segment.length > 0)
+      .map(segment => {
+        if (segment === '**') {
+          return '.*'
+        }
+
+        if (segment === '*') {
+          return '[^/]*'
+        }
+
+        return escapeRegexLiteral(segment)
+      })
+      .join('') +
+    '$'
+
+  return {
+    source: pattern,
+    // eslint-disable-next-line security/detect-non-literal-regexp -- regex is constructed from a restricted safe-glob dialect
+    regex: new RegExp(regexSource, 'u')
+  }
+}
+
+const compilePathPattern = (pattern: string): CompiledPathPattern | null => {
+  if (isAnchoredRegex(pattern)) {
+    try {
+      // eslint-disable-next-line security/detect-non-literal-regexp -- pattern is anchored and validated at template boundary
+      return {source: pattern, regex: new RegExp(pattern, 'u')}
+    } catch {
+      return null
+    }
+  }
+
+  return compileSafeGlobPattern(pattern)
+}
+
 const compilePathGroups = (template: Template): CompiledPathGroupsResult => {
   const compiledGroups: CompiledPathGroup[] = []
   for (const pathGroup of template.path_groups) {
     const compiledPatterns: CompiledPathPattern[] = []
     for (const pattern of pathGroup.path_patterns) {
-      if (!isAnchoredRegex(pattern)) {
+      const compiledPattern = compilePathPattern(pattern)
+      if (!compiledPattern) {
         return {ok: false, reason_code: 'invalid_path_pattern'}
       }
-
-      let regex: RegExp
-      try {
-        // eslint-disable-next-line security/detect-non-literal-regexp -- pattern is anchored and validated at template boundary
-        regex = new RegExp(pattern, 'u')
-      } catch {
-        return {ok: false, reason_code: 'invalid_path_pattern'}
-      }
-
-      compiledPatterns.push({source: pattern, regex})
+      compiledPatterns.push(compiledPattern)
     }
 
     compiledGroups.push({

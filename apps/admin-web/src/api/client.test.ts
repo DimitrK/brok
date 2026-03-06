@@ -303,6 +303,122 @@ describe('BrokerAdminApiClient', () => {
     expect(toRequestUrl(fetchSpy.mock.calls[1]?.[0])).toContain('/v1/admin/access-requests/req_2/deny');
   });
 
+  it('deletes integrations and templates using owner-only routes', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 204
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 204
+        })
+      );
+
+    const api = new BrokerAdminApiClient({
+      baseUrl,
+      getToken: () => 'owner-token'
+    });
+
+    await api.deleteIntegration({integrationId: 'int_1'});
+    await api.deleteTemplate({templateId: 'tpl_1'});
+
+    expect(toRequestUrl(fetchSpy.mock.calls[0]?.[0])).toContain('/v1/integrations/int_1');
+    expect(toRequestUrl(fetchSpy.mock.calls[1]?.[0])).toContain('/v1/templates/tpl_1');
+    expect(fetchSpy.mock.calls[0]?.[1]?.method).toBe('DELETE');
+    expect(fetchSpy.mock.calls[1]?.[1]?.method).toBe('DELETE');
+  });
+
+  it('submits and fetches a requester-scoped admin access request', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        jsonResponse(201, {
+          request_id: 'aar_new',
+          issuer: 'https://issuer.example.com',
+          subject: 'sub_new',
+          email: 'new-admin@example.com',
+          requested_roles: ['admin'],
+          requested_tenant_ids: ['t_1'],
+          status: 'pending',
+          reason: 'Need access to manage tenants',
+          created_at: '2026-02-26T10:00:00.000Z',
+          updated_at: '2026-02-26T10:00:00.000Z'
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          request_id: 'aar_new',
+          issuer: 'https://issuer.example.com',
+          subject: 'sub_new',
+          email: 'new-admin@example.com',
+          requested_roles: ['admin'],
+          requested_tenant_ids: ['t_1'],
+          status: 'pending',
+          reason: 'Need access to manage tenants',
+          created_at: '2026-02-26T10:00:00.000Z',
+          updated_at: '2026-02-26T10:00:00.000Z'
+        })
+      );
+
+    const api = new BrokerAdminApiClient({
+      baseUrl,
+      getToken: () => 'oauth-session-token'
+    });
+
+    const created = await api.submitAdminAccessRequest({
+      payload: {
+        reason: 'Need access to manage tenants'
+      }
+    });
+    const fetched = await api.getAdminAccessRequestById({requestId: 'aar_new'});
+
+    expect(created?.request_id).toBe('aar_new');
+    expect(fetched?.request_id).toBe('aar_new');
+    expect(toRequestUrl(fetchSpy.mock.calls[0]?.[0])).toContain('/v1/admin/access-requests');
+    expect(toRequestUrl(fetchSpy.mock.calls[1]?.[0])).toContain('/v1/admin/access-requests/aar_new');
+  });
+
+  it('captures callback error session token headers when present', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: 'admin_signup_closed',
+          message: 'Admin signup is closed',
+          correlation_id: 'cid-2'
+        }),
+        {
+          status: 403,
+          headers: {
+            'content-type': 'application/json',
+            'x-admin-session-token': 'oauth-session-token'
+          }
+        }
+      )
+    );
+
+    const api = new BrokerAdminApiClient({
+      baseUrl,
+      getToken: () => ''
+    });
+
+    await expect(
+      api.handleAdminLoginCallback({
+        provider: 'google',
+        code: 'code-1',
+        state: 'state-1',
+        codeVerifier: 'x'.repeat(64),
+        redirectUri: 'http://localhost:4173/login/callback'
+      })
+    ).rejects.toMatchObject({
+      name: 'ApiClientError',
+      reason: 'admin_signup_closed',
+      sessionToken: 'oauth-session-token'
+    });
+  });
+
   it('fails closed when configured with an invalid base URL', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const api = new BrokerAdminApiClient({

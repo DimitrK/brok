@@ -20,6 +20,7 @@ import {
 } from '@broker-interceptor/schemas/dist/generated/schemas.js';
 
 import type {Logger, ParsedManifest, ResolvedInterceptorConfig, SessionTokenProvider} from './types.js';
+import {validateHostPattern, validatePathGroupPattern} from './match-patterns.js';
 
 /**
  * Validates that a file path is absolute and doesn't contain traversal.
@@ -110,60 +111,14 @@ export type RawManifestFetch = typeof rawFetch;
 
 const textDecoder = new TextDecoder();
 
-function isRegexPattern(pattern: string): boolean {
-  return pattern.startsWith('^');
-}
-
-function validatePathGroupPattern(pattern: string): string | null {
-  if (isRegexPattern(pattern)) {
-    if (!pattern.endsWith('$')) {
-      return 'regex path pattern must be anchored with $';
-    }
-
-    // Guard against glob-style confusion in regex form.
-    // Example: ^/v1/*$ does NOT mean "anything under /v1/" in regex.
-    if (/(^|[^\\])\/\*/.test(pattern)) {
-      return 'regex path pattern uses /* which behaves as a regex quantifier; use /v1/* prefix pattern or ^/v1/.*$';
-    }
-
-    try {
-      // eslint-disable-next-line security/detect-non-literal-regexp -- manifest pattern is signature-verified before use
-      new RegExp(pattern);
-    } catch {
-      return 'regex path pattern is invalid';
-    }
-
-    return null;
-  }
-
-  if (pattern.endsWith('/*')) {
-    if (!pattern.startsWith('/')) {
-      return 'prefix path pattern must start with /';
-    }
-    if (pattern.length < 3) {
-      return 'prefix path pattern must contain a non-root prefix';
-    }
-    return null;
-  }
-
-  if (!pattern.startsWith('/')) {
-    return 'exact path pattern must start with /';
-  }
-
-  if (pattern.includes('*')) {
-    return 'wildcards are only allowed as suffix /*';
-  }
-
-  return null;
-}
-
 export function validateManifestForInterception(manifest: OpenApiManifest): {ok: true} | {ok: false; error: string} {
   for (const [ruleIndex, rule] of manifest.match_rules.entries()) {
     for (const host of rule.match.hosts) {
-      if (host.includes('*')) {
+      const hostError = validateHostPattern(host);
+      if (hostError) {
         return {
           ok: false,
-          error: `Manifest rule ${ruleIndex} (${rule.integration_id}) uses unsupported wildcard host: ${host}`
+          error: `Manifest rule ${ruleIndex} (${rule.integration_id}) host invalid: ${hostError}`
         };
       }
     }

@@ -161,6 +161,34 @@ describe('redactAuditEvent', () => {
     expect(redacted.metadata).toBeNull()
     expect(redacted.canonical_descriptor).toBeNull()
   })
+
+  it('masks nested aws_sigv4 secret values while preserving safe summary keys', () => {
+    const event = buildAuditEvent({
+      metadata: {
+        action: 'admin.integration.created',
+        credential_type: 'aws_sigv4',
+        credential_region: 'eu-west-1',
+        credentials: {
+          access_key_id: 'AKIA_TEST_ACCESS_KEY',
+          secret_access_key: 'super-secret',
+          session_token: 'temporary-session-token'
+        }
+      }
+    })
+    const profile = createDefaultAuditRedactionProfile({
+      tenant_id: event.tenant_id
+    })
+
+    const redacted = redactAuditEvent({
+      event,
+      profile
+    })
+    const metadata = redacted.metadata as Record<string, unknown>
+    expect(metadata.action).toBe('admin.integration.created')
+    expect(metadata.credential_type).toBe('aws_sigv4')
+    expect(metadata.credential_region).toBe('eu-west-1')
+    expect(metadata.credentials).toBe('[REDACTED]')
+  })
 })
 
 describe('redactStructuredLogPayload', () => {

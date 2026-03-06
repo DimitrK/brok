@@ -924,9 +924,15 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     const updateAdminUserSpy = vi
       .spyOn(context.dependencyBridge, 'updateAdminUser')
       .mockResolvedValue(adminUser)
+    const deleteAdminUserSpy = vi
+      .spyOn(context.dependencyBridge, 'deleteAdminUser')
+      .mockResolvedValue({...adminUser, status: 'disabled'})
     const listAdminAccessRequestsSpy = vi
       .spyOn(context.dependencyBridge, 'listAdminAccessRequests')
       .mockResolvedValue({requests: [accessRequest], next_cursor: 'cursor_2'})
+    const getAdminAccessRequestByIdSpy = vi
+      .spyOn(context.dependencyBridge, 'getAdminAccessRequestById')
+      .mockResolvedValue(accessRequest)
     const approveAdminAccessRequestWithOverridesSpy = vi
       .spyOn(context.dependencyBridge, 'approveAdminAccessRequestWithOverrides')
       .mockResolvedValue({...accessRequest, status: 'approved', reason: 'approved by owner'})
@@ -983,6 +989,16 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     })
     expect(updateAdminUserSpy).toHaveBeenCalledTimes(1)
 
+    const deleteUserResponse = await context.request({
+      method: 'DELETE',
+      path: '/v1/admin/users/adm_1'
+    })
+    expect(deleteUserResponse.status).toBe(204)
+    expect(deleteUserResponse.text).toBe('')
+    const [deleteAdminUserCall] = deleteAdminUserSpy.mock.calls
+    expect(deleteAdminUserCall?.[0]?.identityId).toBe('adm_1')
+    expect(deleteAdminUserCall?.[0]?.actor.subject).toBe('owner-user')
+
     const listAccessRequestsResponse = await context.request({
       method: 'GET',
       path: '/v1/admin/access-requests?status=pending&tenant_id=t_1&role=admin&search=admin&limit=5&cursor=cursor_1'
@@ -1000,6 +1016,19 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     expect(listAdminAccessRequestsCall?.[0]?.search).toBe('admin')
     expect(listAdminAccessRequestsCall?.[0]?.limit).toBe(5)
     expect(listAdminAccessRequestsCall?.[0]?.cursor).toBe('cursor_1')
+
+    const getAccessRequestResponse = await context.request({
+      method: 'GET',
+      path: '/v1/admin/access-requests/aar_1'
+    })
+    expect(getAccessRequestResponse.status).toBe(200)
+    expect(getAccessRequestResponse.body).toMatchObject({
+      request_id: 'aar_1',
+      status: 'pending'
+    })
+    const [getAdminAccessRequestByIdCall] = getAdminAccessRequestByIdSpy.mock.calls
+    expect(getAdminAccessRequestByIdCall?.[0]?.requestId).toBe('aar_1')
+    expect(getAdminAccessRequestByIdCall?.[0]?.actor.subject).toBe('owner-user')
 
     const approveResponse = await context.request({
       method: 'POST',
@@ -1040,6 +1069,61 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     expect(denyAdminAccessRequestCall?.[0]?.reason).toBe('request denied')
   })
 
+  it('supports explicit admin access request submission for unresolved OAuth principals', async () => {
+    const context = await createContext()
+    const pendingRequest: RepositoryAdminAccessRequest = {
+      request_id: 'aar_new',
+      issuer: 'https://issuer.example/',
+      subject: 'new-admin-subject',
+      email: 'new-admin@example.com',
+      requested_roles: ['admin'],
+      requested_tenant_ids: ['t_1'],
+      status: 'pending',
+      reason: 'Need access to manage tenants',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }
+
+    const authenticateAdminPrincipalSpy = vi
+      .spyOn(context.dependencyBridge, 'authenticateAdminPrincipal')
+      .mockResolvedValue({
+        subject: 'new-admin-subject',
+        issuer: 'https://issuer.example/',
+        email: 'new-admin@example.com',
+        roles: ['admin'],
+        tenantIds: ['t_1'],
+        emailVerified: true,
+        authContext: {
+          mode: 'oidc',
+          issuer: 'https://issuer.example/'
+        }
+      })
+    const submitAdminAccessRequestSpy = vi
+      .spyOn(context.dependencyBridge, 'submitAdminAccessRequest')
+      .mockResolvedValue(pendingRequest)
+
+    const response = await context.request({
+      method: 'POST',
+      path: '/v1/admin/access-requests',
+      token: 'oauth-session-token',
+      body: {
+        reason: 'Need access to manage tenants'
+      }
+    })
+
+    expect(response.status).toBe(201)
+    expect(response.body).toMatchObject({
+      request_id: 'aar_new',
+      status: 'pending'
+    })
+    expect(authenticateAdminPrincipalSpy).toHaveBeenCalledWith({
+      authorizationHeader: 'Bearer oauth-session-token'
+    })
+    const [submitAdminAccessRequestCall] = submitAdminAccessRequestSpy.mock.calls
+    expect(submitAdminAccessRequestCall?.[0]?.actor.subject).toBe('new-admin-subject')
+    expect(submitAdminAccessRequestCall?.[0]?.reason).toBe('Need access to manage tenants')
+  })
+
   it('forbids non-owner principals on admin user management routes', async () => {
     const context = await createContext()
 
@@ -1050,6 +1134,30 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     })
     expect(response.status).toBe(403)
     expect(response.body).toMatchObject({error: 'admin_forbidden'})
+
+    const deleteResponse = await context.request({
+      method: 'DELETE',
+      path: '/v1/admin/users/adm_1',
+      token: ADMIN_TOKEN
+    })
+    expect(deleteResponse.status).toBe(403)
+    expect(deleteResponse.body).toMatchObject({error: 'admin_forbidden'})
+
+    const deleteIntegrationResponse = await context.request({
+      method: 'DELETE',
+      path: '/v1/integrations/int_owner_only',
+      token: ADMIN_TOKEN
+    })
+    expect(deleteIntegrationResponse.status).toBe(403)
+    expect(deleteIntegrationResponse.body).toMatchObject({error: 'admin_forbidden'})
+
+    const deleteTemplateResponse = await context.request({
+      method: 'DELETE',
+      path: '/v1/templates/tpl_owner_only',
+      token: ADMIN_TOKEN
+    })
+    expect(deleteTemplateResponse.status).toBe(403)
+    expect(deleteTemplateResponse.body).toMatchObject({error: 'admin_forbidden'})
   })
 
   it('covers the main control-plane lifecycle routes', async () => {
@@ -1233,11 +1341,31 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     expect(createIntegration.status).toBe(201)
     const integrationId = (createIntegration.body as {integration_id: string}).integration_id
 
+    const createS3Integration = await context.request({
+      method: 'POST',
+      path: `/v1/tenants/${tenantId}/integrations`,
+      body: {
+        provider: 'aws_s3',
+        name: 'backup-storage',
+        template_id: 'tpl_openai_safe',
+        secret_material: {
+          type: 'aws_sigv4',
+          access_key_id: 'AKIA_TEST',
+          secret_access_key: 'secret-test-key',
+          session_token: 'session-token',
+          region: 'eu-west-1'
+        }
+      }
+    })
+    expect(createS3Integration.status).toBe(201)
+    const s3IntegrationId = (createS3Integration.body as {integration_id: string}).integration_id
+
     const listIntegrations = await context.request({
       method: 'GET',
       path: `/v1/tenants/${tenantId}/integrations`
     })
     expect(listIntegrations.status).toBe(200)
+    expect((listIntegrations.body as {integrations: unknown[]}).integrations).toHaveLength(2)
 
     const patchIntegration = await context.request({
       method: 'PATCH',
@@ -1278,6 +1406,31 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
       path: `/v1/policies/${policyId}`
     })
     expect(deletePolicy.status).toBe(204)
+
+    const deleteIntegration = await context.request({
+      method: 'DELETE',
+      path: `/v1/integrations/${integrationId}`
+    })
+    expect(deleteIntegration.status).toBe(204)
+
+    const deleteS3Integration = await context.request({
+      method: 'DELETE',
+      path: `/v1/integrations/${s3IntegrationId}`
+    })
+    expect(deleteS3Integration.status).toBe(204)
+
+    const deleteTemplate = await context.request({
+      method: 'DELETE',
+      path: '/v1/templates/tpl_openai_safe'
+    })
+    expect(deleteTemplate.status).toBe(204)
+
+    const getDeletedTemplateVersion = await context.request({
+      method: 'GET',
+      path: '/v1/templates/tpl_openai_safe/versions/1'
+    })
+    expect(getDeletedTemplateVersion.status).toBe(404)
+    expect(getDeletedTemplateVersion.body).toMatchObject({error: 'template_version_not_found'})
 
     const listApprovals = await context.request({method: 'GET', path: '/v1/approvals'})
     expect(listApprovals.status).toBe(200)
@@ -1436,6 +1589,117 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     expect((secondPage.body as {next_cursor?: string}).next_cursor).toBeUndefined()
   })
 
+  it('enriches audit events with matched template config when canonical template metadata is available', async () => {
+    const fixture = buildApprovalFixtureState()
+    fixture.templates = [
+      {
+        ...makeTemplate('tpl_s3_backup'),
+        provider: 's3_compatible',
+        allowed_hosts: ['gateway.storjshare.io'],
+        path_groups: [
+          {
+            group_id: 'backup_create',
+            risk_tier: 'medium',
+            approval_mode: 'required',
+            methods: ['GET'],
+            path_patterns: ['^/$'],
+            query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+            header_forward_allowlist: ['accept'],
+            body_policy: {
+              max_bytes: 0,
+              content_types: []
+            },
+            constraints: {
+              upstream_auth: {
+                type: 'aws_sigv4',
+                service: 's3',
+                region: 'eu1'
+              }
+            }
+          }
+        ]
+      }
+    ]
+    fixture.audit_events = [
+      {
+        event_id: 'evt_s3_template',
+        timestamp: '2026-01-03T00:00:00.000Z',
+        tenant_id: 't_1',
+        workload_id: 'w_1',
+        integration_id: 'i_1',
+        correlation_id: 'corr_evt_s3_template',
+        event_type: 'execute',
+        decision: 'denied',
+        action_group: 'backup_create',
+        risk_tier: 'medium',
+        destination: {
+          scheme: 'https',
+          host: 'gateway.storjshare.io',
+          port: 443,
+          path_group: 'backup_create'
+        },
+        latency_ms: 27,
+        upstream_status_code: 403,
+        canonical_descriptor: {
+          tenant_id: 't_1',
+          workload_id: 'w_1',
+          integration_id: 'i_1',
+          template_id: 'tpl_s3_backup',
+          template_version: 1,
+          method: 'GET',
+          canonical_url: 'https://gateway.storjshare.io/?list-type=2&prefix=backups%2F',
+          matched_path_group_id: 'backup_create',
+          normalized_headers: [{name: 'accept', value: 'application/xml'}],
+          query_keys: ['list-type', 'prefix']
+        },
+        policy: {
+          rule_type: 'deny',
+          rule_id: 'pol_1',
+          approval_id: null
+        },
+        message: 'Denied by policy',
+        metadata: null
+      }
+    ]
+
+    const statePath = await writeStateFixture(fixture)
+    const context = await createContext({statePath})
+
+    const response = await context.request({
+      method: 'GET',
+      path: '/v1/audit/events'
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({
+      events: [
+        {
+          event_id: 'evt_s3_template',
+          matched_template_config: {
+            path_group_id: 'backup_create',
+            risk_tier: 'medium',
+            approval_mode: 'required',
+            methods: ['GET'],
+            path_patterns: ['^/$'],
+            query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+            header_forward_allowlist: ['accept'],
+            body_policy: {
+              max_bytes: 0,
+              content_types: []
+            },
+            constraints: {
+              upstream_auth: {
+                type: 'aws_sigv4',
+                service: 's3',
+                region: 'eu1'
+              }
+            }
+          }
+        }
+      ]
+    })
+  })
+
   it('returns deterministic validation and routing errors', async () => {
     const context = await createContext()
 
@@ -1471,6 +1735,41 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     })
     expect(invalidJsonBody.status).toBe(400)
     expect(invalidJsonBody.body).toMatchObject({error: 'request_body_invalid_json'})
+
+    const invalidS3IntegrationBody = await context.request({
+      method: 'POST',
+      path: '/v1/tenants/t_example/integrations',
+      body: {
+        provider: 'aws_s3',
+        name: 'invalid-s3',
+        template_id: 'tpl_example',
+        secret_material: {
+          type: 'aws_sigv4',
+          access_key_id: 'AKIA_TEST',
+          secret_access_key: 'secret-test-key'
+        }
+      }
+    })
+    expect(invalidS3IntegrationBody.status).toBe(400)
+    expect(invalidS3IntegrationBody.body).toMatchObject({error: 'request_body_schema_invalid'})
+
+    const invalidTemplateConstraints = await context.request({
+      method: 'POST',
+      path: '/v1/templates',
+      body: {
+        ...makeTemplate('tpl_invalid_constraints'),
+        path_groups: [
+          {
+            ...makeTemplate('tpl_invalid_constraints').path_groups[0],
+            constraints: {
+              unsupported_constraint: true
+            }
+          }
+        ]
+      }
+    })
+    expect(invalidTemplateConstraints.status).toBe(400)
+    expect(invalidTemplateConstraints.body).toMatchObject({error: 'request_body_schema_invalid'})
 
     const invalidTimeRange = await context.request({
       method: 'GET',

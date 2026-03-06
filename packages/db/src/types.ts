@@ -1,3 +1,5 @@
+import type {SecretMaterialType} from './contracts.js'
+
 export type CursorPaginationInput = {
   cursor?: string
   limit?: number
@@ -140,7 +142,7 @@ export type SecretRow = {
   secretRef: string
   tenantId: string
   integrationId: string
-  type: 'api_key' | 'oauth_refresh_token'
+  type: SecretMaterialType
   activeVersion: number
 }
 
@@ -162,7 +164,7 @@ export type SecretVersionRowWithSecret = SecretVersionRow & {
   secret: {
     tenantId: string
     integrationId: string
-    type: 'api_key' | 'oauth_refresh_token'
+    type: SecretMaterialType
   }
 }
 

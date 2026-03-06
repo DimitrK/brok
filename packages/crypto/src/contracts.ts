@@ -5,9 +5,11 @@ import {
   OpenApiManifestKeysSchema,
   OpenApiManifestSchema,
   SecretMaterialSchema,
+  SecretMaterialTypeSchema,
   type OpenApiManifest,
   type OpenApiManifestKeys,
-  type SecretMaterial
+  type SecretMaterial,
+  type SecretMaterialType
 } from '@broker-interceptor/schemas';
 
 export const KeyIdSchema = z
@@ -145,7 +147,7 @@ export const EnvelopeCiphertextSchema = z
 
 export const EncryptedSecretMaterialSchema = z
   .object({
-    type: SecretMaterialSchema.shape.type,
+    type: SecretMaterialTypeSchema,
     envelope: EnvelopeCiphertextSchema
   })
   .strict();
@@ -164,7 +166,9 @@ export {
   OpenApiManifestKeysSchema,
   OpenApiManifestSchema,
   SecretMaterialSchema,
+  SecretMaterialTypeSchema,
   type OpenApiManifest,
   type OpenApiManifestKeys,
-  type SecretMaterial
+  type SecretMaterial,
+  type SecretMaterialType
 };

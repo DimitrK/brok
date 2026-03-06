@@ -22,7 +22,7 @@ All extra details are emitted under `metadata`.
 ## Default Redaction Policy
 
 `sanitizeForLog` redacts values for keys that match sensitive families (case-insensitive), including:
-- `token`, `secret`, `authorization`, `cookie`, `dpop`, `private_key`, `ciphertext`, `auth_tag`, and request/response body keys.
+- `access_key_id`, `token`, `secret`, `authorization`, `cookie`, `dpop`, `private_key`, `ciphertext`, `auth_tag`, and request/response body keys.
 
 ## Exports
 

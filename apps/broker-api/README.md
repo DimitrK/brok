@@ -160,6 +160,50 @@ openssl rand -32 | base64
 - **Development/Test:** If no secret key is configured, a random key is generated automatically for convenience. The service falls back to in-memory state for secrets if shared infrastructure repositories are not available.
 - **Shutdown:** During graceful shutdown, the secret key buffer is zeroized (filled with zeros) to minimize in-memory exposure of cryptographic material.
 
+### AWS SigV4-backed S3 execution
+
+`broker-api` can sign S3 requests on behalf of a workload when the matched template path-group declares:
+
+```json
+{
+  "constraints": {
+    "upstream_auth": {
+      "type": "aws_sigv4",
+      "service": "s3"
+    }
+  }
+}
+```
+
+The encrypted integration secret remains broker-managed and should be stored as structured `aws_sigv4` secret material with:
+
+- `access_key_id`
+- `secret_access_key`
+- optional `session_token`
+- `region`
+
+Template constraints may also declare an explicit signing region:
+
+```json
+{
+  "constraints": {
+    "upstream_auth": {
+      "type": "aws_sigv4",
+      "service": "s3",
+      "region": "eu-central-1"
+    }
+  }
+}
+```
+
+At runtime broker-api resolves the signing region in this order:
+
+1. integration secret `region`
+2. template path-group `constraints.upstream_auth.region`
+3. AWS-native hostname derivation when the target host is compatible with safe region parsing
+
+For non-AWS S3-compatible hosts, broker-api fails closed when it cannot resolve a region safely. This path is intended for broker-mediated workloads such as backup/restore so AWS credentials never need to live directly in the client process.
+
 ## How to start the server
 
 From repo root:

@@ -47,3 +47,68 @@ export const buildTemplate = (): Template => ({
     dns_resolution_required: true
   }
 });
+
+export const buildS3Template = (): Template => ({
+  template_id: 'tpl_s3_v1',
+  version: 1,
+  provider: 's3_compatible',
+  description: 'S3-compatible minimal template',
+  allowed_schemes: ['https'],
+  allowed_ports: [443],
+  allowed_hosts: ['storage.example.com'],
+  redirect_policy: {
+    mode: 'deny'
+  },
+  path_groups: [
+    {
+      group_id: 's3_list_objects',
+      risk_tier: 'low',
+      approval_mode: 'none',
+      methods: ['GET'],
+      path_patterns: ['^/$'],
+      query_allowlist: ['continuation-token', 'list-type', 'prefix'],
+      header_forward_allowlist: ['accept', 'x-amz-content-sha256', 'x-amz-date', 'x-amz-security-token'],
+      body_policy: {
+        max_bytes: 0,
+        content_types: []
+      },
+      constraints: {
+        upstream_auth: {
+          type: 'aws_sigv4',
+          service: 's3'
+        }
+      }
+    },
+    {
+      group_id: 's3_object_rw',
+      risk_tier: 'high',
+      approval_mode: 'required',
+      methods: ['GET', 'PUT'],
+      path_patterns: ['^/[^?]+$'],
+      query_allowlist: [],
+      header_forward_allowlist: [
+        'content-type',
+        'x-amz-content-sha256',
+        'x-amz-date',
+        'x-amz-security-token'
+      ],
+      body_policy: {
+        max_bytes: 10_485_760,
+        content_types: ['application/json', 'application/octet-stream', 'text/plain']
+      },
+      constraints: {
+        upstream_auth: {
+          type: 'aws_sigv4',
+          service: 's3'
+        }
+      }
+    }
+  ],
+  network_safety: {
+    deny_private_ip_ranges: true,
+    deny_link_local: true,
+    deny_loopback: true,
+    deny_metadata_ranges: true,
+    dns_resolution_required: true
+  }
+});

@@ -1,4 +1,4 @@
-import {Controller, Get, Inject, Post, Req, Res} from '@nestjs/common'
+import {Controller, Delete, Get, Inject, Post, Req, Res} from '@nestjs/common'
 import type {Request, Response} from 'express'
 import {
   OpenApiTemplateCreateResponseSchema,
@@ -8,7 +8,7 @@ import {
 
 import {requireAnyRole} from '../../auth'
 import {badRequest} from '../../errors'
-import {parseJsonBody, sendJson} from '../../http'
+import {parseJsonBody, sendJson, sendNoContent} from '../../http'
 import {AdminApiControllerContext, decodePathParam, listAccessRoles, resolveAuditTenantId, writeAccessRoles} from '../controllerContext'
 
 @Controller()
@@ -98,6 +98,37 @@ export class TemplatesController {
           status: 200,
           correlationId,
           payload
+        })
+      }
+    })
+  }
+
+  @Delete('/v1/templates/:templateId')
+  public async remove(@Req() request: Request, @Res() response: Response): Promise<void> {
+    await this.context.handleRequest({
+      request,
+      response,
+      handler: async ({correlationId}) => {
+        const principal = await this.context.authenticateRequest({request})
+        requireAnyRole({principal, allowed: ['owner']})
+
+        const templateId = decodePathParam(request.params.templateId as string)
+        await this.context.dependencyBridge.deleteTemplate({
+          templateId,
+          actor: principal
+        })
+
+        sendNoContent({response, correlationId})
+
+        this.context.appendAuditEventNonBlocking({
+          correlationId,
+          event: this.context.repository.createAdminAuditEvent({
+            actor: principal,
+            correlationId,
+            action: 'template.delete',
+            tenantId: resolveAuditTenantId({principal}),
+            message: `Template ${templateId} deleted (disabled)`
+          })
         })
       }
     })

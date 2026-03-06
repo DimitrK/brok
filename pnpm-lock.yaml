@@ -314,6 +314,31 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@25.2.3)
 
+  packages/backup-workload:
+    dependencies:
+      '@broker-interceptor/interceptor-node':
+        specifier: workspace:*
+        version: link:../interceptor-node
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@broker-interceptor/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@broker-interceptor/prettier-config':
+        specifier: workspace:*
+        version: link:../prettier-config
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.11
+      '@vitest/coverage-v8':
+        specifier: ^2.1.8
+        version: 2.1.9(vitest@2.1.9(@types/node@22.19.11))
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.11)
+
   packages/canonicalizer:
     dependencies:
       '@broker-interceptor/schemas':
@@ -545,25 +570,6 @@ importers:
       '@types/node':
         specifier: ^25.2.3
         version: 25.2.3
-      vitest:
-        specifier: ^2.1.8
-        version: 2.1.9(@types/node@25.2.3)
-
-  packages/shared:
-    dependencies:
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@broker-interceptor/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@broker-interceptor/prettier-config':
-        specifier: workspace:*
-        version: link:../prettier-config
-      '@vitest/coverage-v8':
-        specifier: ^2.1.8
-        version: 2.1.9(vitest@2.1.9(@types/node@25.2.3))
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@25.2.3)

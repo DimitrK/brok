@@ -50,8 +50,49 @@ describe('crypto utilities', () => {
         integration_id: 'i1'
       }
     })
-    expect(decrypted).toBe('secret-value')
+    expect(decrypted).toEqual({
+      type: 'api_key',
+      value: 'secret-value'
+    })
     expect(envelope.ciphertext_b64).not.toContain('secret-value')
+  })
+
+  it('serializes aws_sigv4 secret payloads into the encrypted envelope format', async () => {
+    const key = Buffer.alloc(32, 6)
+    const envelope = await encryptSecretMaterialWithCryptoPackage({
+      secretMaterial: {
+        type: 'aws_sigv4',
+        access_key_id: 'AKIA_TEST',
+        secret_access_key: 'secret-test-key',
+        session_token: 'session-token',
+        region: 'eu-west-1'
+      },
+      key,
+      keyId: 'k-s3',
+      aadContext: {
+        tenant_id: 't1',
+        integration_id: 'i-s3'
+      }
+    })
+
+    const decrypted = await decryptSecretMaterialWithCryptoPackage({
+      envelope,
+      secretType: 'aws_sigv4',
+      key,
+      keyId: 'k-s3',
+      aadContext: {
+        tenant_id: 't1',
+        integration_id: 'i-s3'
+      }
+    })
+
+    expect(decrypted).toEqual({
+      type: 'aws_sigv4',
+      access_key_id: 'AKIA_TEST',
+      secret_access_key: 'secret-test-key',
+      session_token: 'session-token',
+      region: 'eu-west-1'
+    })
   })
 
   it('fails closed when decryption uses the wrong key', async () => {

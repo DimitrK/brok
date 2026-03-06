@@ -1,4 +1,4 @@
-import {Controller, Get, Inject, Patch, Post, Req, Res} from '@nestjs/common'
+import {Controller, Delete, Get, Inject, Patch, Post, Req, Res} from '@nestjs/common'
 import type {Request, Response} from 'express'
 import {
   OpenApiIntegrationCreateResponseSchema,
@@ -9,7 +9,7 @@ import {
 } from '@broker-interceptor/schemas'
 
 import {requireAnyRole, requireTenantScope} from '../../auth'
-import {parseJsonBody, sendJson} from '../../http'
+import {parseJsonBody, sendJson, sendNoContent} from '../../http'
 import {AdminApiControllerContext, decodePathParam, listAccessRoles, writeAccessRoles} from '../controllerContext'
 
 @Controller()
@@ -133,6 +133,38 @@ export class IntegrationsController {
             tenantId: integration.tenant_id,
             integrationId,
             message: `Integration ${integrationId} updated`
+          })
+        })
+      }
+    })
+  }
+
+  @Delete('/v1/integrations/:integrationId')
+  public async remove(@Req() request: Request, @Res() response: Response): Promise<void> {
+    await this.context.handleRequest({
+      request,
+      response,
+      handler: async ({correlationId}) => {
+        const principal = await this.context.authenticateRequest({request})
+        requireAnyRole({principal, allowed: ['owner']})
+
+        const integrationId = decodePathParam(request.params.integrationId as string)
+        const deleted = await this.context.dependencyBridge.deleteIntegration({
+          integrationId,
+          actor: principal
+        })
+
+        sendNoContent({response, correlationId})
+
+        this.context.appendAuditEventNonBlocking({
+          correlationId,
+          event: this.context.repository.createAdminAuditEvent({
+            actor: principal,
+            correlationId,
+            action: 'integration.delete',
+            tenantId: deleted.tenant_id,
+            integrationId,
+            message: `Integration ${integrationId} deleted (disabled)`
           })
         })
       }

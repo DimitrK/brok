@@ -15,7 +15,69 @@
       "type": "string"
     },
     "secret_material": {
-      "$ref": "./secret-material.schema.json"
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "value"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["api_key"]
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "value"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["oauth_refresh_token"]
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "access_key_id", "secret_access_key", "region"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["aws_sigv4"]
+            },
+            "access_key_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "secret_access_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "session_token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "region": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     }
   },
   "additionalProperties": false

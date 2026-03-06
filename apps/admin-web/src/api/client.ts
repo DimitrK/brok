@@ -1,4 +1,5 @@
 import {
+  OpenApiAdminAccessRequestCreateRequestSchema,
   OpenApiAdminAccessRequestApproveRequestSchema,
   OpenApiAdminAccessRequestDenyRequestSchema,
   OpenApiAdminAccessRequestListResponseSchema,
@@ -44,6 +45,7 @@ import {
   OpenApiWorkloadSchema,
   OpenApiWorkloadUpdateRequestSchema,
   type OpenApiAdminAccessRequestApproveRequest,
+  type OpenApiAdminAccessRequestCreateRequest,
   type OpenApiAdminAccessRequestDenyRequest,
   type OpenApiAdminAuthProvider,
   type OpenApiAdminUserUpdateRequest,
@@ -83,6 +85,9 @@ const appendQuery = (url: URL, query?: Record<string, QueryValue>) => {
     }
   }
 };
+
+const extractSessionToken = (headers: Headers) =>
+  headers.get('x-admin-session-token') ?? headers.get('x-oauth-session-token') ?? headers.get('x-session-token') ?? undefined;
 
 type RequestOptions<TResponse, TBody> = {
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
@@ -190,19 +195,22 @@ export class BrokerAdminApiClient {
 
     if (!response.ok) {
       const parsedError = OpenApiErrorSchema.safeParse(parsedJson);
+      const sessionToken = extractSessionToken(response.headers);
       if (parsedError.success) {
         throw new ApiClientError({
           message: parsedError.data.message,
           status: response.status,
           reason: parsedError.data.error,
-          correlationId: parsedError.data.correlation_id
+          correlationId: parsedError.data.correlation_id,
+          sessionToken
         });
       }
 
       throw new ApiClientError({
         message: `Request failed with status ${response.status}.`,
         status: response.status,
-        reason: 'request_failed'
+        reason: 'request_failed',
+        sessionToken
       });
     }
 
@@ -367,6 +375,31 @@ export class BrokerAdminApiClient {
     });
   }
 
+  public async submitAdminAccessRequest(input: {payload?: OpenApiAdminAccessRequestCreateRequest; signal?: AbortSignal} = {}) {
+    const payload = input.payload ? OpenApiAdminAccessRequestCreateRequestSchema.parse(input.payload) : undefined;
+    return this.request({
+      method: 'POST',
+      path: '/v1/admin/access-requests',
+      ...(payload
+        ? {
+            bodySchema: OpenApiAdminAccessRequestCreateRequestSchema,
+            body: payload
+          }
+        : {}),
+      responseSchema: OpenApiAdminAccessRequestSchema,
+      signal: input.signal
+    });
+  }
+
+  public async getAdminAccessRequestById(input: {requestId: string; signal?: AbortSignal}) {
+    return this.request({
+      method: 'GET',
+      path: `/v1/admin/access-requests/${encodeURIComponent(input.requestId)}`,
+      responseSchema: OpenApiAdminAccessRequestSchema,
+      signal: input.signal
+    });
+  }
+
   public async approveAdminAccessRequest(input: {
     requestId: string;
     payload: OpenApiAdminAccessRequestApproveRequest;
@@ -397,15 +430,8 @@ export class BrokerAdminApiClient {
     });
   }
 
-  public submitAccessRequest(): Promise<never> {
-    return Promise.reject(
-      new ApiClientError({
-        message:
-          'Access request submission is unavailable because no OpenAPI endpoint is defined for this action yet.',
-        status: 501,
-        reason: 'contract_missing'
-      })
-    );
+  public async submitAccessRequest(input: {payload?: OpenApiAdminAccessRequestCreateRequest; signal?: AbortSignal} = {}) {
+    return this.submitAdminAccessRequest(input);
   }
 
   public async createTenant(input: unknown, signal?: AbortSignal) {
@@ -518,6 +544,14 @@ export class BrokerAdminApiClient {
     });
   }
 
+  public async deleteIntegration(input: {integrationId: string; signal?: AbortSignal}) {
+    await this.request({
+      method: 'DELETE',
+      path: `/v1/integrations/${encodeURIComponent(input.integrationId)}`,
+      signal: input.signal
+    });
+  }
+
   public async createTemplate(input: {payload: unknown; signal?: AbortSignal}) {
     return this.request({
       method: 'POST',
@@ -543,6 +577,14 @@ export class BrokerAdminApiClient {
       method: 'GET',
       path: `/v1/templates/${encodeURIComponent(input.templateId)}/versions/${input.version}`,
       responseSchema: OpenApiTemplateSchema,
+      signal: input.signal
+    });
+  }
+
+  public async deleteTemplate(input: {templateId: string; signal?: AbortSignal}) {
+    await this.request({
+      method: 'DELETE',
+      path: `/v1/templates/${encodeURIComponent(input.templateId)}`,
       signal: input.signal
     });
   }

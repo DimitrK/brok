@@ -495,7 +495,8 @@ export class AdminApiControllerContext {
   public async authenticateFromAuthorizationHeader({
     authorizationHeader,
     context,
-    transformAuthenticatedPrincipal
+    transformAuthenticatedPrincipal,
+    resolveIdentity
   }: {
     authorizationHeader: string | undefined
     context: 'oauth_callback' | 'request'
@@ -505,6 +506,7 @@ export class AdminApiControllerContext {
       | Awaited<ReturnType<DependencyBridge['authenticateAdminPrincipal']>>
       | Promise<Awaited<ReturnType<DependencyBridge['authenticateAdminPrincipal']>>
       >
+    resolveIdentity?: boolean
   }) {
     let authenticatedPrincipal: Awaited<ReturnType<typeof this.dependencyBridge.authenticateAdminPrincipal>>
     try {
@@ -525,9 +527,18 @@ export class AdminApiControllerContext {
       authenticatedPrincipal = await transformAuthenticatedPrincipal(authenticatedPrincipal)
     }
 
-    const principal = await this.dependencyBridge.resolveAdminIdentityFromToken({
-      principal: authenticatedPrincipal
-    })
+    if (resolveIdentity === false) {
+      this.logAdminAuthVerified({principal: authenticatedPrincipal, context})
+      if (authenticatedPrincipal.tenantIds && authenticatedPrincipal.tenantIds.length === 1) {
+        setLogContextFields({
+          tenant_id: authenticatedPrincipal.tenantIds[0]
+        })
+      }
+
+      return authenticatedPrincipal
+    }
+
+    const principal = await this.dependencyBridge.resolveAdminIdentityFromToken({principal: authenticatedPrincipal})
     this.logAdminAuthVerified({principal, context})
     if (principal.tenantIds && principal.tenantIds.length === 1) {
       setLogContextFields({
@@ -542,6 +553,14 @@ export class AdminApiControllerContext {
     return this.authenticateFromAuthorizationHeader({
       authorizationHeader: request.headers.authorization,
       context: 'request'
+    })
+  }
+
+  public async authenticateRequestWithoutIdentityResolution({request}: {request: IncomingMessage}) {
+    return this.authenticateFromAuthorizationHeader({
+      authorizationHeader: request.headers.authorization,
+      context: 'request',
+      resolveIdentity: false
     })
   }
 

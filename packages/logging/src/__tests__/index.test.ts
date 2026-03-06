@@ -41,6 +41,7 @@ describe('@broker-interceptor/logging', () => {
         nested: {
           dpop: 'token',
           api_secret: 'secret',
+          access_key_id: 'AKIAIOSFODNN7EXAMPLE',
           allowed: 'ok'
         },
         body: {
@@ -52,8 +53,48 @@ describe('@broker-interceptor/logging', () => {
     expect(sanitized.authorization).toBe('[REDACTED]');
     expect((sanitized.nested as Record<string, unknown>).dpop).toBe('[REDACTED]');
     expect((sanitized.nested as Record<string, unknown>).api_secret).toBe('[REDACTED]');
+    expect((sanitized.nested as Record<string, unknown>).access_key_id).toBe('[REDACTED]');
     expect((sanitized.nested as Record<string, unknown>).allowed).toBe('ok');
     expect(sanitized.body).toBe('[REDACTED]');
+  });
+
+  it('redacts typed aws sigv4 credentials in diagnostics', () => {
+    const sanitized = sanitizeForLog({
+      value: {
+        secret_material: {
+          type: 'aws_sigv4',
+          access_key_id: 'AKIAIOSFODNN7EXAMPLE',
+          secret_access_key: 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY',
+          session_token: 'temporary-session-token',
+          region: 'eu-central-1'
+        },
+        diagnostics: {
+          credentials: {
+            type: 'aws_sigv4',
+            access_key_id: 'AKIAIOSFODNN7EXAMPLE',
+            secret_access_key: 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY',
+            session_token: 'temporary-session-token',
+            region: 'eu-central-1'
+          },
+          AWSAccessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+          SessionToken: 'temporary-session-token',
+          region: 'eu-central-1'
+        }
+      }
+    }) as Record<string, unknown>;
+
+    expect(sanitized.secret_material).toBe('[REDACTED]');
+
+    const diagnostics = sanitized.diagnostics as Record<string, unknown>;
+    const credentials = diagnostics.credentials as Record<string, unknown>;
+    expect(credentials.type).toBe('aws_sigv4');
+    expect(credentials.access_key_id).toBe('[REDACTED]');
+    expect(credentials.secret_access_key).toBe('[REDACTED]');
+    expect(credentials.session_token).toBe('[REDACTED]');
+    expect(credentials.region).toBe('eu-central-1');
+    expect(diagnostics.AWSAccessKeyId).toBe('[REDACTED]');
+    expect(diagnostics.SessionToken).toBe('[REDACTED]');
+    expect(diagnostics.region).toBe('eu-central-1');
   });
 
   it('isolates async context across concurrent requests', async () => {

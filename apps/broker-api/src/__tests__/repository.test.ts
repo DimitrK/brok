@@ -1982,6 +1982,17 @@ describe('data plane repository', () => {
     expect(keys.keys[0]?.kid).toBe('manifest_keyset_success')
   })
 
+  it('falls back to local manifest verification keys when shared crypto storage is unavailable', async () => {
+    const repository = await DataPlaneRepository.create({
+      initialState: createRepositoryState(),
+      approvalTtlSeconds: 10,
+      manifestTtlSeconds: 120
+    })
+
+    const keys = await repository.getManifestVerificationKeysShared()
+    expect(keys).toEqual(repository.getManifestVerificationKeys())
+  })
+
   it('wires SSRF storage bridge cache/rebinding/projection and template invalidation signals', async () => {
     const redisStrings = new Map<string, string>()
     const redisLists = new Map<string, string[]>()

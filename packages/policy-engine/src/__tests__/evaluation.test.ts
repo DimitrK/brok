@@ -729,4 +729,148 @@ describe('evaluatePolicyDecision', () => {
     expect(decision.decision).toBe('denied')
     expect(decision.reason_code).toBe('invalid_rate_limit_rule')
   })
+
+  it('allows S3 bucket-root list requests when a matching allow rule exists', async () => {
+    const s3Template = TemplateSchema.parse({
+      template_id: 'tpl_backup_s3',
+      version: 1,
+      provider: 'aws_s3',
+      allowed_schemes: ['https'],
+      allowed_ports: [443],
+      allowed_hosts: ['backup-bucket.s3.eu-west-1.amazonaws.com'],
+      redirect_policy: {
+        mode: 'deny'
+      },
+      path_groups: [
+        {
+          group_id: 'bucket-objects',
+          risk_tier: 'medium',
+          approval_mode: 'none',
+          methods: ['GET', 'PUT'],
+          path_patterns: ['/', '/backups/**'],
+          query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+          header_forward_allowlist: ['content-type', 'range'],
+          body_policy: {
+            max_bytes: 1048576,
+            content_types: ['application/octet-stream', 'application/json']
+          }
+        }
+      ],
+      network_safety: {
+        deny_private_ip_ranges: true,
+        deny_link_local: true,
+        deny_loopback: true,
+        deny_metadata_ranges: true,
+        dns_resolution_required: true
+      }
+    })
+    const descriptor = CanonicalRequestDescriptorSchema.parse({
+      tenant_id: 'tenant-1',
+      workload_id: 'workload-1',
+      integration_id: 'integration-s3',
+      template_id: s3Template.template_id,
+      template_version: s3Template.version,
+      method: 'GET',
+      canonical_url:
+        'https://backup-bucket.s3.eu-west-1.amazonaws.com/?list-type=2&prefix=backups%2Fbroker%2F',
+      matched_path_group_id: 'bucket-objects',
+      normalized_headers: [],
+      query_keys: ['list-type', 'prefix']
+    })
+    const allowRule = createRule({
+      policy_id: 's3-list-allow',
+      rule_type: 'allow',
+      scope: {
+        tenant_id: 'tenant-1',
+        workload_id: 'workload-1',
+        integration_id: 'integration-s3',
+        template_id: s3Template.template_id,
+        template_version: s3Template.version,
+        action_group: 'bucket-objects',
+        method: 'GET',
+        host: 'backup-bucket.s3.eu-west-1.amazonaws.com',
+        query_keys: ['prefix', 'list-type']
+      }
+    })
+
+    const decision = await evaluatePolicyDecision({
+      descriptor,
+      template: s3Template,
+      policies: [allowRule]
+    })
+
+    expect(decision.decision).toBe('allowed')
+    expect(decision.reason_code).toBe('policy_allow')
+    expect(decision.action_group).toBe('bucket-objects')
+  })
+
+  it('allows S3 object operations when a matching allow rule exists', async () => {
+    const s3Template = TemplateSchema.parse({
+      template_id: 'tpl_backup_s3',
+      version: 1,
+      provider: 'aws_s3',
+      allowed_schemes: ['https'],
+      allowed_ports: [443],
+      allowed_hosts: ['backup-bucket.s3.eu-west-1.amazonaws.com'],
+      redirect_policy: {
+        mode: 'deny'
+      },
+      path_groups: [
+        {
+          group_id: 'bucket-objects',
+          risk_tier: 'medium',
+          approval_mode: 'none',
+          methods: ['GET', 'PUT'],
+          path_patterns: ['/', '/backups/**'],
+          query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+          header_forward_allowlist: ['content-type', 'range'],
+          body_policy: {
+            max_bytes: 1048576,
+            content_types: ['application/octet-stream', 'application/json']
+          }
+        }
+      ],
+      network_safety: {
+        deny_private_ip_ranges: true,
+        deny_link_local: true,
+        deny_loopback: true,
+        deny_metadata_ranges: true,
+        dns_resolution_required: true
+      }
+    })
+    const descriptor = CanonicalRequestDescriptorSchema.parse({
+      tenant_id: 'tenant-1',
+      workload_id: 'workload-1',
+      integration_id: 'integration-s3',
+      template_id: s3Template.template_id,
+      template_version: s3Template.version,
+      method: 'PUT',
+      canonical_url:
+        'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/broker/v000001-20260228T120000Z/chunks/chunk-000001.bin',
+      matched_path_group_id: 'bucket-objects',
+      normalized_headers: [],
+      query_keys: []
+    })
+    const allowRule = createRule({
+      policy_id: 's3-object-allow',
+      rule_type: 'allow',
+      scope: {
+        tenant_id: 'tenant-1',
+        integration_id: 'integration-s3',
+        action_group: 'bucket-objects',
+        method: 'PUT',
+        host: 'backup-bucket.s3.eu-west-1.amazonaws.com'
+      }
+    })
+
+    const decision = await evaluatePolicyDecision({
+      descriptor,
+      template: s3Template,
+      policies: [allowRule]
+    })
+
+    expect(decision.decision).toBe('allowed')
+    expect(decision.reason_code).toBe('policy_allow')
+    expect(decision.action_group).toBe('bucket-objects')
+  })
 })

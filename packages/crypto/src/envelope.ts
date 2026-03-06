@@ -9,7 +9,8 @@ import {
   SecretMaterialSchema,
   type EncryptedSecretMaterial,
   type EnvelopeCiphertext,
-  type SecretMaterial
+  type SecretMaterial,
+  type SecretMaterialType
 } from './contracts.js';
 import {decodeBase64, encodeBase64, equalByteArrays} from './base64.js';
 import {err, ok, type CryptoErrorCode, type CryptoResult} from './errors.js';
@@ -59,6 +60,50 @@ const serializeContextForAad = (value: unknown): string => {
 };
 
 const normalizeAad = (aad?: Uint8Array): Buffer | undefined => (aad ? Buffer.from(aad) : undefined);
+
+const serializeSecretMaterial = (secretMaterial: SecretMaterial): string => JSON.stringify(secretMaterial);
+
+const parseLegacySecretMaterial = ({
+  plaintext,
+  expectedType
+}: {
+  plaintext: Uint8Array;
+  expectedType: SecretMaterialType;
+}): CryptoResult<SecretMaterial> => {
+  if (expectedType === 'aws_sigv4') {
+    return err('invalid_input', 'Decrypted secret material must be valid JSON');
+  }
+
+  const parsedSecretMaterial = SecretMaterialSchema.safeParse({
+    type: expectedType,
+    value: Buffer.from(plaintext).toString('utf8')
+  });
+  if (!parsedSecretMaterial.success) {
+    return err('invalid_input', parsedSecretMaterial.error.message);
+  }
+
+  return ok(parsedSecretMaterial.data);
+};
+
+const parseSecretMaterial = ({
+  plaintext,
+  expectedType
+}: {
+  plaintext: Uint8Array;
+  expectedType: SecretMaterialType;
+}): CryptoResult<SecretMaterial> => {
+  try {
+    const parsedJson = JSON.parse(Buffer.from(plaintext).toString('utf8')) as unknown;
+    const parsedSecretMaterial = SecretMaterialSchema.safeParse(parsedJson);
+    if (!parsedSecretMaterial.success) {
+      return err('invalid_input', parsedSecretMaterial.error.message);
+    }
+
+    return ok(parsedSecretMaterial.data);
+  } catch {
+    return parseLegacySecretMaterial({plaintext, expectedType});
+  }
+};
 
 const zeroizeBytes = (bytes: Uint8Array) => {
   if (Buffer.isBuffer(bytes)) {
@@ -504,7 +549,7 @@ export const encryptSecretMaterial = async ({
   }
 
   const encrypted = await encryptWithEnvelope({
-    plaintext: Buffer.from(parsedSecretMaterial.data.value, 'utf8'),
+    plaintext: Buffer.from(serializeSecretMaterial(parsedSecretMaterial.data), 'utf8'),
     key_management_service,
     requested_key_id,
     aad
@@ -543,13 +588,17 @@ export const decryptSecretMaterial = async ({
     return decrypted;
   }
 
-  const parsedSecretMaterial = SecretMaterialSchema.safeParse({
-    type: parsedEncryptedMaterial.data.type,
-    value: Buffer.from(decrypted.value).toString('utf8')
+  const parsedSecretMaterial = parseSecretMaterial({
+    plaintext: decrypted.value,
+    expectedType: parsedEncryptedMaterial.data.type
   });
-  if (!parsedSecretMaterial.success) {
-    return err('invalid_input', parsedSecretMaterial.error.message);
+  if (!parsedSecretMaterial.ok) {
+    return parsedSecretMaterial;
   }
 
-  return ok(parsedSecretMaterial.data);
+  if (parsedSecretMaterial.value.type !== parsedEncryptedMaterial.data.type) {
+    return err('invalid_input', 'Decrypted secret material type must match envelope metadata');
+  }
+
+  return ok(parsedSecretMaterial.value);
 };

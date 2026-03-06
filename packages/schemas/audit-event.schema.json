@@ -87,6 +87,9 @@
         }
       ]
     },
+    "matched_template_config": {
+      "$ref": "./matched-template-config.schema.json"
+    },
     "policy": {
       "type": ["object", "null"],
       "required": ["rule_type"],

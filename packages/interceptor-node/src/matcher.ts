@@ -6,6 +6,7 @@
  */
 
 import type {MatchRule, ParsedManifest} from './types.js';
+import {hostMatches, parseUrlForMatching, pathMatchesGroups, scopeMatchesUrl} from './match-patterns.js';
 
 /**
  * Details about why a rule didn't match.
@@ -26,84 +27,6 @@ export type MatchResult =
 /**
  * Parse a URL into components for matching.
  */
-function parseUrl(url: string | URL): {
-  scheme: string;
-  host: string;
-  port: number;
-  path: string;
-} {
-  const parsed = typeof url === 'string' ? new URL(url) : url;
-
-  // Extract scheme without trailing colon
-  const scheme = parsed.protocol.replace(':', '');
-
-  // Determine port (use default if not specified)
-  let port: number;
-  if (parsed.port) {
-    port = parseInt(parsed.port, 10);
-  } else if (scheme === 'https') {
-    port = 443;
-  } else if (scheme === 'http') {
-    port = 80;
-  } else {
-    port = 0;
-  }
-
-  return {
-    scheme,
-    host: parsed.hostname,
-    port,
-    path: parsed.pathname
-  };
-}
-
-/**
- * Check if a host matches a pattern.
- *
- * Supports exact matches only.
- */
-function hostMatches(actualHost: string, pattern: string): boolean {
-  return actualHost === pattern;
-}
-
-/**
- * Check if a path matches any of the path group patterns.
- *
- * Supports:
- * - Regex patterns (e.g., ^/v1/chat/completions$)
- * - Prefix wildcard patterns (e.g., /v1/*)
- * - Exact paths (e.g., /v1/chat/completions)
- */
-function pathMatchesGroups(actualPath: string, pathGroups: string[]): boolean {
-  for (const pattern of pathGroups) {
-    // Regex pattern (starts with ^)
-    if (pattern.startsWith('^')) {
-      // eslint-disable-next-line security/detect-non-literal-regexp -- pattern validated during manifest load
-      const regex = new RegExp(pattern);
-      if (regex.test(actualPath)) {
-        return true;
-      }
-      continue;
-    }
-
-    // Prefix wildcard (e.g., /v1/*)
-    if (pattern.endsWith('/*')) {
-      const prefix = pattern.slice(0, -1);
-      if (actualPath.startsWith(prefix)) {
-        return true;
-      }
-      continue;
-    }
-
-    // Exact match
-    if (actualPath === pattern) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 /**
  * Match a URL against a specific rule and return mismatches if any.
  */
@@ -150,7 +73,7 @@ function matchesRuleWithDetails(
  * Returns the first matching rule's integration_id, or details about why each rule didn't match.
  */
 export function matchUrl(url: string | URL, manifest: ParsedManifest): MatchResult {
-  const {scheme, host, port, path} = parseUrl(url);
+  const {scheme, host, port, path} = parseUrlForMatching(url);
 
   const mismatchDetails: RuleMismatchDetail[] = [];
 
@@ -176,6 +99,10 @@ export function matchUrl(url: string | URL, manifest: ParsedManifest): MatchResu
   }
 
   return {matched: false, details: mismatchDetails};
+}
+
+export function manifestRuleMatchesUrl(url: string | URL, rule: MatchRule): boolean {
+  return scopeMatchesUrl(url, rule.match);
 }
 
 /**

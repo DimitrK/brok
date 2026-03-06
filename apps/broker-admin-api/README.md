@@ -79,8 +79,10 @@ Vault issuer hardening env (vault mode only):
 - `POST /v1/tenants/{tenantId}/integrations`
 - `GET /v1/tenants/{tenantId}/integrations`
 - `PATCH /v1/integrations/{integrationId}`
+- `DELETE /v1/integrations/{integrationId}`
 - `POST /v1/templates`
 - `GET /v1/templates`
+- `DELETE /v1/templates/{templateId}`
 - `GET /v1/templates/{templateId}/versions/{version}`
 - `POST /v1/policies`
 - `GET /v1/policies`
@@ -88,7 +90,7 @@ Vault issuer hardening env (vault mode only):
 - `GET /v1/approvals`
 - `POST /v1/approvals/{approvalId}/approve`
 - `POST /v1/approvals/{approvalId}/deny`
-- `GET /v1/audit/events` (supports `limit` + `cursor` query params and `next_cursor` pagination)
+- `GET /v1/audit/events` (supports `limit` + `cursor` query params and `next_cursor` pagination; includes optional `matched_template_config` when the stored template version still exists)
 - `GET /v1/keys/manifest`
 - `GET /v1/admin/auth/providers`
 - `POST /v1/admin/auth/oauth/start`
@@ -97,6 +99,14 @@ Vault issuer hardening env (vault mode only):
 - `POST /v1/admin/auth/logout`
 - `GET /v1/admin/auth/signup-policy`
 - `PATCH /v1/admin/auth/signup-policy`
+- `GET /v1/admin/users`
+- `PATCH /v1/admin/users/{identityId}`
+- `DELETE /v1/admin/users/{identityId}`
+- `POST /v1/admin/access-requests`
+- `GET /v1/admin/access-requests`
+- `GET /v1/admin/access-requests/{requestId}`
+- `POST /v1/admin/access-requests/{requestId}/approve`
+- `POST /v1/admin/access-requests/{requestId}/deny`
 
 All request/response contracts are defined in:
 
@@ -145,6 +155,9 @@ Interactive OAuth behavior:
 - No secret payloads exposed in read/list endpoints.
 - Strict structured error responses with correlation IDs.
 - Audit events are append-only from API perspective.
+- `GET /v1/audit/events` enriches events with authoritative matched path-group configuration when
+  `canonical_descriptor.template_id`, `canonical_descriptor.template_version`, and
+  `canonical_descriptor.matched_path_group_id` resolve to a stored template version.
 - Tenant scope checks are enforced before state mutation on approval actions.
 - Vault signing calls deny redirects and enforce request timeouts to avoid credential leakage and hung upstream
   dependencies.

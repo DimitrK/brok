@@ -318,6 +318,13 @@ components:
         next_cursor:
           type: string
       additionalProperties: false
+    AdminAccessRequestCreateRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          minLength: 1
+      additionalProperties: false
     AdminAccessRequestApproveRequest:
       type: object
       properties:
@@ -679,8 +686,64 @@ components:
       $ref: ./workload.schema.json
     Integration:
       $ref: ./integration.schema.json
+    IntegrationSecretMaterialWrite:
+      oneOf:
+        - type: object
+          required: [type, value]
+          properties:
+            type:
+              type: string
+              enum: [api_key]
+            value:
+              type: string
+              minLength: 1
+          additionalProperties: false
+        - type: object
+          required: [type, value]
+          properties:
+            type:
+              type: string
+              enum: [oauth_refresh_token]
+            value:
+              type: string
+              minLength: 1
+          additionalProperties: false
+        - type: object
+          required: [type, access_key_id, secret_access_key, region]
+          properties:
+            type:
+              type: string
+              enum: [aws_sigv4]
+            access_key_id:
+              type: string
+              minLength: 1
+              maxLength: 256
+            secret_access_key:
+              type: string
+              minLength: 1
+              maxLength: 256
+            session_token:
+              type: string
+              minLength: 1
+              maxLength: 4096
+            region:
+              type: string
+              minLength: 1
+              maxLength: 64
+          additionalProperties: false
     IntegrationWrite:
-      $ref: ./integration-write.schema.json
+      type: object
+      required: [provider, name, template_id, secret_material]
+      properties:
+        provider:
+          type: string
+        name:
+          type: string
+        template_id:
+          type: string
+        secret_material:
+          $ref: '#/components/schemas/IntegrationSecretMaterialWrite'
+      additionalProperties: false
     PolicyRule:
       $ref: ./policy-rule.schema.json
     Template:
@@ -919,7 +982,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+    delete:
+      summary: Delete an admin user (disables access)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: identityId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Admin user deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Admin user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/admin/access-requests:
+    post:
+      summary: Submit an admin access request for owner review
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAccessRequestCreateRequest'
+      responses:
+        '201':
+          description: Admin access request submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAccessRequest'
+        '400':
+          description: Invalid access request payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access request blocked by policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Access request cannot be created in current identity state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
     get:
       summary: List admin access requests for review
       security:
@@ -968,6 +1103,42 @@ paths:
                 $ref: '#/components/schemas/AdminAccessRequestListResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/admin/access-requests/{requestId}:
+    get:
+      summary: Get an admin access request by id
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Admin access request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAccessRequest'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Access request not found
           content:
             application/json:
               schema:
@@ -1585,6 +1756,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+    delete:
+      summary: Delete integration (disable access)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: integrationId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Integration deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Integration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/templates:
     post:
       summary: Upload template
@@ -1622,6 +1824,44 @@ paths:
                 $ref: '#/components/schemas/TemplateListResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/templates/{templateId}:
+    delete:
+      summary: Delete template (disable all active versions)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Template deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Template not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Template is in use and cannot be deleted
           content:
             application/json:
               schema:

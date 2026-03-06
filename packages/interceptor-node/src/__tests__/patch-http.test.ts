@@ -227,4 +227,264 @@ describe('patch-http', () => {
     expect(err).not.toBeInstanceOf(ManifestUnavailableError);
     expect(mockedExecuteRequest).not.toHaveBeenCalled();
   });
+
+  it('intercepts bucket-root list requests and forwards query parameters intact', async () => {
+    mockedExecuteRequest.mockResolvedValue({
+      ok: true,
+      response: {
+        status: 'executed',
+        correlation_id: 'corr_s3_http_list',
+        upstream: {
+          status_code: 200,
+          headers: [{name: 'content-type', value: 'application/xml'}],
+          body_base64: Buffer.from('<ListBucketResult />').toString('base64')
+        }
+      }
+    });
+
+    applyPatches(
+      createState({
+        manifest: createManifest({
+          match_rules: [
+            {
+              integration_id: 'int_backup',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            }
+          ]
+        })
+      })
+    );
+
+    const body = await new Promise<string>((resolve, reject) => {
+      const req = https.request(
+        'https://bucket.s3.example.com/?list-type=2&prefix=backups%2F&delimiter=%2F',
+        {method: 'GET'},
+        res => {
+          let responseBody = '';
+          res.on('data', (chunk: Buffer) => {
+            responseBody += chunk.toString();
+          });
+          res.on('end', () => resolve(responseBody));
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    expect(body).toBe('<ListBucketResult />');
+    expect(mockedExecuteRequest).toHaveBeenCalledTimes(1);
+    expect(mockedExecuteRequest.mock.calls[0]?.[0]).toMatchObject({
+      integrationId: 'int_backup',
+      method: 'GET',
+      url: 'https://bucket.s3.example.com/?list-type=2&prefix=backups%2F&delimiter=%2F'
+    });
+  });
+
+  it('intercepts object upload and download requests for matching object paths', async () => {
+    mockedExecuteRequest.mockResolvedValue({
+      ok: true,
+      response: {
+        status: 'executed',
+        correlation_id: 'corr_s3_http_object',
+        upstream: {
+          status_code: 200,
+          headers: [{name: 'content-type', value: 'application/octet-stream'}],
+          body_base64: Buffer.from('object-ok').toString('base64')
+        }
+      }
+    });
+
+    applyPatches(
+      createState({
+        manifest: createManifest({
+          match_rules: [
+            {
+              integration_id: 'int_backup',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/backups/*']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            }
+          ]
+        })
+      })
+    );
+
+    await new Promise<void>((resolve, reject) => {
+      const req = https.request('https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz', {method: 'PUT'}, res => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end('archive-bytes');
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const req = https.request('https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz', {method: 'GET'}, res => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+    expect(mockedExecuteRequest).toHaveBeenCalledTimes(2);
+    expect(mockedExecuteRequest.mock.calls[0]?.[0]).toMatchObject({
+      integrationId: 'int_backup',
+      method: 'PUT',
+      url: 'https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz',
+      body: Buffer.from('archive-bytes')
+    });
+    expect(mockedExecuteRequest.mock.calls[1]?.[0]).toMatchObject({
+      integrationId: 'int_backup',
+      method: 'GET',
+      url: 'https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz'
+    });
+  });
+
+  it('uses configured integration override instead of manifest first match for multi-integration S3 traffic', async () => {
+    mockedExecuteRequest.mockResolvedValue({
+      ok: true,
+      response: {
+        status: 'executed',
+        correlation_id: 'corr_http_override_s3',
+        upstream: {
+          status_code: 200,
+          headers: [{name: 'content-type', value: 'application/xml'}],
+          body_base64: Buffer.from('<ListBucketResult />').toString('base64')
+        }
+      }
+    });
+
+    applyPatches(
+      createState({
+        config: {
+          integrationOverrides: [
+            {
+              integrationId: 'int_backup',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              }
+            }
+          ]
+        },
+        manifest: createManifest({
+          match_rules: [
+            {
+              integration_id: 'int_default',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            },
+            {
+              integration_id: 'int_backup',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            }
+          ]
+        })
+      })
+    );
+
+    await new Promise<void>((resolve, reject) => {
+      const req = https.request('https://bucket.s3.example.com/?list-type=2&prefix=backups%2F', {method: 'GET'}, res => {
+        res.resume();
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+    expect(mockedExecuteRequest).toHaveBeenCalledTimes(1);
+    expect(mockedExecuteRequest.mock.calls[0]?.[0]).toMatchObject({
+      integrationId: 'int_backup',
+      url: 'https://bucket.s3.example.com/?list-type=2&prefix=backups%2F'
+    });
+  });
+
+  it('fails closed when a configured integration override is not backed by a matching manifest rule', async () => {
+    applyPatches(
+      createState({
+        config: {
+          integrationOverrides: [
+            {
+              integrationId: 'int_backup',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/backups/*']
+              }
+            }
+          ]
+        },
+        manifest: createManifest({
+          match_rules: [
+            {
+              integration_id: 'int_default',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            }
+          ]
+        })
+      })
+    );
+
+    const err = await new Promise<unknown>(resolve => {
+      const req = https.request('https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz');
+      req.on('error', resolve);
+      req.end();
+    });
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(ManifestUnavailableError);
+    expect((err as Error).message).toContain('Integration override');
+    expect(mockedExecuteRequest).not.toHaveBeenCalled();
+  });
 });

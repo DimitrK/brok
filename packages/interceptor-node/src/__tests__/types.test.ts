@@ -106,6 +106,54 @@ describe('InterceptorConfigSchema', () => {
         expect(result.data.mtlsCaPath).toBe('/path/to/ca.pem');
       }
     });
+
+    it('allows validated integration overrides', () => {
+      const config = {
+        brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
+        sessionToken: 'tok_abc123',
+        integrationOverrides: [
+          {
+            integrationId: 'int_backup',
+            match: {
+              hosts: ['bucket.s3.example.com'],
+              path_groups: ['/'],
+              schemes: ['https'],
+              ports: [443]
+            }
+          }
+        ]
+      };
+
+      const result = InterceptorConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.integrationOverrides).toHaveLength(1);
+        expect(result.data.integrationOverrides?.[0]?.integrationId).toBe('int_backup');
+      }
+    });
+
+    it('rejects unsafe wildcard hosts in integration overrides', () => {
+      const config = {
+        brokerUrl: 'https://broker.example.com',
+        workloadId: 'w_test',
+        sessionToken: 'tok_abc123',
+        integrationOverrides: [
+          {
+            integrationId: 'int_backup',
+            match: {
+              hosts: ['*.s3.example.com'],
+              path_groups: ['/']
+            }
+          }
+        ]
+      };
+
+      const result = InterceptorConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(false);
+    });
   });
 
   describe('defaults', () => {

@@ -58,6 +58,7 @@ import {
   type OpenApiIntegration,
   type OpenApiManifestKeys,
   type OpenApiPolicyRule,
+  type SecretMaterial,
   type OpenApiTemplate,
   type OpenApiWorkload
 } from '@broker-interceptor/schemas'
@@ -66,6 +67,7 @@ import {z} from 'zod'
 import type {Prisma} from '@prisma/client'
 
 import type {BrokerRedisClient, ProcessInfrastructure} from './infrastructure';
+import {buildExecuteAuthHeaders} from './upstreamAuth'
 
 export class DataPlaneRepositoryError extends Error {
   public readonly code: string
@@ -79,6 +81,39 @@ export class DataPlaneRepositoryError extends Error {
 
 export const isDataPlaneRepositoryError = (value: unknown): value is DataPlaneRepositoryError =>
   value instanceof DataPlaneRepositoryError
+
+type CryptoEncryptedSecretMaterialInput = Parameters<typeof decryptSecretMaterial>[0]['encrypted_secret_material']
+
+const serializeDecryptedSecretMaterial = (secretMaterial: SecretMaterial): string => {
+  if (
+    (secretMaterial.type === 'api_key' || secretMaterial.type === 'oauth_refresh_token') &&
+    typeof secretMaterial.value === 'string'
+  ) {
+    return secretMaterial.value
+  }
+
+  if (secretMaterial.type === 'aws_sigv4') {
+    if (
+      typeof secretMaterial.access_key_id === 'string' &&
+      typeof secretMaterial.secret_access_key === 'string' &&
+      typeof secretMaterial.region === 'string'
+    ) {
+      return JSON.stringify({
+        access_key_id: secretMaterial.access_key_id,
+        secret_access_key: secretMaterial.secret_access_key,
+        ...(typeof secretMaterial.session_token === 'string'
+          ? {session_token: secretMaterial.session_token}
+          : {}),
+        region: secretMaterial.region
+      })
+    }
+  }
+
+  throw new DataPlaneRepositoryError({
+    code: 'integration_secret_invalid',
+    message: 'Decrypted integration secret payload is invalid'
+  })
+}
 
 const sessionRecordSchema = z
   .object({
@@ -2386,13 +2421,26 @@ export class DataPlaneRepository {
     return clone(parsed.data)
   }
 
-  public async getInjectedHeadersForIntegrationShared({
+  public async buildExecuteRequestHeadersShared({
     tenantId,
     integrationId,
+    executeRequest,
+    template,
+    matchedPathGroupId,
     correlationId
   }: {
     tenantId: string
     integrationId: string
+    executeRequest: {
+      request: {
+        method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+        url: string
+        headers: OpenApiHeaderList
+        body_base64?: string
+      }
+    }
+    template: OpenApiTemplate
+    matchedPathGroupId: string
     correlationId?: string
   }): Promise<OpenApiHeaderList> {
     const integrationSecretUnavailableCode = 'integration_secret_unavailable'
@@ -2402,54 +2450,49 @@ export class DataPlaneRepository {
         message
       })
 
-    // Try to fetch from shared infrastructure first
-    const sharedInfrastructureEnabled = this.processInfrastructure?.enabled === true;
-    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository;
-    const sharedSecretRepository = this.processInfrastructure?.dbRepositories?.secretRepository;
+    const sharedInfrastructureEnabled = this.processInfrastructure?.enabled === true
+    const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository
+    const sharedSecretRepository = this.processInfrastructure?.dbRepositories?.secretRepository
 
     if (!this.keyManagementService) {
       if (sharedInfrastructureEnabled) {
-        throw toIntegrationSecretUnavailableError('Secret decryption key not configured for shared infrastructure mode');
+        throw toIntegrationSecretUnavailableError('Secret decryption key not configured for shared infrastructure mode')
       }
-      return this.getInjectedHeadersForIntegration({integrationId});
+      return this.getInjectedHeadersForIntegration({integrationId})
     }
 
     if (!sharedIntegrationRepository || !sharedSecretRepository) {
       if (sharedInfrastructureEnabled) {
         throw toIntegrationSecretUnavailableError(
           'Shared secret repositories are not configured in shared infrastructure mode'
-        );
+        )
       }
-      return this.getInjectedHeadersForIntegration({integrationId});
+      return this.getInjectedHeadersForIntegration({integrationId})
     }
 
     try {
-      // Get the integration to find its secret_ref
       const integration = await sharedIntegrationRepository.getById({
         integration_id: integrationId,
         tenant_id: tenantId
-      });
+      })
 
       if (!integration || !integration.secret_ref) {
-        return this.getInjectedHeadersForIntegration({integrationId});
+        return this.getInjectedHeadersForIntegration({integrationId})
       }
 
-      // Get the active secret envelope from the database
       const secretEnvelope = await sharedSecretRepository.getActiveSecretEnvelope({
         secret_ref: integration.secret_ref
-      });
+      })
 
       if (!secretEnvelope) {
         if (sharedInfrastructureEnabled) {
           throw toIntegrationSecretUnavailableError(
             `No active secret envelope found for integration secret_ref ${integration.secret_ref}`
-          );
+          )
         }
-        return this.getInjectedHeadersForIntegration({integrationId});
+        return this.getInjectedHeadersForIntegration({integrationId})
       }
 
-      // Decrypt the secret using the key management service
-      // Convert DB envelope format to crypto envelope format (add version field)
       const encryptedSecretMaterial = {
         type: secretEnvelope.secret_type,
         envelope: {
@@ -2463,20 +2506,19 @@ export class DataPlaneRepository {
           auth_tag_b64: secretEnvelope.envelope.auth_tag_b64,
           ...(secretEnvelope.envelope.aad_b64 ? {aad_b64: secretEnvelope.envelope.aad_b64} : {})
         }
-      };
+      } as CryptoEncryptedSecretMaterialInput
 
       const decryptedResult = await decryptSecretMaterial({
         encrypted_secret_material: encryptedSecretMaterial,
         key_management_service: this.keyManagementService,
         expected_aad: buildEnvelopeAad({
-        tenant_id: tenantId,
-        integration_id: integrationId,
-        secret_type: secretEnvelope.secret_type
+          tenant_id: tenantId,
+          integration_id: integrationId,
+          secret_type: secretEnvelope.secret_type
         })
-      });
+      })
 
       if (!decryptedResult.ok) {
-        // Decryption failed - emit warning with error code for monitoring
         this.logger.warn({
           event: 'repository.secret.decrypt_failed',
           component: 'repository.secret',
@@ -2488,18 +2530,21 @@ export class DataPlaneRepository {
             integration_id: integrationId,
             tenant_id: tenantId
           }
-        });
+        })
         if (sharedInfrastructureEnabled) {
-          throw toIntegrationSecretUnavailableError(`Secret decryption failed: ${decryptedResult.error.code}`);
+          throw toIntegrationSecretUnavailableError(`Secret decryption failed: ${decryptedResult.error.code}`)
         }
-        return this.getInjectedHeadersForIntegration({integrationId});
+        return this.getInjectedHeadersForIntegration({integrationId})
       }
 
-      // Convert decrypted secret to header format based on type
-      return [{name: 'Authorization', value: `Bearer ${decryptedResult.value.value}`}];
+      return buildExecuteAuthHeaders({
+        secretValue: serializeDecryptedSecretMaterial(decryptedResult.value),
+        request: executeRequest.request,
+        template,
+        matchedPathGroupId
+      })
     } catch (error) {
-      // Log error without leaking secrets
-      const errorMessage = error instanceof Error ? error.message : 'unknown error';
+      const errorMessage = error instanceof Error ? error.message : 'unknown error'
       this.logger.warn({
         event: 'repository.secret.fetch_failed',
         component: 'repository.secret',
@@ -2511,16 +2556,16 @@ export class DataPlaneRepository {
           integration_id: integrationId,
           tenant_id: tenantId
         }
-      });
+      })
       if (sharedInfrastructureEnabled) {
         if (isDataPlaneRepositoryError(error)) {
           throw error
         }
 
-        throw toIntegrationSecretUnavailableError(errorMessage);
+        throw toIntegrationSecretUnavailableError(errorMessage)
       }
 
-      return this.getInjectedHeadersForIntegration({integrationId});
+      return this.getInjectedHeadersForIntegration({integrationId})
     }
   }
 

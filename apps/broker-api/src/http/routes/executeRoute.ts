@@ -634,9 +634,12 @@ export const handleExecuteRoute: BrokerApiRouteLogicHandler = async ({
 
     let injectedHeaders
     try {
-      injectedHeaders = await runtime.repository.getInjectedHeadersForIntegrationShared({
+      injectedHeaders = await runtime.repository.buildExecuteRequestHeadersShared({
         tenantId: mtls.tenant_id,
         integrationId: integration.integration_id,
+        executeRequest,
+        template,
+        matchedPathGroupId: canonicalized.value.matched_path_group_id,
         correlationId
       })
     } catch (error) {

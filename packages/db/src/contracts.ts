@@ -26,7 +26,8 @@ import {
   OpenApiWorkloadSchema,
   OpenApiWorkloadUpdateRequestSchema,
   PolicyConstraintsSchema,
-  SecretMaterialSchema
+  SecretMaterialSchema,
+  SecretMaterialTypeSchema
 } from '@broker-interceptor/schemas';
 import {z} from 'zod';
 
@@ -297,13 +298,14 @@ export const SecretEnvelopeSchema = z
   })
   .strict();
 export type SecretEnvelope = z.infer<typeof SecretEnvelopeSchema>;
+export type SecretMaterialType = z.infer<typeof SecretMaterialTypeSchema>;
 
 export const CreateSecretEnvelopeVersionInputSchema = z
   .object({
     secret_ref: z.string().min(1),
     tenant_id: z.string().min(1),
     integration_id: z.string().min(1),
-    secret_type: SecretMaterialSchema.shape.type,
+    secret_type: SecretMaterialTypeSchema,
     envelope: SecretEnvelopeSchema,
     created_at: z.iso.datetime({offset: true}).optional()
   })
@@ -331,7 +333,7 @@ export const SecretEnvelopeVersionSchema = z
     secret_ref: z.string().min(1),
     tenant_id: z.string().min(1),
     integration_id: z.string().min(1),
-    secret_type: SecretMaterialSchema.shape.type,
+    secret_type: SecretMaterialTypeSchema,
     version: z.number().int().gte(1),
     envelope: SecretEnvelopeSchema,
     created_at: z.iso.datetime({offset: true})

@@ -3,6 +3,7 @@ import {describe, expect, it} from 'vitest'
 import {
   createAuditService,
   createInMemoryAuditStore,
+  createIntegrationLifecycleAuditEmitter,
   packageName
 } from '../index'
 
@@ -16,5 +17,6 @@ describe('package exports', () => {
   it('exposes core service and in-memory store factories', () => {
     expect(typeof createAuditService).toBe('function')
     expect(typeof createInMemoryAuditStore).toBe('function')
+    expect(typeof createIntegrationLifecycleAuditEmitter).toBe('function')
   })
 })

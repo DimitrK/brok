@@ -10,6 +10,20 @@ type UseOverlayDismissInput = {
 
 const OVERLAY_STATE_KEY = '__admin_overlay_scope__';
 
+const readCurrentLocationKey = () => `${window.location.pathname}${window.location.search}${window.location.hash}`;
+
+export const shouldRestoreOverlayHistoryEntry = (input: {
+  enableHistoryBack: boolean;
+  pushedState: boolean;
+  closeRequestedByHistory: boolean;
+  openedLocationKey?: string;
+  currentLocationKey?: string;
+}) =>
+  input.enableHistoryBack &&
+  input.pushedState &&
+  !input.closeRequestedByHistory &&
+  input.openedLocationKey === input.currentLocationKey;
+
 export const useOverlayDismiss = ({
   isOpen,
   onClose,
@@ -21,6 +35,7 @@ export const useOverlayDismiss = ({
   const isOpenRef = useRef(isOpen);
   const pushedStateRef = useRef(false);
   const closeRequestedByHistoryRef = useRef(false);
+  const openedLocationKeyRef = useRef<string>();
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -56,6 +71,7 @@ export const useOverlayDismiss = ({
         historyState && typeof historyState === 'object' ? (historyState as Record<string, unknown>) : {};
       window.history.pushState({...currentState, [OVERLAY_STATE_KEY]: scope}, '');
       pushedStateRef.current = true;
+      openedLocationKeyRef.current = readCurrentLocationKey();
     }
 
     const handlePopState = () => {
@@ -85,11 +101,20 @@ export const useOverlayDismiss = ({
         window.removeEventListener('keydown', handleKeyDown);
       }
 
-      if (enableHistoryBack && pushedStateRef.current && !closeRequestedByHistoryRef.current) {
+      if (
+        shouldRestoreOverlayHistoryEntry({
+          enableHistoryBack,
+          pushedState: pushedStateRef.current,
+          closeRequestedByHistory: closeRequestedByHistoryRef.current,
+          openedLocationKey: openedLocationKeyRef.current,
+          currentLocationKey: readCurrentLocationKey()
+        })
+      ) {
         pushedStateRef.current = false;
         window.history.back();
       }
       closeRequestedByHistoryRef.current = false;
+      openedLocationKeyRef.current = undefined;
     };
   }, [enableEscape, enableHistoryBack, isOpen, requestClose, scope]);
 

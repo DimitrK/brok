@@ -184,6 +184,57 @@ describe('AuditService.appendAuditEvent', () => {
     expect(captured.resolver_context).toEqual(db_context)
     expect(captured.store_context).toEqual(db_context)
   })
+
+  it('redacts accidentally included aws_sigv4 secret payloads before storage and structured logging', async () => {
+    const store = createInMemoryAuditStore()
+    const service = createAuditService({store})
+
+    const appendResult = await service.appendAuditEvent({
+      event: buildAuditEvent({
+        event_id: 'evt_append_s3_1',
+        event_type: 'admin_action',
+        action_group: 'admin.integration.created',
+        metadata: {
+          action: 'admin.integration.created',
+          credential_type: 'aws_sigv4',
+          credential_region: 'eu-west-1',
+          credentials: {
+            access_key_id: 'AKIA_TEST_ACCESS_KEY',
+            secret_access_key: 'super-secret',
+            session_token: 'temporary-session-token'
+          }
+        }
+      })
+    })
+
+    expect(appendResult.ok).toBe(true)
+    if (!appendResult.ok) {
+      return
+    }
+
+    expect(appendResult.value.event.metadata).toEqual({
+      action: 'admin.integration.created',
+      credential_type: 'aws_sigv4',
+      credential_region: 'eu-west-1',
+      credentials: '[REDACTED]'
+    })
+
+    expect(appendResult.value.structured_log).toEqual({
+      message: 'audit.event',
+      delivery_status: 'stored',
+      event_id: 'evt_append_s3_1',
+      tenant_id: 'tenant_1',
+      workload_id: 'workload_1',
+      integration_id: 'integration_1',
+      correlation_id: 'corr_1',
+      event_type: 'admin_action',
+      decision: 'allowed',
+      action_group: 'admin.integration.created',
+      risk_tier: 'low',
+      latency_ms: 42,
+      upstream_status_code: 200
+    })
+  })
 })
 
 describe('AuditService.queryAuditEvents', () => {

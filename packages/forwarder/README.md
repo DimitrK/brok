@@ -7,7 +7,7 @@ It receives a validated execute request, applies proxy-safe HTTP controls, forwa
 
 ## Exposed Interfaces
 
-Main exports are in `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/packages/forwarder/src/index.ts`:
+Main exports are in `/Users/dimitriskyriazopoulos/Development/brok/packages/forwarder/src/index.ts`:
 
 - `forwardExecuteRequest({input, fetchImpl?})`
   - Main forwarding entrypoint.
@@ -108,12 +108,21 @@ await bridge.createForwarderIdempotencyRecord_INCOMPLETE(payload, {transactionCl
 - Denies redirects (`3xx`) in MVP.
 - Rejects streaming request/response modes in MVP.
 - Buffers responses with max-size limits and allowlisted response headers only.
+- Preserves the execute request URL string exactly as received from upstream policy/canonicalization layers.
+- Dispatches validated request headers to `fetch` as raw header tuples instead of rebuilding them through `Headers`, which reduces signature-shape drift for SigV4-signed S3-compatible requests.
+
+## SigV4 Compatibility Notes
+
+- Forwarder does not sign requests. SigV4 signing remains an upstream responsibility outside this package.
+- Forwarder preserves SigV4-critical query ordering by forwarding the validated request URL string unchanged.
+- Injected signing headers such as `authorization`, `x-amz-date`, `x-amz-content-sha256`, and `x-amz-security-token` are forwarded after validation and override conflicting client-provided values.
+- `host` is still not forwarded from the client because the upstream URL remains the source of truth; the HTTP client derives the final `Host` header from the target URL.
 
 ## Source of Truth
 
 Contracts come from:
 
-- `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/packages/schemas/openapi.yaml`
+- `/Users/dimitriskyriazopoulos/Development/brok/packages/schemas/openapi.yaml`
 - `@broker-interceptor/schemas`
 
 No local OpenAPI DTO re-definition is used in this package.
@@ -121,7 +130,7 @@ No local OpenAPI DTO re-definition is used in this package.
 ## `_INCOMPLETE` Tracking
 
 - `_INCOMPLETE` methods currently exist in:
-  `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/packages/forwarder/src/dbDependencyBridge.ts`
+  `/Users/dimitriskyriazopoulos/Development/brok/packages/forwarder/src/dbDependencyBridge.ts`
 
 Methods:
 
@@ -142,14 +151,14 @@ Methods:
 - `insertForwarderExecutionSnapshot_INCOMPLETE`
 - `queryForwarderExecutionSnapshots_INCOMPLETE`
 - External wiring note:
-  `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/apps/broker-api/src/dependencyBridge.ts`
+  `/Users/dimitriskyriazopoulos/Development/brok/apps/broker-api/src/dependencyBridge.ts`
   still has `listRequiredDependencies_INCOMPLETE`.
 
 ## Feedback status
 
 - `packages/db` feedback loop for `missing_store_data.md` is acknowledged and resolved for MVP scope.
 - Forwarder sent follow-up confirmation:
-  `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/packages/db/external_feedback/broker-interceptor/forwarder/missing_store_data_followup.md`
+  `/Users/dimitriskyriazopoulos/Development/brok/packages/db/external_feedback/broker-interceptor/forwarder/missing_store_data_followup.md`
 - MVP DB dependency scope:
   `acquireForwarderExecutionLock`, `releaseForwarderExecutionLock`,
   `createForwarderIdempotencyRecord`, `getForwarderIdempotencyRecord`,

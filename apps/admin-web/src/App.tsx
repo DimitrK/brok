@@ -15,7 +15,12 @@ import {IntegrationsPanel} from './features/integrations/IntegrationsPanel';
 import {ManifestPanel} from './features/manifest/ManifestKeysPanel';
 import {PoliciesPanel} from './features/policies/PoliciesPanel';
 import {TemplatesPanel} from './features/templates/TemplatesPanel';
+import {
+  readTemplateDraftFromStorage,
+  parseTemplateDraftRouteState
+} from './features/templates/templateDraftRoute';
 import {TenantsPanel} from './features/tenants/TenantsPanel';
+import {resolveAutoSelectedTenantId} from './features/tenants/tenantSelection';
 import {UserManagementPanel} from './features/users/UserManagementPanel';
 import {WorkloadsPanel} from './features/workloads/WorkloadsPanel';
 import {useAdminStore} from './store/adminStore';
@@ -128,6 +133,24 @@ const RequireTenantSelection = ({children}: {children: React.ReactNode}) => {
   }
 
   return <>{children}</>;
+};
+
+const TemplatesRoute = ({api}: {api: BrokerAdminApiClient}) => {
+  const location = useLocation();
+  const initialTemplateDraft = useMemo(() => {
+    const routeDraft = parseTemplateDraftRouteState(location.state);
+    if (routeDraft) {
+      return routeDraft;
+    }
+
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    return readTemplateDraftFromStorage(window.sessionStorage);
+  }, [location.state]);
+
+  return <TemplatesPanel key={location.key} api={api} initialTemplateDraft={initialTemplateDraft} />;
 };
 
 type AdminConsoleLayoutProps = {
@@ -426,7 +449,7 @@ export const App = () => {
   });
 
   const tenantsQuery = useQuery({
-    queryKey: ['tenants'],
+    queryKey: ['tenants', apiBaseUrl || appConfig.apiBaseUrl, authToken],
     enabled: Boolean(authToken),
     queryFn: async ({signal}) => {
       try {
@@ -481,7 +504,7 @@ export const App = () => {
       sessionExpiresAt: undefined,
       adminPrincipal: undefined
     });
-    void queryClient.invalidateQueries();
+    queryClient.clear();
   };
 
   const signOut = async () => {
@@ -503,6 +526,24 @@ export const App = () => {
   const adminIdentityLabel =
     adminPrincipal?.name?.trim() || adminPrincipal?.email || adminPrincipal?.subject || 'Unknown admin';
   const adminIdentityRoles = adminPrincipal?.roles?.join(', ') || 'roles unavailable';
+  const tenantIds = useMemo(
+    () => (tenantsQuery.data?.tenants ?? []).map(tenant => tenant.tenant_id),
+    [tenantsQuery.data?.tenants]
+  );
+  const autoSelectedTenantId = resolveAutoSelectedTenantId({
+    isAuthenticated: Boolean(authToken),
+    tenantIds,
+    selectedTenantId
+  });
+
+  useEffect(() => {
+    if (!autoSelectedTenantId || autoSelectedTenantId === selectedTenantId) {
+      return;
+    }
+
+    setSelectedTenantId(autoSelectedTenantId);
+  }, [autoSelectedTenantId, selectedTenantId, setSelectedTenantId]);
+
   const tenantOptions: TenantOption[] = (tenantsQuery.data?.tenants ?? []).map(tenant => ({
     tenantId: tenant.tenant_id,
     name: tenant.name
@@ -556,7 +597,7 @@ export const App = () => {
             </RequireTenantSelection>
           }
         />
-        <Route path="templates" element={<TemplatesPanel api={api} />} />
+        <Route path="templates" element={<TemplatesRoute api={api} />} />
         <Route path="policies" element={<PoliciesPanel api={api} />} />
         <Route path="approvals" element={<ApprovalsPanel api={api} />} />
         <Route path="audit" element={<AuditPanel api={api} />} />

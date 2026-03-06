@@ -65,6 +65,82 @@ describe('envelope encryption', () => {
     });
   });
 
+  it('encrypts and decrypts structured aws_sigv4 secret material', async () => {
+    const aad = Buffer.from('tenant:t_123|integration:i_s3');
+    const kms = createKmsOrThrow();
+
+    const encrypted = await encryptSecretMaterial({
+      secret_material: {
+        type: 'aws_sigv4',
+        access_key_id: 'AKIAIOSFODNN7EXAMPLE',
+        secret_access_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+        session_token: 'session-token-value',
+        region: 'eu-central-1'
+      },
+      key_management_service: kms,
+      aad
+    });
+
+    expect(encrypted.ok).toBe(true);
+    if (!encrypted.ok) {
+      return;
+    }
+
+    const decrypted = await decryptSecretMaterial({
+      encrypted_secret_material: encrypted.value,
+      key_management_service: kms,
+      expected_aad: aad
+    });
+
+    expect(decrypted.ok).toBe(true);
+    if (!decrypted.ok) {
+      return;
+    }
+
+    expect(decrypted.value).toEqual({
+      type: 'aws_sigv4',
+      access_key_id: 'AKIAIOSFODNN7EXAMPLE',
+      secret_access_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      session_token: 'session-token-value',
+      region: 'eu-central-1'
+    });
+  });
+
+  it('preserves decryption compatibility for legacy string secret payloads', async () => {
+    const aad = Buffer.from('tenant:t_123|integration:i_legacy');
+    const kms = createKmsOrThrow();
+
+    const encrypted = await encryptWithEnvelope({
+      plaintext: Buffer.from('sk-legacy-123', 'utf8'),
+      key_management_service: kms,
+      aad
+    });
+
+    expect(encrypted.ok).toBe(true);
+    if (!encrypted.ok) {
+      return;
+    }
+
+    const decrypted = await decryptSecretMaterial({
+      encrypted_secret_material: {
+        type: 'api_key',
+        envelope: encrypted.value
+      },
+      key_management_service: kms,
+      expected_aad: aad
+    });
+
+    expect(decrypted.ok).toBe(true);
+    if (!decrypted.ok) {
+      return;
+    }
+
+    expect(decrypted.value).toEqual({
+      type: 'api_key',
+      value: 'sk-legacy-123'
+    });
+  });
+
   it('fails closed on aad mismatch', async () => {
     const kms = createKmsOrThrow();
     const encrypted = await encryptSecretMaterial({

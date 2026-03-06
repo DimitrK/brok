@@ -357,14 +357,8 @@ const readResponseBodyWithLimit = async ({
   }
 };
 
-const toHeadersObject = (headers: OpenApiHeaderList): Headers => {
-  const upstreamHeaders = new Headers();
-  for (const header of headers) {
-    upstreamHeaders.append(header.name, header.value);
-  }
-
-  return upstreamHeaders;
-};
+const toFetchHeaders = (headers: OpenApiHeaderList): Array<[string, string]> =>
+  headers.map(header => [header.name, header.value]);
 
 const mapFetchError = (unknownError: unknown) => {
   if (unknownError instanceof Error) {
@@ -497,7 +491,9 @@ export const forwardExecuteRequest = async ({
   try {
     upstreamResponse = await requestFetch(parsedInput.data.execute_request.request.url, {
       method: parsedInput.data.execute_request.request.method,
-      headers: toHeadersObject(upstreamHeaders.value),
+      // Preserve the validated header list shape instead of rebuilding via `Headers`,
+      // which can coalesce duplicates before dispatch and is risky for signed requests.
+      headers: toFetchHeaders(upstreamHeaders.value),
       body: parsedBody.value ?? undefined,
       redirect: 'manual',
       signal: AbortSignal.timeout(timeouts.total_timeout_ms)

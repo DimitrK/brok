@@ -686,13 +686,50 @@ describe('executeRequest', () => {
         };
         expect(parsed.request?.headers).toContainEqual({name: 'x-multi', value: 'a'});
         expect(parsed.request?.headers).toContainEqual({name: 'x-multi', value: 'b'});
-        expect(parsed.request?.headers?.some(header => header.name.toLowerCase() === 'host')).toBe(false);
+        expect(parsed.request?.headers).toContainEqual({name: 'host', value: 'should-be-stripped'});
         expect(parsed.request?.headers?.some(header => header.name.toLowerCase() === 'connection')).toBe(false);
         return Promise.resolve({
           status: 200,
           body: JSON.stringify({
             status: 'executed',
             correlation_id: 'corr_provider',
+            upstream: {
+              status_code: 200,
+              headers: [{name: 'content-type', value: 'application/json'}],
+              body_base64: Buffer.from('{}').toString('base64')
+            }
+          })
+        });
+      }
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('synthesizes a host header from the target URL when one is not present', async () => {
+    const result = await executeRequest(
+      {
+        ...executeOptions,
+        url: 'https://gateway.storjshare.io/?list-type=2&prefix=brok%2Fbackups-dev%2F',
+        headers: {
+          'x-amz-content-sha256': 'UNSIGNED-PAYLOAD'
+        }
+      },
+      manifest,
+      config,
+      logger,
+      undefined,
+      (_url, options) => {
+        const parsed = JSON.parse(options.body ?? '{}') as {
+          request?: {headers?: Array<{name: string; value: string}>};
+        };
+        expect(parsed.request?.headers).toContainEqual({name: 'host', value: 'gateway.storjshare.io'});
+        expect(parsed.request?.headers).toContainEqual({name: 'x-amz-content-sha256', value: 'UNSIGNED-PAYLOAD'});
+        return Promise.resolve({
+          status: 200,
+          body: JSON.stringify({
+            status: 'executed',
+            correlation_id: 'corr_host_synth',
             upstream: {
               status_code: 200,
               headers: [{name: 'content-type', value: 'application/json'}],

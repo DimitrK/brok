@@ -1,15 +1,16 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {OpenApiTemplateSchema, type OpenApiTemplate} from '@broker-interceptor/schemas';
-import {z} from 'zod';
+import {useLocation, useNavigate} from 'react-router-dom';
 
 import {BrokerAdminApiClient} from '../../api/client';
+import {ApiClientError} from '../../api/errors';
 import {AppIcon} from '../../components/AppIcon';
 import {ErrorNotice} from '../../components/ErrorNotice';
 import {MobileEntityList} from '../../components/MobileEntityList';
 import {Panel} from '../../components/Panel';
 import {useOverlayDismiss} from '../../components/useOverlayDismiss';
-import {TEMPLATE_DRAFT_STORAGE_KEY} from '../audit/templateSuggestion';
+import {useAdminStore} from '../../store/adminStore';
 import {
   TEMPLATE_ID_PREFIX,
   buildTemplateId,
@@ -28,46 +29,22 @@ import {
   summarizeTemplateVersionDiff
 } from './templateVersioning';
 import {parseTemplateDiffSummaryLine} from './templateDiffPresentation';
+import {
+  buildTemplatePathGroupConstraints,
+  resolveTemplateUpstreamAuthMode,
+  resolveTemplateUpstreamAuthRegion,
+  s3ListObjectsPathGroupPreset,
+  type TemplateUpstreamAuthMode
+} from './templateS3Auth';
+import {TEMPLATE_DRAFT_STORAGE_KEY, type TemplateDraft} from './templateDraftRoute';
 
-const httpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
-const templateDraftRouteSchema = z
-  .object({
-    templateDraft: z
-      .object({
-        source: z.literal('audit'),
-        provider: z.string(),
-        template_name: z.string(),
-        template_id_suffix: z.string().min(1),
-        description: z.string().optional(),
-        allowed_hosts: z.array(z.string().min(1)).min(1),
-        path_groups: z
-          .array(
-            z
-              .object({
-                group_id: z.string(),
-                risk_tier: z.enum(['low', 'medium', 'high']),
-                approval_mode: z.enum(['none', 'required']),
-                methods: z.array(httpMethodSchema).min(1),
-                path_patterns: z.array(z.string().min(1)).min(1),
-                query_allowlist: z.array(z.string()),
-                header_forward_allowlist: z.array(z.string()),
-                max_body_bytes: z.number().int().min(0),
-                content_types: z.array(z.string())
-              })
-              .strict()
-          )
-          .min(1)
-      })
-      .strict()
-  })
-  .strict();
-
-type HttpMethod = z.infer<typeof httpMethodSchema>;
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 const httpMethods: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
 type TemplatesPanelProps = {
   api: BrokerAdminApiClient;
+  initialTemplateDraft?: TemplateDraft;
 };
 
 type PathGroupDraft = {
@@ -81,6 +58,8 @@ type PathGroupDraft = {
   headerForwardAllowlist: string;
   maxBodyBytes: string;
   contentTypes: string;
+  upstreamAuthMode: TemplateUpstreamAuthMode;
+  upstreamAuthRegion: string;
 };
 
 let pathGroupDraftCounter = 0;
@@ -99,7 +78,9 @@ const createPathGroupDraft = (input: Partial<Omit<PathGroupDraft, 'draftId'>> = 
   queryAllowlist: input.queryAllowlist ?? '',
   headerForwardAllowlist: input.headerForwardAllowlist ?? 'content-type,accept',
   maxBodyBytes: input.maxBodyBytes ?? '262144',
-  contentTypes: input.contentTypes ?? 'application/json'
+  contentTypes: input.contentTypes ?? 'application/json',
+  upstreamAuthMode: input.upstreamAuthMode ?? 'none',
+  upstreamAuthRegion: input.upstreamAuthRegion ?? ''
 });
 
 const defaultTemplateName = 'OpenAI Core';
@@ -229,36 +210,11 @@ const TemplateRequestTester = ({pathGroups, allowedHosts}: TemplateRequestTester
   );
 };
 
-export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
+export const TemplatesPanel = ({api, initialTemplateDraft}: TemplatesPanelProps) => {
   const queryClient = useQueryClient();
-
-  const readTemplateDraftFromStorage = () => {
-    if (typeof window === 'undefined') {
-      return undefined;
-    }
-
-    const rawValue = window.sessionStorage.getItem(TEMPLATE_DRAFT_STORAGE_KEY);
-    if (!rawValue) {
-      return undefined;
-    }
-
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(rawValue);
-    } catch {
-      return undefined;
-    }
-
-    const parsed = templateDraftRouteSchema.safeParse(parsedJson);
-    if (!parsed.success) {
-      return undefined;
-    }
-
-    return parsed.data.templateDraft;
-  };
-
-  const [initialTemplateDraft] = useState(() => readTemplateDraftFromStorage());
-
+  const location = useLocation();
+  const navigate = useNavigate();
+  const adminPrincipal = useAdminStore(state => state.adminPrincipal);
   const [showEditor, setShowEditor] = useState(Boolean(initialTemplateDraft));
   const [editorMode, setEditorMode] = useState<'new' | 'edit'>('new');
 
@@ -284,18 +240,62 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
         queryAllowlist: pathGroup.query_allowlist.join(', '),
         headerForwardAllowlist: pathGroup.header_forward_allowlist.join(', '),
         maxBodyBytes: String(pathGroup.max_body_bytes),
-        contentTypes: pathGroup.content_types.join(', ')
+        contentTypes: pathGroup.content_types.join(', '),
+        upstreamAuthMode: pathGroup.upstream_auth?.type ?? 'none',
+        upstreamAuthRegion: pathGroup.upstream_auth?.region ?? ''
       })
     ) ?? [createPathGroupDraft()]
   );
+
+  const applyIncomingDraft = React.useCallback((draft: TemplateDraft) => {
+    setEditorMode('new');
+    setTemplateName(draft.template_name);
+    setTemplateIdSuffix(normalizeTemplateIdSuffix(draft.template_id_suffix));
+    setTemplateIdLocked(true);
+    setEditingTemplateId(undefined);
+    setSelectedHistoryVersion(undefined);
+    setVersion('1');
+    setProvider(draft.provider);
+    setDescription(draft.description ?? '');
+    setAllowedHosts(draft.allowed_hosts.join(', '));
+    setPathGroups(
+      draft.path_groups.map(pathGroup =>
+        createPathGroupDraft({
+          groupId: pathGroup.group_id,
+          riskTier: pathGroup.risk_tier,
+          approvalMode: pathGroup.approval_mode,
+          methods: pathGroup.methods,
+          pathPatterns: pathGroup.path_patterns.join('\n'),
+          queryAllowlist: pathGroup.query_allowlist.join(', '),
+          headerForwardAllowlist: pathGroup.header_forward_allowlist.join(', '),
+          maxBodyBytes: String(pathGroup.max_body_bytes),
+          contentTypes: pathGroup.content_types.join(', '),
+          upstreamAuthMode: pathGroup.upstream_auth?.type ?? 'none',
+          upstreamAuthRegion: pathGroup.upstream_auth?.region ?? ''
+        })
+      )
+    );
+    setShowEditor(true);
+  }, []);
 
   useEffect(() => {
     if (!initialTemplateDraft || typeof window === 'undefined') {
       return;
     }
 
+    let cancelled = false;
+    window.queueMicrotask(() => {
+      if (cancelled) {
+        return;
+      }
+
+      applyIncomingDraft(initialTemplateDraft);
+    });
     window.sessionStorage.removeItem(TEMPLATE_DRAFT_STORAGE_KEY);
-  }, [initialTemplateDraft]);
+    return () => {
+      cancelled = true;
+    };
+  }, [applyIncomingDraft, initialTemplateDraft]);
 
   const templatesQuery = useQuery({
     queryKey: ['templates'],
@@ -377,7 +377,9 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
           queryAllowlist: pathGroup.query_allowlist.join(', '),
           headerForwardAllowlist: pathGroup.header_forward_allowlist.join(', '),
           maxBodyBytes: String(pathGroup.body_policy.max_bytes),
-          contentTypes: pathGroup.body_policy.content_types.join(', ')
+          contentTypes: pathGroup.body_policy.content_types.join(', '),
+          upstreamAuthMode: resolveTemplateUpstreamAuthMode(pathGroup),
+          upstreamAuthRegion: resolveTemplateUpstreamAuthRegion(pathGroup)
         })
       )
     );
@@ -403,19 +405,27 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
         redirect_policy: {
           mode: 'deny'
         },
-        path_groups: pathGroups.map(pathGroup => ({
-          group_id: pathGroup.groupId.trim(),
-          risk_tier: pathGroup.riskTier,
-          approval_mode: pathGroup.approvalMode,
-          methods: pathGroup.methods,
-          path_patterns: toLineList(pathGroup.pathPatterns),
-          query_allowlist: toCsvList(pathGroup.queryAllowlist),
-          header_forward_allowlist: toCsvList(pathGroup.headerForwardAllowlist),
-          body_policy: {
-            max_bytes: Number.parseInt(pathGroup.maxBodyBytes, 10),
-            content_types: toCsvList(pathGroup.contentTypes)
-          }
-        })),
+        path_groups: pathGroups.map(pathGroup => {
+          const constraints = buildTemplatePathGroupConstraints({
+            upstreamAuthMode: pathGroup.upstreamAuthMode,
+            upstreamAuthRegion: pathGroup.upstreamAuthRegion
+          });
+
+          return {
+            group_id: pathGroup.groupId.trim(),
+            risk_tier: pathGroup.riskTier,
+            approval_mode: pathGroup.approvalMode,
+            methods: pathGroup.methods,
+            path_patterns: toLineList(pathGroup.pathPatterns),
+            query_allowlist: toCsvList(pathGroup.queryAllowlist),
+            header_forward_allowlist: toCsvList(pathGroup.headerForwardAllowlist),
+            body_policy: {
+              max_bytes: Number.parseInt(pathGroup.maxBodyBytes, 10),
+              content_types: toCsvList(pathGroup.contentTypes)
+            },
+            ...(constraints ? {constraints} : {})
+          };
+        }),
         network_safety: {
           deny_private_ip_ranges: true,
           deny_link_local: true,
@@ -430,6 +440,14 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
     onSuccess: async () => {
       closeEditor();
       await queryClient.invalidateQueries({queryKey: ['templates']});
+    }
+  });
+  const deleteTemplateMutation = useMutation({
+    mutationFn: (input: {templateId: string}) => api.deleteTemplate({templateId: input.templateId}),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({queryKey: ['templates']});
+      await queryClient.invalidateQueries({queryKey: ['integrations']});
+      await queryClient.invalidateQueries({queryKey: ['policies']});
     }
   });
 
@@ -457,11 +475,15 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
   const closeEditor = () => {
     setShowEditor(false);
     resetEditor();
+    if (location.search.includes('draft=')) {
+      navigate('/templates', {replace: true});
+    }
   };
   const templateEditorOverlay = useOverlayDismiss({
     isOpen: showEditor,
     onClose: closeEditor,
-    scope: 'templates-editor'
+    scope: 'templates-editor',
+    enableHistoryBack: !location.search.includes('draft=')
   });
 
   const restoreHistoricalVersion = (template: OpenApiTemplate) => {
@@ -475,6 +497,10 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
 
   const fullTemplateId = useMemo(() => buildTemplateId(templateIdSuffix), [templateIdSuffix]);
   const normalizedAllowedHosts = useMemo(() => toCsvList(allowedHosts), [allowedHosts]);
+  const canDeleteTemplates = adminPrincipal?.roles.includes('owner') ?? false;
+  const showOwnerOnlyDeleteHint = adminPrincipal ? !adminPrincipal.roles.includes('owner') : false;
+  const templateDeleteBlockedByUsage =
+    deleteTemplateMutation.error instanceof ApiClientError && deleteTemplateMutation.error.reason === 'template_in_use';
 
   return (
     <Panel
@@ -752,17 +778,78 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
                       }}
                     />
                   </label>
+
+                  <label className="field">
+                    <span>Upstream auth</span>
+                    <select
+                      value={pathGroup.upstreamAuthMode}
+                      onChange={event => {
+                        const nextUpstreamAuthMode = event.currentTarget.value as TemplateUpstreamAuthMode;
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          upstreamAuthMode: nextUpstreamAuthMode
+                        }));
+                      }}
+                    >
+                      <option value="none">none</option>
+                      <option value="aws_sigv4">aws_sigv4 (S3)</option>
+                    </select>
+                  </label>
+
+                  <label className="field">
+                    <span>SigV4 region override</span>
+                    <input
+                      value={pathGroup.upstreamAuthRegion}
+                      onChange={event => {
+                        const nextUpstreamAuthRegion = event.currentTarget.value;
+                        updatePathGroup(pathGroup.draftId, current => ({
+                          ...current,
+                          upstreamAuthRegion: nextUpstreamAuthRegion
+                        }));
+                      }}
+                      placeholder="eu-west-1"
+                    />
+                  </label>
                 </div>
               </article>
             ))}
 
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => setPathGroups(current => [...current, createPathGroupDraft()])}
-            >
-              Add path group
-            </button>
+            <div className="row-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setPathGroups(current => [...current, createPathGroupDraft()])}
+              >
+                Add path group
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() =>
+                  setPathGroups(current => [
+                    ...current,
+                    createPathGroupDraft({
+                      groupId: s3ListObjectsPathGroupPreset.groupId,
+                      methods: [...s3ListObjectsPathGroupPreset.methods],
+                      pathPatterns: s3ListObjectsPathGroupPreset.pathPatterns,
+                      queryAllowlist: s3ListObjectsPathGroupPreset.queryAllowlist,
+                      headerForwardAllowlist: s3ListObjectsPathGroupPreset.headerForwardAllowlist,
+                      maxBodyBytes: s3ListObjectsPathGroupPreset.maxBodyBytes,
+                      contentTypes: s3ListObjectsPathGroupPreset.contentTypes,
+                      upstreamAuthMode: s3ListObjectsPathGroupPreset.upstreamAuthMode,
+                      upstreamAuthRegion: s3ListObjectsPathGroupPreset.upstreamAuthRegion
+                    })
+                  ])
+                }
+              >
+                Add S3 list path group
+              </button>
+            </div>
+            <p className="helper-text">
+              Backup workload requires a bucket-root list path group such as `GET ^/$` with query keys like
+              `list-type`, `prefix`, and `continuation-token`, plus `upstream_auth = aws_sigv4` for S3 signing. For
+              non-AWS or custom S3-compatible hosts, set an explicit SigV4 region override.
+            </p>
           </div>
 
           <TemplateRequestTester pathGroups={pathGroups} allowedHosts={normalizedAllowedHosts} />
@@ -902,6 +989,11 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
       {!showEditor ? (
         <>
           <ErrorNotice error={templatesQuery.error} />
+          <ErrorNotice error={deleteTemplateMutation.error} />
+          {templateDeleteBlockedByUsage ? (
+            <p className="helper-text">Template cannot be deleted while it is referenced by active integrations or policies.</p>
+          ) : null}
+          {showOwnerOnlyDeleteHint ? <p className="helper-text">Only owner role can delete templates.</p> : null}
 
           <MobileEntityList
         ariaLabel="Template list"
@@ -956,6 +1048,22 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
               >
                 Edit template
               </button>
+              {canDeleteTemplates ? (
+                <button
+                  type="button"
+                  className="btn-danger"
+                  disabled={deleteTemplateMutation.isPending}
+                  onClick={() => {
+                    if (!window.confirm(`Delete template ${template.template_id}?`)) {
+                      return;
+                    }
+                    deleteTemplateMutation.mutate({templateId: template.template_id});
+                    controls.close();
+                  }}
+                >
+                  Delete template
+                </button>
+              ) : null}
             </div>
           );
         }}
@@ -1009,6 +1117,21 @@ export const TemplatesPanel = ({api}: TemplatesPanelProps) => {
                       >
                         Edit
                       </button>
+                      {canDeleteTemplates ? (
+                        <button
+                          type="button"
+                          className="btn-danger"
+                          disabled={deleteTemplateMutation.isPending}
+                          onClick={() => {
+                            if (!window.confirm(`Delete template ${template.template_id}?`)) {
+                              return;
+                            }
+                            deleteTemplateMutation.mutate({templateId: template.template_id});
+                          }}
+                        >
+                          Delete
+                        </button>
+                      ) : null}
                     </div>
                   </td>
                 </tr>

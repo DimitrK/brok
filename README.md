@@ -13,6 +13,10 @@ See `docs/threat-model.md` for the full threat model and invariants.
 
 See `docs/admin-auth.md` for the admin authentication model and audit requirements.
 
+## Credential extension guide
+
+See `docs/credential-type-extension-playbook.md` for the contract-first playbook for adding new secret material and runtime auth types.
+
 ## Codespace Review Log
 
 ### 2026-02-08 (`packages/db`)
@@ -108,6 +112,9 @@ Optional profiles:
 | `pnpm db:migrate`                    | Run pending migrations                                        |
 | `pnpm db:migrate:dev`                | Create new migration during development                       |
 | `pnpm db:studio`                     | Open Prisma Studio for database inspection                    |
+| `pnpm backup:build`                  | Build the backup workload package                             |
+| `pnpm backup:run`                    | Create an encrypted, versioned S3 backup through broker       |
+| `pnpm backup:restore`                | Restore a selected S3 backup through broker                   |
 
 ### Connection Details
 
@@ -180,6 +187,22 @@ Docker app-profile defaults (container network):
   - Admin API: `BROKER_ADMIN_API_SECRET_KEY_B64`, OIDC or hardened static auth, vault config if vault mode is enabled
   - Broker API: `BROKER_API_SECRET_KEY_B64`, `BROKER_API_STATE_PATH` or `BROKER_API_INITIAL_STATE_JSON`
   - Both APIs: externalized `*_DATABASE_URL` and `*_REDIS_URL`
+
+## Backup and Restore
+
+- The dedicated workload lives in `packages/backup-workload`.
+- It uploads encrypted backups to S3 through normal broker workload execution, not direct AWS credentials in the workload.
+- Backup ids are date-stamped and versioned as `v000001-YYYYMMDDTHHMMSSZ`.
+- The bundle includes:
+  - PostgreSQL dump
+  - broker-admin local CA material when local issuer mode is used
+  - broker-api TLS certificate directory when configured
+  - shared secret keys required to decrypt broker-managed secrets after restore
+- The S3 integration template must declare path-group `constraints.upstream_auth.type=aws_sigv4`.
+- The S3 template must also allow bucket-root list operations used for version discovery.
+- Restore is intentionally gated by `BACKUP_WORKLOAD_RESTORE_CONFIRM=RESTORE`.
+
+See `packages/backup-workload/README.md` for setup details and the example S3 template.
 
 ### Project Structure
 

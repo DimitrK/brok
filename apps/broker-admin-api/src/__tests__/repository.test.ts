@@ -119,11 +119,17 @@ describe('control plane repository', () => {
       secretKeyId: 'kid-1'
     });
 
-    const updated = await repository.updateIntegration({
+    await expect(
+      repository.deleteTemplate({
+        templateId: 'tpl_openai_repo'
+      })
+    ).rejects.toMatchObject({code: 'template_in_use'});
+
+    const disableIntegration = await repository.updateIntegration({
       integrationId: integration.integration_id,
       enabled: false
     });
-    expect(updated.enabled).toBe(false);
+    expect(disableIntegration.enabled).toBe(false);
 
     const policy = await repository.createPolicy({
       payload: {
@@ -131,6 +137,7 @@ describe('control plane repository', () => {
         scope: {
           tenant_id: tenant.tenant_id,
           integration_id: integration.integration_id,
+          template_id: 'tpl_openai_repo',
           action_group: 'openai_responses',
           method: 'POST',
           host: 'api.openai.com'
@@ -139,6 +146,12 @@ describe('control plane repository', () => {
       }
     });
     expect(policy.policy_id).toBeTypeOf('string');
+
+    await expect(
+      repository.deleteTemplate({
+        templateId: 'tpl_openai_repo'
+      })
+    ).rejects.toMatchObject({code: 'template_in_use'});
 
     const auditEvent = repository.createAdminAuditEvent({
       actor: makeAdmin(),
@@ -159,6 +172,104 @@ describe('control plane repository', () => {
 
     await repository.deletePolicy({policyId: policy.policy_id ?? 'missing'});
     expect(await repository.listPolicies()).toHaveLength(0);
+
+    const reenabledIntegration = await repository.updateIntegration({
+      integrationId: integration.integration_id,
+      enabled: true
+    });
+    expect(reenabledIntegration.enabled).toBe(true);
+
+    const deletedIntegration = await repository.deleteIntegration({
+      integrationId: integration.integration_id
+    });
+    expect(deletedIntegration.enabled).toBe(false);
+
+    const deleteIntegrationIdempotent = await repository.deleteIntegration({
+      integrationId: integration.integration_id
+    });
+    expect(deleteIntegrationIdempotent.enabled).toBe(false);
+
+    await repository.deleteTemplate({
+      templateId: 'tpl_openai_repo'
+    });
+    await expect(
+      repository.deleteTemplate({
+        templateId: 'tpl_openai_repo'
+      })
+    ).rejects.toMatchObject({code: 'template_not_found'});
+    await expect(
+      repository.getTemplateVersion({
+        templateId: 'tpl_openai_repo',
+        version: 1
+      })
+    ).rejects.toMatchObject({code: 'template_version_not_found'});
+  });
+
+  it('supports aws_sigv4 integrations in the in-memory repository state', async () => {
+    const repository = await ControlPlaneRepository.create({
+      manifestKeys: {keys: []},
+      enrollmentTokenTtlSeconds: 600
+    });
+
+    const tenant = await repository.createTenant({name: 'Tenant S3'});
+    await repository.createTemplate({
+      payload: {
+        template_id: 'tpl_s3_repo',
+        version: 1,
+        provider: 's3_compatible',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['gateway.storjshare.io'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'backup_list',
+            risk_tier: 'medium',
+            approval_mode: 'required',
+            methods: ['GET'],
+            path_patterns: ['^/$'],
+            query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+            header_forward_allowlist: ['accept'],
+            body_policy: {max_bytes: 0, content_types: []},
+            constraints: {
+              upstream_auth: {
+                type: 'aws_sigv4',
+                service: 's3',
+                region: 'eu-west-1'
+              }
+            }
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      }
+    });
+
+    const integration = await repository.createIntegration({
+      tenantId: tenant.tenant_id,
+      payload: {
+        provider: 'aws_s3',
+        name: 'backup-storage',
+        template_id: 'tpl_s3_repo',
+        secret_material: {
+          type: 'aws_sigv4',
+          access_key_id: 'AKIA_TEST',
+          secret_access_key: 'secret-test-key',
+          session_token: 'session-token',
+          region: 'eu-west-1'
+        }
+      },
+      secretKey: Buffer.alloc(32, 7),
+      secretKeyId: 'kid-s3'
+    });
+
+    expect(integration.provider).toBe('aws_s3');
+    expect(await repository.listIntegrations({tenantId: tenant.tenant_id})).toHaveLength(1);
   });
 
   it('rotates enrollment tokens for existing workloads with explicit confirmation semantics', async () => {

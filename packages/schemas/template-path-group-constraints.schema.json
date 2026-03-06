@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/template-path-group-constraints.schema.json",
+  "title": "TemplatePathGroupConstraints",
+  "type": "object",
+  "properties": {
+    "allow_duplicate_query_keys": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ]
+    },
+    "upstream_auth": {
+      "type": "object",
+      "required": ["type", "service"],
+      "properties": {
+        "type": {
+          "const": "aws_sigv4"
+        },
+        "service": {
+          "const": "s3"
+        },
+        "region": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

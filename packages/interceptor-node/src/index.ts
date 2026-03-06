@@ -42,6 +42,7 @@
  */
 
 import {fetchManifest, startManifestRefresh} from './manifest.js';
+import {validateIntegrationOverridesAgainstManifest} from './integration-selection.js';
 import {applyPatches, removePatches, updateState} from './patch-http.js';
 import {applyFetchPatch, removeFetchPatch, updateFetchState} from './patch-fetch.js';
 import {applyChildProcessPatches, removeChildProcessPatches, updateChildProcessState} from './patch-child-process.js';
@@ -68,6 +69,7 @@ export {
   type ExecuteResponseExecuted,
   type ExecuteResponseApprovalRequired,
   type MatchRule,
+  type IntegrationOverride,
   type ManifestFailurePolicy,
   type ManifestRuntimeState
 } from './types.js';
@@ -98,6 +100,10 @@ function setCurrentManifest(state: InterceptorState, manifest: ParsedManifest): 
   state.manifestRuntime.currentManifestExpiresAt = new Date(manifest.expires_at);
   state.manifestRuntime.lastRefreshAttemptAt = new Date();
   state.manifestRuntime.manifestState = getManifestStateFromCurrentManifest(manifest);
+}
+
+function validateLoadedManifest(state: InterceptorState, manifest: ParsedManifest): {ok: true} | {ok: false; error: string} {
+  return validateIntegrationOverridesAgainstManifest(state.config.integrationOverrides, manifest);
 }
 
 function markManifestRefreshFailure(state: InterceptorState, policy: ManifestFailurePolicy): void {
@@ -203,6 +209,10 @@ export async function initializeInterceptor(config: InterceptorConfig): Promise<
     logger.warn(`Manifest fetch failed: ${manifestResult.error}`);
     markManifestRefreshFailure(globalState, resolvedConfig.manifestFailurePolicy);
   } else {
+    const overrideValidation = validateIntegrationOverridesAgainstManifest(resolvedConfig.integrationOverrides, manifestResult.manifest);
+    if (!overrideValidation.ok) {
+      return {ok: false, error: overrideValidation.error};
+    }
     setCurrentManifest(globalState, manifestResult.manifest);
     logger.info(`Manifest loaded: ${manifestResult.manifest.match_rules.length} rules`);
   }
@@ -234,6 +244,15 @@ export async function initializeInterceptor(config: InterceptorConfig): Promise<
     logger,
     manifest => {
       if (globalState) {
+        const overrideValidation = validateLoadedManifest(globalState, manifest);
+        if (!overrideValidation.ok) {
+          markManifestRefreshFailure(globalState, resolvedConfig.manifestFailurePolicy);
+          updateState(globalState);
+          updateFetchState(globalState);
+          updateChildProcessState(globalState);
+          logger.error(`Manifest refresh failed: ${overrideValidation.error}`);
+          return;
+        }
         setCurrentManifest(globalState, manifest);
         updateState(globalState);
         updateFetchState(globalState);
@@ -313,6 +332,14 @@ export async function refreshManifest(): Promise<InitializeResult> {
   const result = await fetchManifest(globalState.config, globalState.logger, globalState.sessionManager ?? undefined);
 
   if (result.ok) {
+    const overrideValidation = validateLoadedManifest(globalState, result.manifest);
+    if (!overrideValidation.ok) {
+      markManifestRefreshFailure(globalState, globalState.config.manifestFailurePolicy);
+      updateState(globalState);
+      updateFetchState(globalState);
+      updateChildProcessState(globalState);
+      return {ok: false, error: overrideValidation.error};
+    }
     setCurrentManifest(globalState, result.manifest);
     updateState(globalState);
     updateFetchState(globalState);

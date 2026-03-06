@@ -140,6 +140,10 @@ if (!publishCheck.ok) {
 - Duplicate query keys are rejected unless explicitly allowed by template constraints.
 - Body limits/content-types are enforced from template `body_policy`.
 - Output descriptor is validated against `CanonicalRequestDescriptorSchema`.
+- S3-compatible request shapes are covered for bucket-root list requests such as `GET /?list-type=2&prefix=...`
+  and encoded object-key paths such as `/tenant-a/backups/folder%2F2026%2Fmanifest.json`.
+- Percent-encoded reserved path separators remain encoded during canonicalization; hex digits are normalized to
+  uppercase so approval and audit keys stay deterministic for SigV4-shaped traffic.
 
 ## Pending Implementations (`_INCOMPLETE`)
 
@@ -163,9 +167,6 @@ Pending wiring in other package:
 - `setApprovalOnceCacheInRedis_INCOMPLETE`
 - `incrementRateLimitCounterInRedis_INCOMPLETE`
 - `loadManifestVerificationKeysFromDb_INCOMPLETE`
-- `loadActiveManifestSigningKeyFromKms_INCOMPLETE`
-- `signManifestWithCryptoPackage_INCOMPLETE`
-- `verifyManifestSignatureWithCryptoPackage_INCOMPLETE`
 
 3. Canonicalizer methods pending runtime wiring from broker-api execute pipeline:
 - `canonicalizeExecuteRequest` (from this package)

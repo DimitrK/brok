@@ -141,6 +141,9 @@ await authStorage.loadWorkloadRecordBySanUri({
 - `parsedCsrSchema`
 
 These runtime validation schemas are re-exported from `@broker-interceptor/schemas` so contract definitions stay centralized.
+`@broker-interceptor/auth` intentionally consumes only auth-relevant DTOs from that package. Integration secret material
+variants, including `aws_sigv4`, remain owned by the shared schema/OpenAPI source of truth and should not be
+re-declared inside auth.
 
 ## Recommended Request Pipeline
 

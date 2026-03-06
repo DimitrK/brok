@@ -324,7 +324,12 @@ const createSsrfDecisionProjection = () => ({
   correlation_id: 'corr_1'
 })
 
-const createSecretVersionRow = (version: number) => ({
+const createSecretVersionRow = (
+  version: number,
+  overrides?: Partial<{
+    secretType: 'api_key' | 'oauth_refresh_token' | 'aws_sigv4'
+  }>
+) => ({
   secretRef: 'sec_1',
   version,
   keyId: 'k_1',
@@ -339,7 +344,7 @@ const createSecretVersionRow = (version: number) => ({
   secret: {
     tenantId: 't_1',
     integrationId: 'int_1',
-    type: 'api_key' as const
+    type: overrides?.secretType ?? ('api_key' as const)
   }
 })
 
@@ -2469,6 +2474,142 @@ describe('SecretRepository', () => {
         activeVersion: 1
       }
     })
+  })
+
+  it('creates aws_sigv4 secret versions without additional storage schema changes', async () => {
+    const secretFindUnique = vi.fn(() => Promise.resolve(null))
+    const secretCreate = vi.fn(() =>
+      Promise.resolve({
+        secretRef: 'sec_sigv4',
+        tenantId: 't_1',
+        integrationId: 'int_s3',
+        type: 'aws_sigv4',
+        activeVersion: 1
+      })
+    )
+    const secretVersionFindFirst = vi.fn(() => Promise.resolve(null))
+    const secretVersionCreate = vi.fn(() =>
+      Promise.resolve(
+        createSecretVersionRow(1, {
+          secretType: 'aws_sigv4'
+        })
+      )
+    )
+    const secretUpdate = vi.fn(() =>
+      Promise.resolve({
+        secretRef: 'sec_sigv4',
+        tenantId: 't_1',
+        integrationId: 'int_s3',
+        type: 'aws_sigv4',
+        activeVersion: 1
+      })
+    )
+
+    const transactionDb = createDbClientStub({
+      secret: {
+        findUnique: secretFindUnique,
+        create: secretCreate,
+        update: secretUpdate
+      },
+      secretVersion: {
+        findFirst: secretVersionFindFirst,
+        create: secretVersionCreate
+      }
+    })
+
+    const repository = new SecretRepository(
+      createDbClientStub({
+        $transaction: async operation => operation(transactionDb)
+      })
+    )
+
+    const created = await repository.createSecretEnvelopeVersion({
+      secret_ref: 'sec_sigv4',
+      tenant_id: 't_1',
+      integration_id: 'int_s3',
+      secret_type: 'aws_sigv4',
+      envelope: {
+        key_id: 'k_sigv4',
+        content_encryption_alg: 'A256GCM',
+        key_encryption_alg: 'A256KW',
+        wrapped_data_key_b64: Buffer.alloc(32, 1).toString('base64'),
+        iv_b64: Buffer.alloc(12, 2).toString('base64'),
+        ciphertext_b64: Buffer.from('opaque-s3-credentials', 'utf8').toString('base64'),
+        auth_tag_b64: Buffer.alloc(16, 4).toString('base64')
+      }
+    })
+
+    expect(created.secret_type).toBe('aws_sigv4')
+    expect(secretCreate).toHaveBeenCalledWith({
+      data: {
+        secretRef: 'sec_sigv4',
+        tenantId: 't_1',
+        integrationId: 'int_s3',
+        type: 'aws_sigv4',
+        activeVersion: 1
+      }
+    })
+    expect(secretUpdate).toHaveBeenCalledWith({
+      where: {
+        secretRef: 'sec_sigv4'
+      },
+      data: {
+        activeVersion: 1
+      }
+    })
+  })
+
+  it('round-trips aws_sigv4 secret versions through active, versioned, and list reads', async () => {
+    const repository = new SecretRepository(
+      createDbClientStub({
+        secret: {
+          findUnique: vi.fn(() => Promise.resolve({activeVersion: 2}))
+        },
+        secretVersion: {
+          findUnique: vi.fn(({where}: Record<string, unknown>) =>
+            Promise.resolve(
+              createSecretVersionRow(Number((where as {secretRef_version: {version: number}}).secretRef_version.version), {
+                secretType: 'aws_sigv4'
+              })
+            )
+          ),
+          findMany: vi.fn(() =>
+            Promise.resolve([
+              createSecretVersionRow(1, {secretType: 'aws_sigv4'}),
+              createSecretVersionRow(2, {secretType: 'aws_sigv4'})
+            ])
+          )
+        }
+      })
+    )
+
+    await expect(
+      repository.getActiveSecretEnvelope({
+        secret_ref: 'sec_sigv4'
+      })
+    ).resolves.toMatchObject({
+      secret_type: 'aws_sigv4',
+      version: 2
+    })
+
+    await expect(
+      repository.getSecretEnvelopeVersion({
+        secret_ref: 'sec_sigv4',
+        version: 1
+      })
+    ).resolves.toMatchObject({
+      secret_type: 'aws_sigv4',
+      version: 1
+    })
+
+    await expect(
+      repository.listSecretEnvelopeVersions({
+        secret_ref: 'sec_sigv4'
+      })
+    ).resolves.toMatchObject([
+      {secret_type: 'aws_sigv4', version: 1},
+      {secret_type: 'aws_sigv4', version: 2}
+    ])
   })
 
   it('rejects secret ownership mismatches during version writes', async () => {

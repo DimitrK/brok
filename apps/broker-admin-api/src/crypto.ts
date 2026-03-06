@@ -98,7 +98,7 @@ export const decryptSecretMaterialWithCryptoPackage = async ({
     throw internal('secret_decrypt_failed', 'Stored secret could not be decrypted with configured key');
   }
 
-  return decrypted.value.value;
+  return decrypted.value;
 };
 
 export const computeManifestKeysWeakEtagWithCryptoPackage = ({manifestKeys}: {manifestKeys: OpenApiManifestKeys}) => {

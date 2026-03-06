@@ -29,7 +29,25 @@ import type {
 } from './types.js';
 
 /** Headers that should not be forwarded to upstream */
-const BLOCKED_HEADERS = new Set(['host', 'connection', 'content-length']);
+const BLOCKED_HEADERS = new Set(['connection', 'content-length']);
+
+function getDefaultPort(protocol: string): string {
+  if (protocol === 'https:') {
+    return '443';
+  }
+  if (protocol === 'http:') {
+    return '80';
+  }
+  return '';
+}
+
+function formatHostHeader(url: URL): string {
+  const defaultPort = getDefaultPort(url.protocol);
+  if (!url.port || url.port === defaultPort) {
+    return url.hostname;
+  }
+  return `${url.hostname}:${url.port}`;
+}
 
 /**
  * Options for an execute request.
@@ -76,6 +94,19 @@ function headersToArray(headers: Record<string, string | string[] | undefined>):
   }
 
   return result;
+}
+
+function ensureHostHeader(
+  headers: Array<{name: string; value: string}>,
+  requestUrl: string
+): Array<{name: string; value: string}> {
+  const hasHostHeader = headers.some(header => header.name.toLowerCase() === 'host');
+  if (hasHostHeader) {
+    return headers;
+  }
+
+  const parsedUrl = new URL(requestUrl);
+  return [...headers, {name: 'host', value: formatHostHeader(parsedUrl)}];
 }
 
 /**
@@ -217,7 +248,7 @@ export async function executeRequest(
     request: {
       method: options.method,
       url: options.url,
-      headers: headersToArray(options.headers),
+      headers: ensureHostHeader(headersToArray(options.headers), options.url),
       body_base64: options.body ? options.body.toString('base64') : undefined
     },
     client_context: {

@@ -15,6 +15,12 @@ const toBase64Url = (input: string) =>
     .replace(/\//g, '_')
     .replace(/=+$/g, '');
 
+const mutateBase64UrlChar = (value: string, index: number) => {
+  const current = value[index];
+  const replacement = current === 'A' ? 'B' : 'A';
+  return `${value.slice(0, index)}${replacement}${value.slice(index + 1)}`;
+};
+
 describe('oidc', () => {
   let privateKey: CryptoKey;
   let keyResolver: OidcJwtKeyResolver;
@@ -325,7 +331,7 @@ describe('oidc', () => {
     it('rejects tampered signatures and expired tokens', async () => {
       const validToken = await signToken();
       const [header, payload, signature] = validToken.split('.');
-      const tamperedSignature = `${signature.slice(0, -1)}${signature.endsWith('A') ? 'B' : 'A'}`;
+      const tamperedSignature = mutateBase64UrlChar(signature, Math.floor(signature.length / 2));
       const tampered = `${header}.${payload}.${tamperedSignature}`;
 
       const signatureResult = await verifyOidcAccessToken({

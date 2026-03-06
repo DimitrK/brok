@@ -397,6 +397,75 @@ describe('envelope error branches', () => {
       expect(invalidEncryptedSecret.error.code).toBe('invalid_input');
     }
 
+    const encryptedApiKey = await encryptSecretMaterial({
+      secret_material: {
+        type: 'api_key',
+        value: 'abc'
+      },
+      key_management_service: kms
+    });
+    expect(encryptedApiKey.ok).toBe(true);
+    if (!encryptedApiKey.ok) {
+      return;
+    }
+
+    const mismatchedTypeSecret = await decryptSecretMaterial({
+      encrypted_secret_material: {
+        ...encryptedApiKey.value,
+        type: 'oauth_refresh_token'
+      },
+      key_management_service: kms
+    });
+    expect(mismatchedTypeSecret.ok).toBe(false);
+    if (!mismatchedTypeSecret.ok) {
+      expect(mismatchedTypeSecret.error.code).toBe('invalid_input');
+    }
+
+    const encryptedRawJson = await encryptWithEnvelope({
+      plaintext: Buffer.from('{not-json', 'utf8'),
+      key_management_service: kms
+    });
+    expect(encryptedRawJson.ok).toBe(true);
+    if (!encryptedRawJson.ok) {
+      return;
+    }
+
+    const legacyStringSecret = await decryptSecretMaterial({
+      encrypted_secret_material: {
+        type: 'api_key',
+        envelope: encryptedRawJson.value
+      },
+      key_management_service: kms
+    });
+    expect(legacyStringSecret.ok).toBe(true);
+    if (legacyStringSecret.ok) {
+      expect(legacyStringSecret.value).toEqual({
+        type: 'api_key',
+        value: '{not-json'
+      });
+    }
+
+    const encryptedLegacyAws = await encryptWithEnvelope({
+      plaintext: Buffer.from('legacy-aws-secret', 'utf8'),
+      key_management_service: kms
+    });
+    expect(encryptedLegacyAws.ok).toBe(true);
+    if (!encryptedLegacyAws.ok) {
+      return;
+    }
+
+    const invalidLegacyAwsSecret = await decryptSecretMaterial({
+      encrypted_secret_material: {
+        type: 'aws_sigv4',
+        envelope: encryptedLegacyAws.value
+      },
+      key_management_service: kms
+    });
+    expect(invalidLegacyAwsSecret.ok).toBe(false);
+    if (!invalidLegacyAwsSecret.ok) {
+      expect(invalidLegacyAwsSecret.error.code).toBe('invalid_input');
+    }
+
     const emptyPlaintextEnvelope = await encryptWithEnvelope({
       plaintext: Buffer.alloc(0),
       key_management_service: kms

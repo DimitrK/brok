@@ -218,6 +218,244 @@ describe('patch-fetch', () => {
     expect(passthroughFetch).not.toHaveBeenCalled();
   });
 
+  it('intercepts bucket-root list requests and forwards the query string intact', async () => {
+    const passthroughFetch = vi.fn(() => Promise.resolve(new Response('passthrough', {status: 200})));
+    globalThis.fetch = passthroughFetch as typeof globalThis.fetch;
+
+    mockedExecuteRequest.mockResolvedValue({
+      ok: true,
+      response: {
+        status: 'executed',
+        correlation_id: 'corr_s3_list',
+        upstream: {
+          status_code: 200,
+          headers: [{name: 'content-type', value: 'application/xml'}],
+          body_base64: Buffer.from('<ListBucketResult />').toString('base64')
+        }
+      }
+    });
+
+    applyFetchPatch(
+      createState({
+        manifest: createManifest({
+          match_rules: [
+            {
+              integration_id: 'int_backup',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            }
+          ]
+        })
+      })
+    );
+
+    const response = await fetch('https://bucket.s3.example.com/?list-type=2&prefix=backups%2F&delimiter=%2F');
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('<ListBucketResult />');
+    expect(mockedExecuteRequest).toHaveBeenCalledTimes(1);
+    expect(mockedExecuteRequest.mock.calls[0]?.[0]).toMatchObject({
+      integrationId: 'int_backup',
+      method: 'GET',
+      url: 'https://bucket.s3.example.com/?list-type=2&prefix=backups%2F&delimiter=%2F'
+    });
+    expect(passthroughFetch).not.toHaveBeenCalled();
+  });
+
+  it('intercepts object upload and download requests for matching object paths', async () => {
+    const passthroughFetch = vi.fn(() => Promise.resolve(new Response('passthrough', {status: 200})));
+    globalThis.fetch = passthroughFetch as typeof globalThis.fetch;
+
+    mockedExecuteRequest.mockResolvedValue({
+      ok: true,
+      response: {
+        status: 'executed',
+        correlation_id: 'corr_s3_object',
+        upstream: {
+          status_code: 200,
+          headers: [{name: 'content-type', value: 'application/octet-stream'}],
+          body_base64: Buffer.from('ok').toString('base64')
+        }
+      }
+    });
+
+    applyFetchPatch(
+      createState({
+        manifest: createManifest({
+          match_rules: [
+            {
+              integration_id: 'int_backup',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/backups/*']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            }
+          ]
+        })
+      })
+    );
+
+    await fetch('https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz', {
+      method: 'PUT',
+      body: 'archive-bytes'
+    });
+    await fetch('https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz');
+
+    expect(mockedExecuteRequest).toHaveBeenCalledTimes(2);
+    expect(mockedExecuteRequest.mock.calls[0]?.[0]).toMatchObject({
+      integrationId: 'int_backup',
+      method: 'PUT',
+      url: 'https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz',
+      body: Buffer.from('archive-bytes')
+    });
+    expect(mockedExecuteRequest.mock.calls[1]?.[0]).toMatchObject({
+      integrationId: 'int_backup',
+      method: 'GET',
+      url: 'https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz'
+    });
+    expect(passthroughFetch).not.toHaveBeenCalled();
+  });
+
+  it('uses configured integration override instead of manifest first match for multi-integration S3 traffic', async () => {
+    const passthroughFetch = vi.fn(() => Promise.resolve(new Response('passthrough', {status: 200})));
+    globalThis.fetch = passthroughFetch as typeof globalThis.fetch;
+
+    mockedExecuteRequest.mockResolvedValue({
+      ok: true,
+      response: {
+        status: 'executed',
+        correlation_id: 'corr_override_s3',
+        upstream: {
+          status_code: 200,
+          headers: [{name: 'content-type', value: 'application/xml'}],
+          body_base64: Buffer.from('<ListBucketResult />').toString('base64')
+        }
+      }
+    });
+
+    applyFetchPatch(
+      createState({
+        config: {
+          integrationOverrides: [
+            {
+              integrationId: 'int_backup',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              }
+            }
+          ]
+        },
+        manifest: createManifest({
+          match_rules: [
+            {
+              integration_id: 'int_default',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            },
+            {
+              integration_id: 'int_backup',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            }
+          ]
+        })
+      })
+    );
+
+    await fetch('https://bucket.s3.example.com/?list-type=2&prefix=backups%2F');
+
+    expect(mockedExecuteRequest).toHaveBeenCalledTimes(1);
+    expect(mockedExecuteRequest.mock.calls[0]?.[0]).toMatchObject({
+      integrationId: 'int_backup',
+      url: 'https://bucket.s3.example.com/?list-type=2&prefix=backups%2F'
+    });
+    expect(passthroughFetch).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a configured integration override is not backed by a matching manifest rule', async () => {
+    const passthroughFetch = vi.fn(() => Promise.resolve(new Response('passthrough', {status: 200})));
+    globalThis.fetch = passthroughFetch as typeof globalThis.fetch;
+
+    applyFetchPatch(
+      createState({
+        config: {
+          integrationOverrides: [
+            {
+              integrationId: 'int_backup',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/backups/*']
+              }
+            }
+          ]
+        },
+        manifest: createManifest({
+          match_rules: [
+            {
+              integration_id: 'int_default',
+              provider: 's3-compatible',
+              match: {
+                hosts: ['bucket.s3.example.com'],
+                schemes: ['https'],
+                ports: [443],
+                path_groups: ['/']
+              },
+              rewrite: {
+                mode: 'execute',
+                send_intended_url: true
+              }
+            }
+          ]
+        })
+      })
+    );
+
+    await expect(fetch('https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz')).rejects.toThrow(
+      'Integration override'
+    );
+    expect(mockedExecuteRequest).not.toHaveBeenCalled();
+    expect(passthroughFetch).not.toHaveBeenCalled();
+  });
+
   it('keeps routing with stale runtime state while manifest is still unexpired', async () => {
     const passthroughFetch = vi.fn(() => Promise.resolve(new Response('passthrough', {status: 200})));
     globalThis.fetch = passthroughFetch as typeof globalThis.fetch;

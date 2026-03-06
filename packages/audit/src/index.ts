@@ -1,6 +1,7 @@
 export * from './admin'
 export * from './contracts'
 export * from './errors'
+export * from './integration'
 export * from './redaction'
 export * from './search'
 export * from './service'

@@ -27,6 +27,7 @@ import {
   OpenApiIntegrationSchema,
   OpenApiManifestKeysSchema,
   OpenApiPolicyRuleSchema,
+  SecretMaterialTypeSchema,
   OpenApiTemplateSchema,
   OpenApiTenantSummarySchema,
   OpenApiWorkloadSchema,
@@ -104,7 +105,7 @@ const secretRecordSchema = z
     secret_ref: z.string().min(1),
     tenant_id: z.string().min(1),
     integration_id: z.string().min(1),
-    type: z.enum(['api_key', 'oauth_refresh_token']),
+    type: SecretMaterialTypeSchema,
     active_version: z.number().int().gte(1),
     versions: z.array(secretVersionRecordSchema).min(1)
   })
@@ -484,6 +485,30 @@ const validateIpAllowlist = (allowlist: string[]) => {
   }
 };
 
+const getDbErrorLogDetails = (error: unknown) => {
+  if (error instanceof DbRepositoryError) {
+    return {
+      error_name: error.name,
+      error_code: error.code,
+      error_message: error.message
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      error_name: error.name,
+      error_code: 'unknown',
+      error_message: error.message
+    };
+  }
+
+  return {
+    error_name: typeof error,
+    error_code: 'unknown',
+    error_message: 'Unknown database error'
+  };
+};
+
 const buildDefaultState = ({manifestKeys}: {manifestKeys: OpenApiManifestKeys}): PersistedState =>
   persistedStateSchema.parse({
     version: 1,
@@ -626,6 +651,45 @@ export class ControlPlaneRepository {
     }
 
     return this.dbRepositories;
+  }
+
+  private logDbOperationFailure({
+    operation,
+    error,
+    tenantId,
+    workloadId,
+    integrationId,
+    metadata
+  }: {
+    operation: string;
+    error: unknown;
+    tenantId?: string;
+    workloadId?: string;
+    integrationId?: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    const details = getDbErrorLogDetails(error);
+    const logInput = {
+      event: 'repository.db.operation_failed',
+      component: 'repository.db',
+      message: `Database operation failed: ${operation}`,
+      reason_code: details.error_code,
+      ...(tenantId ? {tenant_id: tenantId} : {}),
+      ...(workloadId ? {workload_id: workloadId} : {}),
+      ...(integrationId ? {integration_id: integrationId} : {}),
+      metadata: {
+        operation,
+        ...details,
+        ...(metadata ?? {})
+      }
+    };
+
+    if (details.error_code === 'unexpected_error' || details.error_code === 'dependency_missing') {
+      this.logger.error(logInput);
+      return;
+    }
+
+    this.logger.warn(logInput);
   }
 
   private async ensureGlobalTemplateTenant() {
@@ -1218,6 +1282,16 @@ export class ControlPlaneRepository {
           enrollmentToken
         };
       } catch (error) {
+        this.logDbOperationFailure({
+          operation: 'workload.create',
+          error,
+          tenantId,
+          metadata: {
+            workload_name: name,
+            enrollment_mode: enrollmentMode,
+            has_ip_allowlist: Boolean(ipAllowlist && ipAllowlist.length > 0)
+          }
+        });
         return mapDbRepositoryError(error);
       }
     }
@@ -1753,6 +1827,50 @@ export class ControlPlaneRepository {
     });
   }
 
+  public async deleteIntegration({integrationId}: {integrationId: string}): Promise<OpenApiIntegration> {
+    if (this.isDbEnabled()) {
+      try {
+        const existing = await this.requireDbRepositories().integrationRepository.getById({
+          integration_id: integrationId
+        });
+        if (!existing) {
+          throw notFound('integration_not_found', `Integration ${integrationId} was not found`);
+        }
+
+        if (existing.enabled === false) {
+          return existing;
+        }
+
+        return await this.requireDbRepositories().integrationRepository.update({
+          integration_id: integrationId,
+          request: {
+            enabled: false
+          }
+        });
+      } catch (error) {
+        return mapDbRepositoryError(error);
+      }
+    }
+
+    return this.withWriteLock(() => {
+      const integration = this.findIntegration(integrationId);
+      if (integration.enabled === false) {
+        return clone(integration);
+      }
+
+      const updated = OpenApiIntegrationSchema.parse({
+        ...integration,
+        enabled: false
+      });
+      const index = this.state.integrations.findIndex(item => item.integration_id === integrationId);
+      if (index < 0) {
+        throw notFound('integration_not_found', `Integration ${integrationId} was not found`);
+      }
+      this.state.integrations.splice(index, 1, updated);
+      return clone(updated);
+    });
+  }
+
   public async listTemplates() {
     if (this.isDbEnabled()) {
       try {
@@ -1892,6 +2010,94 @@ export class ControlPlaneRepository {
     }
 
     return clone(template);
+  }
+
+  public async deleteTemplate({templateId}: {templateId: string}): Promise<void> {
+    if (this.isDbEnabled()) {
+      const prisma = this.processInfrastructure?.prisma;
+      if (!prisma) {
+        throw serviceUnavailable('db_unavailable', 'Template storage is unavailable');
+      }
+
+      try {
+        const existingTemplate = await prisma.templateVersion.findFirst({
+          where: {
+            tenantId: GLOBAL_TEMPLATE_TENANT_ID,
+            templateId,
+            status: 'active'
+          },
+          select: {
+            id: true
+          }
+        });
+        if (!existingTemplate) {
+          throw notFound('template_not_found', `Template ${templateId} was not found`);
+        }
+
+        const activeIntegrationCount = await prisma.integration.count({
+          where: {
+            templateId,
+            enabled: true
+          }
+        });
+        if (activeIntegrationCount > 0) {
+          throw conflict(
+            'template_in_use',
+            `Template ${templateId} is referenced by active integrations and cannot be deleted`
+          );
+        }
+
+        const activePolicyCount = await prisma.policyRule.count({
+          where: {
+            templateId,
+            enabled: true
+          }
+        });
+        if (activePolicyCount > 0) {
+          throw conflict('template_in_use', `Template ${templateId} is referenced by active policies and cannot be deleted`);
+        }
+
+        await prisma.templateVersion.updateMany({
+          where: {
+            tenantId: GLOBAL_TEMPLATE_TENANT_ID,
+            templateId,
+            status: 'active'
+          },
+          data: {
+            status: 'disabled'
+          }
+        });
+        return;
+      } catch (error) {
+        return mapDbRepositoryError(error);
+      }
+    }
+
+    return this.withWriteLock(() => {
+      const templateCount = this.state.templates.filter(item => item.template_id === templateId).length;
+      if (templateCount === 0) {
+        throw notFound('template_not_found', `Template ${templateId} was not found`);
+      }
+
+      const activeIntegrationCount = this.state.integrations.filter(
+        item => item.template_id === templateId && item.enabled
+      ).length;
+      if (activeIntegrationCount > 0) {
+        throw conflict(
+          'template_in_use',
+          `Template ${templateId} is referenced by active integrations and cannot be deleted`
+        );
+      }
+
+      const activePolicyCount = this.state.policies.filter(
+        policy => policy.scope.template_id === templateId
+      ).length;
+      if (activePolicyCount > 0) {
+        throw conflict('template_in_use', `Template ${templateId} is referenced by active policies and cannot be deleted`);
+      }
+
+      this.state.templates = this.state.templates.filter(item => item.template_id !== templateId);
+    });
   }
 
   public async listPolicies() {

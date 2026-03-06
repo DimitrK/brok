@@ -74,6 +74,37 @@ if (!initResult.ok) {
 }
 ```
 
+### Scenario 2b: Programmatic + explicit integration override
+
+Use this when more than one broker integration can match the same outbound endpoint and the workload must pin a specific `integration_id`.
+
+```ts
+import {initializeInterceptor} from '@broker-interceptor/interceptor-node';
+
+const initResult = await initializeInterceptor({
+  brokerUrl: 'https://broker.example.com',
+  workloadId: 'w_123',
+  sessionToken: 'sess_xxx',
+  integrationOverrides: [
+    {
+      integrationId: 'int_backup_primary',
+      match: {
+        hosts: ['bucket.s3.example.com'],
+        path_groups: ['/'],
+        schemes: ['https'],
+        ports: [443]
+      }
+    }
+  ]
+});
+
+if (!initResult.ok) {
+  throw new Error(initResult.error);
+}
+```
+
+Use overrides only for narrow request scopes. If an override matches a request but the current manifest does not authorize that `integration_id` for the same URL, the interceptor fails closed instead of falling back to another integration.
+
 ### Scenario 3: Zero-code preload (NODE_OPTIONS)
 
 Use this when you cannot modify app code.
@@ -120,6 +151,7 @@ node app.js
 | `manifestRefreshIntervalMs` | `number` | No | `300000` | Manifest refresh interval |
 | `failOnManifestError` | `boolean` | No | `true` | If `true`, initialization fails on manifest fetch/verify error |
 | `manifestFailurePolicy` | `'use_last_valid' \| 'fail_closed' \| 'fail_open'` | No | `'use_last_valid'` | Runtime behavior when refresh fails |
+| `integrationOverrides` | `Array<{integrationId, match}>` | No | - | Deterministic `integration_id` selection for specific request scopes |
 | `logger` | `Logger` | No | console | `{debug, info, warn, error}` |
 
 \* Provide either `sessionToken` OR (`mtlsCertPath` + `mtlsKeyPath`).
@@ -150,6 +182,24 @@ node app.js
 - `ApprovalRequiredError`: broker returned `202 approval_required`.
 - `RequestDeniedError`: broker returned policy denial (`400/403` OpenAPI error payload).
 - `ManifestUnavailableError`: manifest is unavailable/expired under active failure policy.
+- invalid integration override match: request fails closed with an error instead of falling back to a different manifest match.
+
+## Explicit Integration Overrides
+
+- Use `integrationOverrides` only when manifest URL matching is not enough to choose the intended broker integration.
+- Each override defines:
+  - `integrationId`
+  - `match.hosts`
+  - `match.path_groups`
+  - optional `match.schemes` and `match.ports`
+- Override matching uses the same host/path semantics as manifest matching.
+- Hosts must be exact. Wildcards are rejected.
+- Path groups support exact paths, prefix patterns like `/x/*`, and anchored regex patterns like `^/x/.*$`.
+- If more than one override matches the same request, the request is blocked.
+- If an override references an integration missing from the manifest, initialization fails.
+- If an override matches a request but no manifest rule for that `integration_id` matches the URL, the request is blocked.
+- Workloads without `integrationOverrides` keep the existing transparent first-match manifest behavior.
+- Preload-only configuration does not currently expose `integrationOverrides`; use programmatic initialization when deterministic integration selection is required.
 
 ## Child process propagation
 

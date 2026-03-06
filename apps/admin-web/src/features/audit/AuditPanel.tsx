@@ -28,9 +28,9 @@ import {
   collectMatchingFailingEvents,
   getCanonicalUrlFromEvent,
   getPathFromEvent,
-  isFailingAuditEvent,
-  TEMPLATE_DRAFT_STORAGE_KEY
+  isFailingAuditEvent
 } from './templateSuggestion';
+import {TEMPLATE_DRAFT_STORAGE_KEY} from '../templates/templateDraftRoute';
 
 type AuditPanelProps = {
   api: BrokerAdminApiClient;
@@ -518,7 +518,7 @@ export const AuditPanel = ({api}: AuditPanelProps) => {
                     if (typeof window !== 'undefined') {
                       window.sessionStorage.setItem(TEMPLATE_DRAFT_STORAGE_KEY, JSON.stringify(draftRouteState));
                     }
-                    navigate('/templates?draft=audit');
+                    navigate('/templates?draft=audit', {state: draftRouteState});
                   }}
                 >
                   Open template draft

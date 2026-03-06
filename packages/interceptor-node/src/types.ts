@@ -12,6 +12,7 @@ import type {
   OpenApiExecuteResponseExecuted,
   OpenApiManifest
 } from '@broker-interceptor/schemas/dist/generated/schemas.js';
+import {validateHostPattern, validatePathGroupPattern} from './match-patterns.js';
 
 /**
  * Logger interface for the interceptor.
@@ -23,6 +24,44 @@ export interface Logger {
   warn(message: string): void;
   error(message: string): void;
 }
+
+const IntegrationOverrideMatchSchema = z
+  .object({
+    hosts: z.array(z.string().min(1)).min(1),
+    schemes: z.array(z.enum(['http', 'https'])).min(1).default(['https']),
+    ports: z.array(z.number().int().positive()).min(1).default([443]),
+    path_groups: z.array(z.string().min(1)).min(1)
+  })
+  .superRefine((value, ctx) => {
+    for (const [hostIndex, host] of value.hosts.entries()) {
+      const hostError = validateHostPattern(host);
+      if (hostError) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['hosts', hostIndex],
+          message: hostError
+        });
+      }
+    }
+
+    for (const [pathIndex, pattern] of value.path_groups.entries()) {
+      const pathError = validatePathGroupPattern(pattern);
+      if (pathError) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['path_groups', pathIndex],
+          message: pathError
+        });
+      }
+    }
+  });
+
+const IntegrationOverrideSchema = z
+  .object({
+    integrationId: z.string().min(1),
+    match: IntegrationOverrideMatchSchema
+  })
+  .strict();
 
 /**
  * Default console logger.
@@ -81,7 +120,10 @@ export const InterceptorConfigSchema = z
     failOnManifestError: z.boolean().default(true),
 
     /** How interceptor behaves when manifest refresh fails */
-    manifestFailurePolicy: z.enum(['use_last_valid', 'fail_closed', 'fail_open']).default('use_last_valid')
+    manifestFailurePolicy: z.enum(['use_last_valid', 'fail_closed', 'fail_open']).default('use_last_valid'),
+
+    /** Optional deterministic integration selection for specific request scopes */
+    integrationOverrides: z.array(IntegrationOverrideSchema).optional()
   })
   .refine(
     data => {
@@ -138,6 +180,7 @@ export type ExecuteResponse = ExecuteResponseExecuted | ExecuteResponseApprovalR
 
 export type ManifestFailurePolicy = 'use_last_valid' | 'fail_closed' | 'fail_open';
 export type ManifestStateKind = 'missing' | 'valid' | 'stale' | 'expired';
+export type IntegrationOverride = z.output<typeof IntegrationOverrideSchema>;
 
 export interface ManifestRuntimeState {
   currentManifest: ParsedManifest | null;

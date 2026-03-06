@@ -16,6 +16,10 @@ Generated outputs:
 - Do not re-define API DTOs in app/package code.
 - Import DTO types and parsers from `@broker-interceptor/schemas`.
 - When contracts change, update source schemas/OpenAPI and regenerate.
+- Write-side secret material contracts are strict discriminated unions via the OpenAPI-derived schemas.
+  Shared storage contracts keep a stable `type` shape for downstream envelope/repository consumers.
+- Downstream packages that only need the secret type discriminator should use `SecretMaterialTypeSchema`
+  instead of reaching into `SecretMaterialSchema.shape.type`.
 
 ## Usage
 
@@ -32,4 +36,5 @@ const executeReq = OpenApiExecuteRequestSchema.parse(requestBody)
 pnpm --filter @broker-interceptor/schemas run generate
 pnpm --filter @broker-interceptor/schemas build
 pnpm --filter @broker-interceptor/schemas lint
+pnpm --filter @broker-interceptor/schemas test
 ```

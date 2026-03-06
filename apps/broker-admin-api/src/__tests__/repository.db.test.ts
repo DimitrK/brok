@@ -866,4 +866,115 @@ describe('control plane repository db wiring', () => {
       code: 'db_validation_error'
     });
   });
+
+  it('logs underlying workload create db failures before mapping them to db_unavailable', async () => {
+    activeDbFixture = makeFixture({
+      tenant: {tenant_id: 't_db_1', name: 'Tenant DB'},
+      workload: {
+        workload_id: 'w_db_1',
+        tenant_id: 't_db_1',
+        name: 'workload-db',
+        mtls_san_uri: 'spiffe://broker/tenants/t_db_1/workloads/w_db_1',
+        enabled: true,
+        created_at: new Date().toISOString()
+      },
+      integration: {
+        integration_id: 'i_db_1',
+        tenant_id: 't_db_1',
+        provider: 'openai',
+        name: 'openai-db',
+        template_id: 'tpl_openai_db',
+        enabled: true
+      },
+      policy: makePolicy({tenantId: 't_db_1', integrationId: 'i_db_1'}),
+      approval: makeApproval({
+        approvalId: 'appr_db_1',
+        tenantId: 't_db_1',
+        workloadId: 'w_db_1',
+        integrationId: 'i_db_1'
+      }),
+      auditEvent: {
+        event_id: 'evt_db_1',
+        timestamp: new Date().toISOString(),
+        tenant_id: 't_db_1',
+        workload_id: null,
+        integration_id: null,
+        correlation_id: 'corr_db',
+        event_type: 'admin_action',
+        decision: null,
+        action_group: null,
+        risk_tier: null,
+        destination: null,
+        latency_ms: null,
+        upstream_status_code: null,
+        canonical_descriptor: null,
+        policy: null,
+        message: null,
+        metadata: {}
+      },
+      manifestKeys: {keys: []}
+    });
+
+    activeDbFixture.repositories.workloadRepository.create.mockRejectedValue(
+      new MockDbRepositoryError('unexpected_error', 'Unexpected database error')
+    );
+
+    const logger = {
+      log: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn()
+    };
+
+    const {ControlPlaneRepository} = await import('../repository');
+    const repository = await ControlPlaneRepository.create({
+      manifestKeys: {keys: []},
+      enrollmentTokenTtlSeconds: 600,
+      processInfrastructure: {
+        enabled: true,
+        prisma: {
+          templateVersion: {
+            findMany: vi.fn(async () => [])
+          },
+          policyRule: {
+            findMany: vi.fn(async () => [])
+          }
+        },
+        redis: {},
+        redisKeyPrefix: 'broker-admin-api:test',
+        withTransaction: async <T>(operation: () => Promise<T>) => operation(),
+        close: async () => undefined
+      } as unknown as ProcessInfrastructure,
+      logger
+    });
+
+    await expect(
+      repository.createWorkload({
+        tenantId: 't_db_1',
+        name: 'backup-worker',
+        enrollmentMode: 'broker_ca'
+      })
+    ).rejects.toMatchObject({
+      code: 'db_unavailable'
+    });
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'repository.db.operation_failed',
+        component: 'repository.db',
+        message: 'Database operation failed: workload.create',
+        reason_code: 'unexpected_error',
+        tenant_id: 't_db_1',
+        metadata: expect.objectContaining({
+          operation: 'workload.create',
+          workload_name: 'backup-worker',
+          enrollment_mode: 'broker_ca',
+          error_code: 'unexpected_error',
+          error_message: 'Unexpected database error'
+        })
+      })
+    );
+  });
 });

@@ -29,6 +29,13 @@ Admin auth-policy audit helpers:
 - `appendAdminAccessRequestApprovedAuditEvent({audit, input, db_context})`
 - `appendAdminAccessRequestDeniedAuditEvent({audit, input, db_context})`
 
+Integration lifecycle audit helpers:
+
+- `createIntegrationLifecycleAuditEmitter(audit)`
+- `appendIntegrationCreatedAuditEvent({audit, input, db_context})`
+- `appendIntegrationUpdatedAuditEvent({audit, input, db_context})`
+- `appendIntegrationDeletedAuditEvent({audit, input, db_context})`
+
 Store:
 
 - `createInMemoryAuditStore()`
@@ -125,6 +132,49 @@ await adminAudit.appendAdminLoginSucceededAuditEvent({
   db_context: {transaction_client}
 })
 ```
+
+Integration lifecycle emission example:
+
+```typescript
+import {
+  appendIntegrationCreatedAuditEvent,
+  createAuditService,
+  createInMemoryAuditStore
+} from '@broker-interceptor/audit'
+
+const audit = createAuditService({
+  store: createInMemoryAuditStore()
+})
+
+await appendIntegrationCreatedAuditEvent({
+  audit,
+  input: {
+    event_id: 'evt_integration_create_1',
+    timestamp: '2026-03-01T12:00:00.000Z',
+    tenant_id: 'tenant_1',
+    integration_id: 'integration_1',
+    correlation_id: 'corr_integration_1',
+    actor_subject: 'sub_admin_1',
+    actor_email: 'owner@example.com',
+    integration_write: {
+      provider: 's3_compatible',
+      name: 'Nightly backups',
+      template_id: 'tpl_s3_v1',
+      secret_material: {
+        type: 'aws_sigv4',
+        access_key_id: 'AKIA...',
+        secret_access_key: 'super-secret',
+        region: 'eu-west-1'
+      }
+    }
+  }
+})
+```
+
+The emitted metadata intentionally stores only non-secret summaries such as provider, template ID, credential type,
+and region. Raw secret values are not included by the helper and are still masked by the package redaction layer if a
+caller accidentally includes them in metadata. Fields whose names match the default sensitive-key rules are masked by
+the default redaction profile even when they are boolean or summary-only.
 
 ## Dependency Injection And Transactions
 

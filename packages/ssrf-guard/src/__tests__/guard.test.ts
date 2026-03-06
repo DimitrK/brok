@@ -3,14 +3,18 @@ import {describe, expect, it, vi} from 'vitest';
 
 import {enforceRedirectDenyPolicy, guardExecuteRequestDestination} from '../index';
 
-const buildTemplate = (): Template =>
+const buildTemplate = ({
+  allowedHosts = ['api.example.com']
+}: {
+  allowedHosts?: string[];
+} = {}): Template =>
   TemplateSchema.parse({
     template_id: 'tpl_ssrf_guard_v1',
     version: 1,
     provider: 'test_provider',
     allowed_schemes: ['https'],
     allowed_ports: [443],
-    allowed_hosts: ['api.example.com'],
+    allowed_hosts: allowedHosts,
     redirect_policy: {
       mode: 'deny'
     },
@@ -307,6 +311,94 @@ describe('guardExecuteRequestDestination', () => {
       return;
     }
     expect(result.error.code).toBe('request_host_not_allowed');
+  });
+
+  it('accepts explicitly allowlisted S3-compatible custom hosts after normalization', async () => {
+    const result = await guardExecuteRequestDestination({
+      input: {
+        execute_request: buildExecuteRequest('https://Storage.EXAMPLE.com./v1/messages'),
+        template: buildTemplate({
+          allowedHosts: ['storage.example.com']
+        })
+      },
+      options: {
+        dns_resolver: () => ['93.184.216.34']
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.destination.host).toBe('storage.example.com');
+    expect(result.value.resolved_ips).toEqual(['93.184.216.34']);
+  });
+
+  it('rejects sibling S3-compatible hosts that are not explicitly allowlisted', async () => {
+    const result = await guardExecuteRequestDestination({
+      input: {
+        execute_request: buildExecuteRequest('https://storage-backup.example.com/v1/messages'),
+        template: buildTemplate({
+          allowedHosts: ['storage.example.com']
+        })
+      },
+      options: {
+        dns_resolver: () => ['93.184.216.34']
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+
+    expect(result.error.code).toBe('request_host_not_allowed');
+  });
+
+  it('rejects virtual-host style bucket subdomains unless they are explicitly allowlisted', async () => {
+    const result = await guardExecuteRequestDestination({
+      input: {
+        execute_request: buildExecuteRequest('https://bucket.storage.example.com/v1/messages'),
+        template: buildTemplate({
+          allowedHosts: ['storage.example.com']
+        })
+      },
+      options: {
+        dns_resolver: () => ['93.184.216.34']
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+
+    expect(result.error.code).toBe('request_host_not_allowed');
+  });
+
+  it('accepts virtual-host style bucket subdomains when the exact host is allowlisted', async () => {
+    const dnsResolver = vi.fn(() => ['93.184.216.34']);
+
+    const result = await guardExecuteRequestDestination({
+      input: {
+        execute_request: buildExecuteRequest('https://bucket.storage.example.com/v1/messages'),
+        template: buildTemplate({
+          allowedHosts: ['bucket.storage.example.com']
+        })
+      },
+      options: {
+        dns_resolver: dnsResolver
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.destination.host).toBe('bucket.storage.example.com');
+    expect(dnsResolver).toHaveBeenCalledWith({hostname: 'bucket.storage.example.com'});
   });
 
   it('rejects schemes outside template allowlist', async () => {

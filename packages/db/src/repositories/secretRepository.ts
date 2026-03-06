@@ -22,6 +22,7 @@ import {
   type ManifestSigningKeyRecord,
   type ManifestVerificationKeysetWithEtag,
   type PersistManifestKeysetMetadataInput,
+  type SecretMaterialType,
   type SecretEnvelopeVersion,
   type SetActiveSecretEnvelopeVersionInput,
   type RetireManifestSigningKeyInput,
@@ -49,7 +50,7 @@ const toSecretEnvelopeVersion = (record: {
   secret: {
     tenantId: string
     integrationId: string
-    type: 'api_key' | 'oauth_refresh_token'
+    type: SecretMaterialType
   }
 }): SecretEnvelopeVersion =>
   SecretEnvelopeVersionSchema.parse({

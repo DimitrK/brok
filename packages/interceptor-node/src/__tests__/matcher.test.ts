@@ -112,6 +112,13 @@ describe('matchUrl', () => {
   });
 
   describe('path matching', () => {
+    it('matches bucket-root list requests by pathname while ignoring query string for rule matching', () => {
+      const manifest = createManifest([createRule('s3-backup', ['bucket.s3.example.com'], {pathGroups: ['/']})]);
+
+      expect(matchUrl('https://bucket.s3.example.com/?list-type=2&prefix=backups/', manifest).matched).toBe(true);
+      expect(matchUrl('https://bucket.s3.example.com/?list-type=2&prefix=backups/&delimiter=%2F', manifest).matched).toBe(true);
+    });
+
     it('matches prefix wildcard path (/v1/*)', () => {
       const manifest = createManifest([createRule('test', ['api.example.com'], {pathGroups: ['/v1/*']})]);
 
@@ -141,6 +148,14 @@ describe('matchUrl', () => {
 
       expect(matchUrl('https://api.example.com/v1/chat/completions', manifest).matched).toBe(true);
       expect(matchUrl('https://api.example.com/v1/embeddings', manifest).matched).toBe(false);
+    });
+
+    it('matches object upload and download paths with a prefix wildcard', () => {
+      const manifest = createManifest([createRule('s3-backup', ['bucket.s3.example.com'], {pathGroups: ['/backups/*']})]);
+
+      expect(matchUrl('https://bucket.s3.example.com/backups/2026-03-01/metadata.json', manifest).matched).toBe(true);
+      expect(matchUrl('https://bucket.s3.example.com/backups/2026-03-01/archive.tar.gz', manifest).matched).toBe(true);
+      expect(matchUrl('https://bucket.s3.example.com/other-prefix/archive.tar.gz', manifest).matched).toBe(false);
     });
 
     it('matches multiple path groups', () => {

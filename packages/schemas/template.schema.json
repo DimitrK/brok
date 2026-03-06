@@ -142,8 +142,7 @@
             "additionalProperties": false
           },
           "constraints": {
-            "type": "object",
-            "additionalProperties": true
+            "$ref": "./template-path-group-constraints.schema.json"
           }
         },
         "additionalProperties": false

@@ -1,0 +1,1 @@
+ALTER TYPE "SecretType" ADD VALUE IF NOT EXISTS 'aws_sigv4';

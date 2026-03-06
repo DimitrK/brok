@@ -1,10 +1,10 @@
-import {Controller, Get, Inject, Patch, Req, Res} from '@nestjs/common'
+import {Controller, Delete, Get, Inject, Patch, Req, Res} from '@nestjs/common'
 import type {Request, Response} from 'express'
 import {OpenApiAdminUserListResponseSchema, OpenApiAdminUserSchema, OpenApiAdminUserUpdateRequestSchema} from '@broker-interceptor/schemas'
 
 import {requireAnyRole} from '../../auth'
 import {badRequest} from '../../errors'
-import {parseJsonBody, parseQuery, sendJson} from '../../http'
+import {parseJsonBody, parseQuery, sendJson, sendNoContent} from '../../http'
 import {AdminApiControllerContext, adminUserListQuerySchema, decodePathParam, resolveAuditTenantId} from '../controllerContext'
 
 @Controller()
@@ -90,6 +90,37 @@ export class AdminUsersController {
             action: 'admin.user.update',
             tenantId: resolveAuditTenantId({principal}),
             message: `Admin user ${identityId} updated`
+          })
+        })
+      }
+    })
+  }
+
+  @Delete('/v1/admin/users/:identityId')
+  public async remove(@Req() request: Request, @Res() response: Response): Promise<void> {
+    await this.context.handleRequest({
+      request,
+      response,
+      handler: async ({correlationId}) => {
+        const principal = await this.context.authenticateRequest({request})
+        requireAnyRole({principal, allowed: ['owner']})
+
+        const identityId = decodePathParam(request.params.identityId as string)
+        await this.context.dependencyBridge.deleteAdminUser({
+          identityId,
+          actor: principal
+        })
+
+        sendNoContent({response, correlationId})
+
+        this.context.appendAuditEventNonBlocking({
+          correlationId,
+          event: this.context.repository.createAdminAuditEvent({
+            actor: principal,
+            correlationId,
+            action: 'admin.user.delete',
+            tenantId: resolveAuditTenantId({principal}),
+            message: `Admin user ${identityId} deleted (disabled)`
           })
         })
       }

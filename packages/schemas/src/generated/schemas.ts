@@ -5,13 +5,13 @@ import {z} from 'zod'
 export const ApprovalRequestSchema = z.object({"approval_id": z.string(), "status": z.enum(["pending", "approved", "denied", "expired", "executed", "canceled"]), "expires_at": z.string().datetime({offset: true}), "correlation_id": z.string(), "summary": z.object({"integration_id": z.string(), "action_group": z.string(), "risk_tier": z.enum(["low", "medium", "high"]), "destination_host": z.string(), "method": z.string(), "path": z.string()}).strict(), "canonical_descriptor": z.lazy(() => CanonicalRequestDescriptorSchema)}).strict()
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>
 
-export const AuditEventSchema = z.object({"event_id": z.string(), "timestamp": z.string().datetime({offset: true}), "tenant_id": z.string(), "workload_id": z.string().nullable().optional(), "integration_id": z.string().nullable().optional(), "correlation_id": z.string(), "event_type": z.enum(["session_issued", "execute", "policy_decision", "approval_created", "approval_decided", "violation", "throttle", "sandbox_alert", "admin_action"]), "decision": z.union([z.literal("allowed"), z.literal("denied"), z.literal("approval_required"), z.literal("throttled"), z.literal(null)]).optional(), "action_group": z.string().nullable().optional(), "risk_tier": z.union([z.literal("low"), z.literal("medium"), z.literal("high"), z.literal(null)]).optional(), "destination": z.object({"scheme": z.string(), "host": z.string(), "port": z.number().int(), "path_group": z.string()}).strict().nullable().optional(), "latency_ms": z.number().int().gte(0).nullable().optional(), "upstream_status_code": z.number().int().gte(100).lte(599).nullable().optional(), "canonical_descriptor": z.union([z.lazy(() => CanonicalRequestDescriptorSchema), z.null()]).optional(), "policy": z.object({"rule_id": z.string().nullable().optional(), "rule_type": z.enum(["allow", "deny", "approval_required", "rate_limit"]), "approval_id": z.string().nullable().optional()}).strict().nullable().optional(), "message": z.string().nullable().optional(), "metadata": z.object({}).loose().nullable().optional()}).strict()
+export const AuditEventSchema = z.object({"event_id": z.string(), "timestamp": z.string().datetime({offset: true}), "tenant_id": z.string(), "workload_id": z.string().nullable().optional(), "integration_id": z.string().nullable().optional(), "correlation_id": z.string(), "event_type": z.enum(["session_issued", "execute", "policy_decision", "approval_created", "approval_decided", "violation", "throttle", "sandbox_alert", "admin_action"]), "decision": z.union([z.literal("allowed"), z.literal("denied"), z.literal("approval_required"), z.literal("throttled"), z.literal(null)]).optional(), "action_group": z.string().nullable().optional(), "risk_tier": z.union([z.literal("low"), z.literal("medium"), z.literal("high"), z.literal(null)]).optional(), "destination": z.object({"scheme": z.string(), "host": z.string(), "port": z.number().int(), "path_group": z.string()}).strict().nullable().optional(), "latency_ms": z.number().int().gte(0).nullable().optional(), "upstream_status_code": z.number().int().gte(100).lte(599).nullable().optional(), "canonical_descriptor": z.union([z.lazy(() => CanonicalRequestDescriptorSchema), z.null()]).optional(), "matched_template_config": z.lazy(() => MatchedTemplateConfigSchema).optional(), "policy": z.object({"rule_id": z.string().nullable().optional(), "rule_type": z.enum(["allow", "deny", "approval_required", "rate_limit"]), "approval_id": z.string().nullable().optional()}).strict().nullable().optional(), "message": z.string().nullable().optional(), "metadata": z.object({}).loose().nullable().optional()}).strict()
 export type AuditEvent = z.infer<typeof AuditEventSchema>
 
 export const CanonicalRequestDescriptorSchema = z.object({"tenant_id": z.string(), "workload_id": z.string(), "integration_id": z.string(), "template_id": z.string(), "template_version": z.number().int().gte(1), "method": z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]), "canonical_url": z.string().url(), "matched_path_group_id": z.string(), "normalized_headers": z.array(z.object({"name": z.string(), "value": z.string()}).strict()), "query_keys": z.array(z.string()), "query_fingerprint_base64": z.string().nullable().optional(), "body_sha256_base64": z.string().nullable().optional()}).strict()
 export type CanonicalRequestDescriptor = z.infer<typeof CanonicalRequestDescriptorSchema>
 
-export const IntegrationWriteSchema = z.object({"provider": z.string(), "name": z.string(), "template_id": z.string(), "secret_material": z.lazy(() => SecretMaterialSchema)}).strict()
+export const IntegrationWriteSchema = z.object({"provider": z.string(), "name": z.string(), "template_id": z.string(), "secret_material": z.union([z.object({"type": z.enum(["api_key"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["oauth_refresh_token"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["aws_sigv4"]), "access_key_id": z.string().min(1).max(256), "secret_access_key": z.string().min(1).max(256), "session_token": z.string().min(1).max(4096).optional(), "region": z.string().min(1).max(64)}).strict()])}).strict()
 export type IntegrationWrite = z.infer<typeof IntegrationWriteSchema>
 
 export const IntegrationSchema = z.object({"integration_id": z.string(), "tenant_id": z.string(), "provider": z.string(), "name": z.string(), "template_id": z.string(), "enabled": z.boolean(), "secret_ref": z.string().nullable().optional(), "secret_version": z.number().int().gte(1).nullable().optional(), "last_rotated_at": z.string().datetime({offset: true}).nullable().optional()}).strict()
@@ -26,16 +26,25 @@ export type ManifestKeys = z.infer<typeof ManifestKeysSchema>
 export const ManifestSchema = z.object({"manifest_version": z.number().int().gte(1), "issued_at": z.string().datetime({offset: true}), "expires_at": z.string().datetime({offset: true}), "broker_execute_url": z.string().url(), "dpop_required": z.boolean().optional(), "dpop_ath_required": z.boolean().optional(), "match_rules": z.array(z.object({"integration_id": z.string(), "provider": z.string(), "match": z.object({"hosts": z.array(z.string().min(1)).min(1), "schemes": z.array(z.enum(["https"])).min(1), "ports": z.array(z.union([z.literal(443)])).min(1), "path_groups": z.array(z.string().min(1)).min(1)}).strict(), "rewrite": z.object({"mode": z.enum(["execute"]), "send_intended_url": z.boolean()}).strict()}).strict()).min(1), "signature": z.object({"alg": z.string(), "kid": z.string(), "jws": z.string()}).strict()}).strict()
 export type Manifest = z.infer<typeof ManifestSchema>
 
+export const MatchedTemplateConfigSchema = z.object({"path_group_id": z.string(), "risk_tier": z.enum(["low", "medium", "high"]), "approval_mode": z.enum(["none", "required"]), "methods": z.array(z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"])).min(1), "path_patterns": z.array(z.string().min(1)).min(1), "query_allowlist": z.array(z.string()), "header_forward_allowlist": z.array(z.string()), "body_policy": z.object({"max_bytes": z.number().int().gte(0), "content_types": z.array(z.string())}).strict(), "constraints": z.lazy(() => TemplatePathGroupConstraintsSchema).optional()}).strict()
+export type MatchedTemplateConfig = z.infer<typeof MatchedTemplateConfigSchema>
+
 export const PolicyConstraintsSchema = z.object({"recipient_allowlist": z.array(z.string().max(320).email()).max(128).optional(), "recipient_domain_allowlist": z.array(z.string().min(1).max(253).regex(new RegExp("^[A-Za-z0-9.-]+$"))).max(128).optional(), "require_mfa_approval": z.boolean().optional(), "max_body_bytes": z.number().int().gte(0).lte(10485760).optional(), "allowed_query_keys": z.array(z.string().min(1).max(64).regex(new RegExp("^[A-Za-z0-9._-]+$"))).max(64).optional()}).strict()
 export type PolicyConstraints = z.infer<typeof PolicyConstraintsSchema>
 
 export const PolicyRuleSchema = z.object({"policy_id": z.string().nullable().optional(), "rule_type": z.enum(["allow", "deny", "approval_required", "rate_limit"]), "scope": z.object({"tenant_id": z.string(), "workload_id": z.string().nullable().optional(), "integration_id": z.string(), "template_id": z.string().nullable().optional(), "template_version": z.number().int().gte(1).nullable().optional(), "action_group": z.string(), "method": z.string(), "host": z.string(), "query_keys": z.array(z.string()).optional()}).strict(), "constraints": z.lazy(() => PolicyConstraintsSchema).optional(), "rate_limit": z.object({"max_requests": z.number().int().gte(1), "interval_seconds": z.number().int().gte(1)}).strict().nullable().optional()}).strict()
 export type PolicyRule = z.infer<typeof PolicyRuleSchema>
 
-export const SecretMaterialSchema = z.object({"type": z.enum(["api_key", "oauth_refresh_token"]), "value": z.string()}).strict()
+export const SecretMaterialTypeSchema = z.enum(["api_key", "oauth_refresh_token", "aws_sigv4"])
+export type SecretMaterialType = z.infer<typeof SecretMaterialTypeSchema>
+
+export const SecretMaterialSchema = z.union([z.object({"type": z.enum(["api_key"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["oauth_refresh_token"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["aws_sigv4"]), "access_key_id": z.string().min(1).max(256), "secret_access_key": z.string().min(1).max(256), "session_token": z.string().min(1).max(4096).optional(), "region": z.string().min(1).max(64)}).strict()])
 export type SecretMaterial = z.infer<typeof SecretMaterialSchema>
 
-export const TemplateSchema = z.object({"template_id": z.string().regex(new RegExp("^tpl_[a-z0-9_]+$")), "version": z.number().int().gte(1), "provider": z.string(), "description": z.string().optional(), "allowed_schemes": z.array(z.enum(["https"])).min(1), "allowed_ports": z.array(z.union([z.literal(443)])).min(1), "allowed_hosts": z.array(z.string().min(1)).min(1), "redirect_policy": z.object({"mode": z.enum(["deny"]), "max_hops": z.number().int().gte(0).lte(5).optional()}).strict(), "path_groups": z.array(z.object({"group_id": z.string(), "risk_tier": z.enum(["low", "medium", "high"]), "approval_mode": z.enum(["none", "required"]), "methods": z.array(z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"])).min(1), "path_patterns": z.array(z.string().min(1)).min(1), "query_allowlist": z.array(z.string()), "header_forward_allowlist": z.array(z.string()), "body_policy": z.object({"max_bytes": z.number().int().gte(0), "content_types": z.array(z.string())}).strict(), "constraints": z.object({}).loose().optional()}).strict()).min(1), "network_safety": z.object({"deny_private_ip_ranges": z.boolean(), "deny_link_local": z.boolean(), "deny_loopback": z.boolean(), "deny_metadata_ranges": z.boolean(), "dns_resolution_required": z.boolean()}).strict()}).strict()
+export const TemplatePathGroupConstraintsSchema = z.object({"allow_duplicate_query_keys": z.union([z.boolean(), z.array(z.string().min(1))]).optional(), "upstream_auth": z.object({"type": z.literal("aws_sigv4"), "service": z.literal("s3"), "region": z.string().min(1).max(64).optional()}).strict().optional()}).strict()
+export type TemplatePathGroupConstraints = z.infer<typeof TemplatePathGroupConstraintsSchema>
+
+export const TemplateSchema = z.object({"template_id": z.string().regex(new RegExp("^tpl_[a-z0-9_]+$")), "version": z.number().int().gte(1), "provider": z.string(), "description": z.string().optional(), "allowed_schemes": z.array(z.enum(["https"])).min(1), "allowed_ports": z.array(z.union([z.literal(443)])).min(1), "allowed_hosts": z.array(z.string().min(1)).min(1), "redirect_policy": z.object({"mode": z.enum(["deny"]), "max_hops": z.number().int().gte(0).lte(5).optional()}).strict(), "path_groups": z.array(z.object({"group_id": z.string(), "risk_tier": z.enum(["low", "medium", "high"]), "approval_mode": z.enum(["none", "required"]), "methods": z.array(z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"])).min(1), "path_patterns": z.array(z.string().min(1)).min(1), "query_allowlist": z.array(z.string()), "header_forward_allowlist": z.array(z.string()), "body_policy": z.object({"max_bytes": z.number().int().gte(0), "content_types": z.array(z.string())}).strict(), "constraints": z.lazy(() => TemplatePathGroupConstraintsSchema).optional()}).strict()).min(1), "network_safety": z.object({"deny_private_ip_ranges": z.boolean(), "deny_link_local": z.boolean(), "deny_loopback": z.boolean(), "deny_metadata_ranges": z.boolean(), "dns_resolution_required": z.boolean()}).strict()}).strict()
 export type Template = z.infer<typeof TemplateSchema>
 
 export const WorkloadSchema = z.object({"workload_id": z.string(), "tenant_id": z.string(), "name": z.string(), "mtls_san_uri": z.string(), "enabled": z.boolean(), "ip_allowlist": z.array(z.string()).optional(), "created_at": z.string().datetime({offset: true}).nullable().optional()}).strict()
@@ -46,6 +55,9 @@ export type OpenApiAdminAccessRequest = z.infer<typeof OpenApiAdminAccessRequest
 
 export const OpenApiAdminAccessRequestApproveRequestSchema = z.object({"roles": z.array(z.lazy(() => OpenApiAdminRoleSchema)).min(1).optional(), "tenant_ids": z.array(z.string()).optional(), "reason": z.string().min(1).optional()}).strict()
 export type OpenApiAdminAccessRequestApproveRequest = z.infer<typeof OpenApiAdminAccessRequestApproveRequestSchema>
+
+export const OpenApiAdminAccessRequestCreateRequestSchema = z.object({"reason": z.string().min(1).optional()}).strict()
+export type OpenApiAdminAccessRequestCreateRequest = z.infer<typeof OpenApiAdminAccessRequestCreateRequestSchema>
 
 export const OpenApiAdminAccessRequestDenyRequestSchema = z.object({"reason": z.string().min(1)}).strict()
 export type OpenApiAdminAccessRequestDenyRequest = z.infer<typeof OpenApiAdminAccessRequestDenyRequestSchema>
@@ -149,10 +161,13 @@ export type OpenApiIntegrationCreateResponse = z.infer<typeof OpenApiIntegration
 export const OpenApiIntegrationListResponseSchema = z.object({"integrations": z.array(z.lazy(() => OpenApiIntegrationSchema))}).strict()
 export type OpenApiIntegrationListResponse = z.infer<typeof OpenApiIntegrationListResponseSchema>
 
+export const OpenApiIntegrationSecretMaterialWriteSchema = z.union([z.object({"type": z.enum(["api_key"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["oauth_refresh_token"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["aws_sigv4"]), "access_key_id": z.string().min(1).max(256), "secret_access_key": z.string().min(1).max(256), "session_token": z.string().min(1).max(4096).optional(), "region": z.string().min(1).max(64)}).strict()])
+export type OpenApiIntegrationSecretMaterialWrite = z.infer<typeof OpenApiIntegrationSecretMaterialWriteSchema>
+
 export const OpenApiIntegrationUpdateRequestSchema = z.object({"enabled": z.boolean().optional(), "template_id": z.string().optional()}).strict()
 export type OpenApiIntegrationUpdateRequest = z.infer<typeof OpenApiIntegrationUpdateRequestSchema>
 
-export const OpenApiIntegrationWriteSchema = z.lazy(() => IntegrationWriteSchema)
+export const OpenApiIntegrationWriteSchema = z.object({"provider": z.string(), "name": z.string(), "template_id": z.string(), "secret_material": z.lazy(() => OpenApiIntegrationSecretMaterialWriteSchema)}).strict()
 export type OpenApiIntegrationWrite = z.infer<typeof OpenApiIntegrationWriteSchema>
 
 export const OpenApiManifestSchema = z.lazy(() => ManifestSchema)
@@ -236,13 +251,17 @@ export const schemaRegistry = {
   LogEventSchema: LogEventSchema,
   ManifestKeysSchema: ManifestKeysSchema,
   ManifestSchema: ManifestSchema,
+  MatchedTemplateConfigSchema: MatchedTemplateConfigSchema,
   PolicyConstraintsSchema: PolicyConstraintsSchema,
   PolicyRuleSchema: PolicyRuleSchema,
+  SecretMaterialTypeSchema: SecretMaterialTypeSchema,
   SecretMaterialSchema: SecretMaterialSchema,
+  TemplatePathGroupConstraintsSchema: TemplatePathGroupConstraintsSchema,
   TemplateSchema: TemplateSchema,
   WorkloadSchema: WorkloadSchema,
   OpenApiAdminAccessRequestSchema: OpenApiAdminAccessRequestSchema,
   OpenApiAdminAccessRequestApproveRequestSchema: OpenApiAdminAccessRequestApproveRequestSchema,
+  OpenApiAdminAccessRequestCreateRequestSchema: OpenApiAdminAccessRequestCreateRequestSchema,
   OpenApiAdminAccessRequestDenyRequestSchema: OpenApiAdminAccessRequestDenyRequestSchema,
   OpenApiAdminAccessRequestListResponseSchema: OpenApiAdminAccessRequestListResponseSchema,
   OpenApiAdminAccessRequestStatusSchema: OpenApiAdminAccessRequestStatusSchema,
@@ -277,6 +296,7 @@ export const schemaRegistry = {
   OpenApiIntegrationSchema: OpenApiIntegrationSchema,
   OpenApiIntegrationCreateResponseSchema: OpenApiIntegrationCreateResponseSchema,
   OpenApiIntegrationListResponseSchema: OpenApiIntegrationListResponseSchema,
+  OpenApiIntegrationSecretMaterialWriteSchema: OpenApiIntegrationSecretMaterialWriteSchema,
   OpenApiIntegrationUpdateRequestSchema: OpenApiIntegrationUpdateRequestSchema,
   OpenApiIntegrationWriteSchema: OpenApiIntegrationWriteSchema,
   OpenApiManifestSchema: OpenApiManifestSchema,

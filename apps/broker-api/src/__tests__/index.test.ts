@@ -708,6 +708,68 @@ describe('broker-api', () => {
     );
   });
 
+  it('fails closed when execute rejection auditing cannot be persisted', async () => {
+    const context = await createContext();
+    context.auditService.appendAuditEvent = vi.fn(() => Promise.resolve({
+      ok: false as const,
+      error: {
+        code: 'storage_write_failed' as const,
+        message: 'audit store unavailable'
+      }
+    }));
+
+    const response = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      body: executeRequestBody
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({
+      error: 'audit_write_failed',
+      message: 'audit store unavailable'
+    });
+  });
+
+  it('returns internal_error when an unexpected runtime exception escapes route handling', async () => {
+    const logger = createMockLogger();
+    const context = await createContext({logger});
+    context.repository.buildExecuteRequestHeadersShared = vi.fn(() => {
+      throw new Error('unexpected header construction failure');
+    });
+
+    const sessionResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+
+    expect(sessionResponse.status).toBe(200);
+    const sessionBody = sessionResponse.body as {session_token: string};
+
+    const executeResponse = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      token: sessionBody.session_token,
+      body: executeRequestBody
+    });
+
+    expect(executeResponse.status).toBe(500);
+    expect(executeResponse.body).toMatchObject({
+      error: 'internal_error',
+      message: 'Unexpected internal error'
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'request.failed',
+        reason_code: 'internal_error'
+      })
+    );
+  });
+
   it('rejects data-plane requests without mTLS', async () => {
     const context = await createContext();
 

@@ -17,8 +17,8 @@ import {createRequire, syncBuiltinESMExports} from 'node:module';
 import * as net from 'node:net';
 import {PassThrough} from 'node:stream';
 
-import {matchUrl} from './matcher.js';
 import {executeRequest, ApprovalRequiredError, ManifestUnavailableError, RequestDeniedError} from './broker-client.js';
+import {resolveInterceptionTarget} from './integration-selection.js';
 import type {InterceptorState, ExecuteResponseExecuted, ParsedManifest} from './types.js';
 
 const require = createRequire(import.meta.url);
@@ -440,12 +440,37 @@ function createPatchedRequest(
       return createBlockedRequest(manifestDecision.reason);
     }
 
-    const matchResult = matchUrl(url, manifestDecision.manifest);
-    if (!matchResult.matched) {
+    const selection = resolveInterceptionTarget(url, manifestDecision.manifest, state.config.integrationOverrides);
+    if (!selection.matched) {
+      if (selection.source === 'override') {
+        state.logger.warn(`Blocking request because integration override is invalid: ${selection.error}`);
+        const blockedRequest = createSyntheticClientRequest();
+        blockedRequest.end = function (
+          chunkOrCallback?: string | Buffer | (() => void),
+          encodingOrCallback?: BufferEncoding | (() => void),
+          cb?: () => void
+        ): typeof blockedRequest {
+          const finalCallback =
+            typeof chunkOrCallback === 'function'
+              ? chunkOrCallback
+              : typeof encodingOrCallback === 'function'
+                ? encodingOrCallback
+                : cb;
+          if (finalCallback) {
+            setImmediate(finalCallback);
+          }
+          setImmediate(() => {
+            blockedRequest.emit('error', new Error(selection.error));
+          });
+          return blockedRequest;
+        };
+        return blockedRequest;
+      }
+
       // No match, pass through to original
-      if (matchResult.details && matchResult.details.length > 0) {
+      if (selection.details && selection.details.length > 0) {
         state.logger.debug(`Not intercepting: ${url.href} - no matching rules:`);
-        for (const detail of matchResult.details) {
+        for (const detail of selection.details) {
           state.logger.debug(`  Rule ${detail.ruleIndex} (${detail.integrationId}): ${detail.mismatches.join('; ')}`);
         }
       } else {
@@ -455,8 +480,8 @@ function createPatchedRequest(
     }
 
     // Intercept this request
-    state.logger.debug(`Intercepting: ${url.href} (integration: ${matchResult.integrationId})`);
-    return createInterceptedRequest(url, matchResult.integrationId, manifestDecision.manifest, options, callback);
+    state.logger.debug(`Intercepting: ${url.href} (integration: ${selection.integrationId}, source: ${selection.source})`);
+    return createInterceptedRequest(url, selection.integrationId, manifestDecision.manifest, options, callback);
   };
 }
 

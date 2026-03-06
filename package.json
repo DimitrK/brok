@@ -27,7 +27,10 @@
     "docker:build:broker-api": "docker build -f apps/broker-api/Dockerfile -t broker-api:local .",
     "db:migrate": "pnpm --filter @broker-interceptor/db prisma migrate deploy --schema ./prisma/schema.prisma",
     "db:migrate:dev": "pnpm --filter @broker-interceptor/db prisma migrate dev --schema ./prisma/schema.prisma",
-    "db:studio": "pnpm --filter @broker-interceptor/db prisma studio --schema ./prisma/schema.prisma"
+    "db:studio": "pnpm --filter @broker-interceptor/db prisma studio --schema ./prisma/schema.prisma",
+    "backup:build": "pnpm --filter @broker-interceptor/backup-workload run build",
+    "backup:run": "pnpm --filter @broker-interceptor/backup-workload run backup",
+    "backup:restore": "pnpm --filter @broker-interceptor/backup-workload run restore"
   },
   "prettier": "@broker-interceptor/prettier-config",
   "devDependencies": {

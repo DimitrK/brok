@@ -127,6 +127,112 @@ describe('classifyPathGroup', () => {
       reason_code: 'invalid_path_pattern'
     })
   })
+
+  it('classifies S3 bucket-root list operations using safe glob path patterns', () => {
+    const s3Template = TemplateSchema.parse({
+      template_id: 'tpl_backup_s3',
+      version: 1,
+      provider: 'aws_s3',
+      allowed_schemes: ['https'],
+      allowed_ports: [443],
+      allowed_hosts: ['backup-bucket.s3.eu-west-1.amazonaws.com'],
+      redirect_policy: {
+        mode: 'deny'
+      },
+      path_groups: [
+        {
+          group_id: 'bucket-objects',
+          risk_tier: 'medium',
+          approval_mode: 'none',
+          methods: ['GET', 'PUT'],
+          path_patterns: ['/', '/backups/**'],
+          query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+          header_forward_allowlist: ['content-type', 'range'],
+          body_policy: {
+            max_bytes: 1048576,
+            content_types: ['application/octet-stream', 'application/json']
+          }
+        }
+      ],
+      network_safety: {
+        deny_private_ip_ranges: true,
+        deny_link_local: true,
+        deny_loopback: true,
+        deny_metadata_ranges: true,
+        dns_resolution_required: true
+      }
+    })
+
+    const result = classifyPathGroup({
+      template: s3Template,
+      method: 'GET',
+      canonical_url:
+        'https://backup-bucket.s3.eu-west-1.amazonaws.com/?list-type=2&prefix=backups%2Fbroker%2F'
+    })
+
+    expect(result).toEqual({
+      matched: true,
+      path_group: {
+        group_id: 'bucket-objects',
+        risk_tier: 'medium',
+        approval_mode: 'none',
+        matched_pattern: '/'
+      }
+    })
+  })
+
+  it('classifies S3 object operations using recursive safe glob path patterns', () => {
+    const s3Template = TemplateSchema.parse({
+      template_id: 'tpl_backup_s3',
+      version: 1,
+      provider: 'aws_s3',
+      allowed_schemes: ['https'],
+      allowed_ports: [443],
+      allowed_hosts: ['backup-bucket.s3.eu-west-1.amazonaws.com'],
+      redirect_policy: {
+        mode: 'deny'
+      },
+      path_groups: [
+        {
+          group_id: 'bucket-objects',
+          risk_tier: 'medium',
+          approval_mode: 'none',
+          methods: ['GET', 'PUT'],
+          path_patterns: ['/', '/backups/**'],
+          query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+          header_forward_allowlist: ['content-type', 'range'],
+          body_policy: {
+            max_bytes: 1048576,
+            content_types: ['application/octet-stream', 'application/json']
+          }
+        }
+      ],
+      network_safety: {
+        deny_private_ip_ranges: true,
+        deny_link_local: true,
+        deny_loopback: true,
+        deny_metadata_ranges: true,
+        dns_resolution_required: true
+      }
+    })
+
+    const result = classifyPathGroup({
+      template: s3Template,
+      method: 'PUT',
+      canonical_url:
+        'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/broker/v000001-20260228T120000Z/manifest.json'
+    })
+
+    expect(result).toEqual({
+      matched: true,
+      path_group: {
+        group_id: 'bucket-objects',
+        risk_tier: 'medium',
+        approval_mode: 'none',
+        matched_pattern: '/backups/**'
+      }
+    })
+  })
 })
 
 describe('buildCanonicalDescriptorWithPathGroup', () => {

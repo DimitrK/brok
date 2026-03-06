@@ -10,3 +10,4 @@ export * from './contracts/events.js';
 export * from './control/authz.js';
 export * from './control/protocol.js';
 export * from './observability/serialization.js';
+export * from './verification/s3-backup-compatibility.js';

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/matched-template-config.schema.json",
+  "title": "MatchedTemplateConfig",
+  "type": "object",
+  "required": [
+    "path_group_id",
+    "risk_tier",
+    "approval_mode",
+    "methods",
+    "path_patterns",
+    "query_allowlist",
+    "header_forward_allowlist",
+    "body_policy"
+  ],
+  "properties": {
+    "path_group_id": {
+      "type": "string"
+    },
+    "risk_tier": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "approval_mode": {
+      "type": "string",
+      "enum": ["none", "required"]
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+      },
+      "minItems": 1
+    },
+    "path_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "query_allowlist": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "header_forward_allowlist": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "body_policy": {
+      "type": "object",
+      "required": ["max_bytes", "content_types"],
+      "properties": {
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "constraints": {
+      "$ref": "./template-path-group-constraints.schema.json"
+    }
+  },
+  "additionalProperties": false
+}

@@ -22,7 +22,14 @@ const createTemplate = () =>
         methods: ['GET', 'POST'],
         path_patterns: ['^/v1/messages$'],
         query_allowlist: [],
-        header_forward_allowlist: ['accept', 'x-client-id', 'authorization'],
+        header_forward_allowlist: [
+          'accept',
+          'x-client-id',
+          'authorization',
+          'x-amz-content-sha256',
+          'x-amz-date',
+          'x-amz-security-token'
+        ],
         body_policy: {
           max_bytes: 1024 * 1024,
           content_types: ['application/json']
@@ -139,7 +146,7 @@ describe('validateRequestFraming', () => {
 describe('forwardExecuteRequest', () => {
   it('forwards with injected auth, strips unsafe headers, and allowlists response headers', async () => {
     const fetchSpy = vi.fn((_input: unknown, init?: RequestInit) => {
-      const upstreamHeaders = init?.headers as Headers;
+      const upstreamHeaders = new Headers(init?.headers);
       expect(upstreamHeaders.get('authorization')).toBe('Bearer provider-secret');
       expect(upstreamHeaders.get('x-client-id')).toBe('workload_1');
       expect(upstreamHeaders.get('connection')).toBeNull();
@@ -180,6 +187,108 @@ describe('forwardExecuteRequest', () => {
       {name: 'x-upstream-id', value: 'upstream_123'}
     ]);
     expect(Buffer.from(result.value.upstream.body_base64, 'base64').toString('utf8')).toContain('"ok":true');
+  });
+
+  it('preserves SigV4-signed URL query order and forwards signing headers as raw tuples', async () => {
+    const signedUrl =
+      'https://api.example.com/v1/messages?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20260301%2Feu-west-1%2Fs3%2Faws4_request&X-Amz-Date=20260301T101112Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host%3Bx-amz-content-sha256%3Bx-amz-date%3Bx-amz-security-token&list-type=2&prefix=backups%2Ftenant-a%2F&continuation-token=opaque-token';
+    const request = createExecuteRequest();
+    request.request.method = 'GET';
+    request.request.url = signedUrl;
+    request.request.headers = [
+      {name: 'Accept', value: 'application/xml'},
+      {name: 'X-Amz-Content-Sha256', value: 'UNSIGNED-PAYLOAD'}
+    ];
+    delete request.request.body_base64;
+
+    const fetchSpy = vi.fn((input: unknown, init?: RequestInit) => {
+      expect(input).toBe(signedUrl);
+      expect(Array.isArray(init?.headers)).toBe(true);
+      expect(init?.headers).toEqual([
+        ['accept', 'application/xml'],
+        ['x-amz-content-sha256', 'UNSIGNED-PAYLOAD'],
+        ['authorization', 'AWS4-HMAC-SHA256 Credential=AKIA/.../s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=deadbeef'],
+        ['x-amz-date', '20260301T101112Z'],
+        ['x-amz-security-token', 'session-token-value']
+      ]);
+
+      return Promise.resolve(new Response('<ListBucketResult />', {
+        status: 200,
+        headers: {
+          'content-type': 'application/xml'
+        }
+      }));
+    });
+
+    const result = await forwardExecuteRequest({
+      input: {
+        execute_request: request,
+        template: createTemplate(),
+        matched_path_group_id: 'group_a',
+        injected_headers: [
+          {
+            name: 'Authorization',
+            value:
+              'AWS4-HMAC-SHA256 Credential=AKIA/.../s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=deadbeef'
+          },
+          {name: 'X-Amz-Date', value: '20260301T101112Z'},
+          {name: 'X-Amz-Security-Token', value: 'session-token-value'}
+        ],
+        response_header_allowlist: ['content-type']
+      },
+      fetchImpl: fetchSpy
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces client authorization with injected SigV4 authorization header', async () => {
+    const request = createExecuteRequest();
+    request.request.method = 'GET';
+    request.request.headers = [
+      {name: 'Accept', value: 'application/json'},
+      {name: 'Authorization', value: 'Bearer broker-session-token'}
+    ];
+    delete request.request.body_base64;
+
+    const fetchSpy = vi.fn((_input: unknown, init?: RequestInit) => {
+      expect(init?.headers).toEqual([
+        ['accept', 'application/json'],
+        [
+          'authorization',
+          'AWS4-HMAC-SHA256 Credential=AKIA/.../s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef'
+        ],
+        ['x-amz-date', '20260301T101112Z']
+      ]);
+
+      return Promise.resolve(new Response(JSON.stringify({ok: true}), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json'
+        }
+      }));
+    });
+
+    const result = await forwardExecuteRequest({
+      input: {
+        execute_request: request,
+        template: createTemplate(),
+        matched_path_group_id: 'group_a',
+        injected_headers: [
+          {
+            name: 'Authorization',
+            value:
+              'AWS4-HMAC-SHA256 Credential=AKIA/.../s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef'
+          },
+          {name: 'X-Amz-Date', value: '20260301T101112Z'}
+        ]
+      },
+      fetchImpl: fetchSpy
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('denies redirects from upstream', async () => {

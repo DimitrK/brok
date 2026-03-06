@@ -5,8 +5,8 @@
  * to intercept outgoing requests and route them through the broker.
  */
 
-import {matchUrl} from './matcher.js';
 import {executeRequest, ApprovalRequiredError, ManifestUnavailableError, RequestDeniedError} from './broker-client.js';
+import {resolveInterceptionTarget} from './integration-selection.js';
 import type {InterceptorState} from './types.js';
 
 // Store original fetch
@@ -293,12 +293,16 @@ async function patchedFetch(input: string | URL | Request, init?: RequestInit): 
     throw new ManifestUnavailableError('no verified manifest is available');
   }
 
-  const matchResult = matchUrl(url, manifest);
+  const selection = resolveInterceptionTarget(url, manifest, state.config.integrationOverrides);
 
-  if (!matchResult.matched) {
-    if (matchResult.details && matchResult.details.length > 0) {
+  if (!selection.matched) {
+    if (selection.source === 'override') {
+      throw new Error(selection.error);
+    }
+
+    if (selection.details && selection.details.length > 0) {
       state.logger.debug(`fetch: Not intercepting ${url.href} - no matching rules:`);
-      for (const detail of matchResult.details) {
+      for (const detail of selection.details) {
         state.logger.debug(`  Rule ${detail.ruleIndex} (${detail.integrationId}): ${detail.mismatches.join('; ')}`);
       }
     } else {
@@ -307,7 +311,7 @@ async function patchedFetch(input: string | URL | Request, init?: RequestInit): 
     return originalFetch!(input, init);
   }
 
-  state.logger.debug(`fetch: Intercepting ${method} ${url.href} (integration: ${matchResult.integrationId})`);
+  state.logger.debug(`fetch: Intercepting ${method} ${url.href} (integration: ${selection.integrationId}, source: ${selection.source})`);
 
   // Convert method to expected format
   const normalizedMethod = normalizeExecuteMethod(method);
@@ -321,7 +325,7 @@ async function patchedFetch(input: string | URL | Request, init?: RequestInit): 
   // Execute through broker
   const executeResult = await executeRequest(
     {
-      integrationId: matchResult.integrationId,
+      integrationId: selection.integrationId,
       method: normalizedMethod,
       url: url.href,
       headers: headers as Record<string, string | string[] | undefined>,

@@ -1,8 +1,7 @@
 import type {OpenApiAuditEvent} from '@broker-interceptor/schemas';
 
+import type {TemplateDraftRouteState} from '../templates/templateDraftRoute';
 import {normalizeTemplateIdSuffix} from '../templates/templateHelpers';
-
-export const TEMPLATE_DRAFT_STORAGE_KEY = 'admin-web-template-draft';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -19,6 +18,31 @@ const inferProviderFromHost = (host: string) => {
   }
 
   return 'custom';
+};
+
+const inferAuditUpstreamAuth = (event: OpenApiAuditEvent) => {
+  const host = getHostFromEvent(event)?.toLowerCase() ?? '';
+  const queryKeys = new Set(event.canonical_descriptor?.query_keys ?? []);
+  const templateId = event.canonical_descriptor?.template_id?.toLowerCase() ?? '';
+
+  const looksLikeS3 =
+    queryKeys.has('list-type') ||
+    host.includes('storjshare.io') ||
+    host.includes('amazonaws.com') ||
+    host.includes('backblazeb2.com') ||
+    host.startsWith('s3.') ||
+    host.includes('.s3.') ||
+    templateId.includes('storj') ||
+    templateId.includes('s3');
+
+  return looksLikeS3
+    ? {
+        type: 'aws_sigv4' as const,
+        region: ''
+      }
+    : {
+        type: 'none' as const
+      };
 };
 
 export const isFailingAuditEvent = (event: OpenApiAuditEvent) =>
@@ -121,28 +145,6 @@ export type AuditTemplateTraitSelection = {
   useSuggestedPathPattern: boolean;
 };
 
-export type TemplateDraftRouteState = {
-  templateDraft: {
-    source: 'audit';
-    provider: string;
-    template_name: string;
-    template_id_suffix: string;
-    description: string;
-    allowed_hosts: string[];
-    path_groups: Array<{
-      group_id: string;
-      risk_tier: 'low' | 'medium' | 'high';
-      approval_mode: 'none' | 'required';
-      methods: Array<'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'>;
-      path_patterns: string[];
-      query_allowlist: string[];
-      header_forward_allowlist: string[];
-      max_body_bytes: number;
-      content_types: string[];
-    }>;
-  };
-};
-
 const toRiskTier = (value: OpenApiAuditEvent['risk_tier']) => {
   if (value === 'low' || value === 'medium' || value === 'high') {
     return value;
@@ -168,16 +170,52 @@ export const buildTemplateDraftFromAuditEvent = (input: {
   const pathCandidates = matchingEvents.map(event => getPathFromEvent(event)).filter(Boolean) as string[];
   const suggestedPathPattern = buildPathPatternSuggestion(pathCandidates);
   const canonicalDescriptor = input.selectedEvent.canonical_descriptor;
+  const matchedTemplateConfig = input.selectedEvent.matched_template_config;
 
   const groupIdSeed =
-    (input.traits.includeActionGroup ? canonicalDescriptor?.matched_path_group_id || input.selectedEvent.action_group : '') ||
+    (input.traits.includeActionGroup
+      ? matchedTemplateConfig?.path_group_id ||
+        canonicalDescriptor?.matched_path_group_id ||
+        input.selectedEvent.action_group
+      : '') ||
     'group_1';
   const groupId = normalizeTemplateIdSuffix(groupIdSeed) || 'group_1';
   const provider = inferProviderFromHost(selectedHost);
   const templateName = `${provider} ${groupId}`.replace(/_/g, ' ');
   const templateIdSuffix =
     normalizeTemplateIdSuffix(`${provider}_${groupId}`) || normalizeTemplateIdSuffix(`${provider}_template`);
-  const riskTier = input.traits.includeRiskTier ? toRiskTier(input.selectedEvent.risk_tier) : 'medium';
+  const riskTier = input.traits.includeRiskTier
+    ? matchedTemplateConfig?.risk_tier ?? toRiskTier(input.selectedEvent.risk_tier)
+    : 'medium';
+  const approvalMode = matchedTemplateConfig?.approval_mode ?? (riskTier === 'high' ? 'required' : 'none');
+  const upstreamAuth =
+    matchedTemplateConfig?.constraints?.upstream_auth
+      ? {
+          type: 'aws_sigv4' as const,
+          region: matchedTemplateConfig.constraints.upstream_auth.region ?? ''
+        }
+      : inferAuditUpstreamAuth(input.selectedEvent);
+  const contentTypes =
+    matchedTemplateConfig?.body_policy.content_types ??
+    (selectedMethod === 'GET' || selectedMethod === 'DELETE'
+      ? []
+      : upstreamAuth.type === 'aws_sigv4'
+        ? ['application/octet-stream']
+        : ['application/json']);
+  const maxBodyBytes =
+    matchedTemplateConfig?.body_policy.max_bytes ??
+    (selectedMethod === 'GET' || selectedMethod === 'DELETE' ? 0 : 262144);
+  const methods = matchedTemplateConfig?.methods ?? [selectedMethod];
+  const pathPatterns = input.traits.useSuggestedPathPattern
+    ? [suggestedPathPattern]
+    : matchedTemplateConfig?.path_patterns ?? [`^${escapeRegExp(selectedPath)}$`];
+  const queryAllowlist = input.traits.includeQueryKeys
+    ? matchedTemplateConfig?.query_allowlist ?? (canonicalDescriptor?.query_keys ?? [])
+    : [];
+  const headerForwardAllowlist = input.traits.includeNormalizedHeaders
+    ? matchedTemplateConfig?.header_forward_allowlist ??
+      [...new Set((canonicalDescriptor?.normalized_headers ?? []).map(header => header.name))]
+    : [];
 
   return {
     templateDraft: {
@@ -192,17 +230,14 @@ export const buildTemplateDraftFromAuditEvent = (input: {
         {
           group_id: groupId,
           risk_tier: riskTier,
-          approval_mode: riskTier === 'high' ? 'required' : 'none',
-          methods: [selectedMethod],
-          path_patterns: [
-            input.traits.useSuggestedPathPattern ? suggestedPathPattern : `^${escapeRegExp(selectedPath)}$`
-          ],
-          query_allowlist: input.traits.includeQueryKeys ? (canonicalDescriptor?.query_keys ?? []) : [],
-          header_forward_allowlist: input.traits.includeNormalizedHeaders
-            ? [...new Set((canonicalDescriptor?.normalized_headers ?? []).map(header => header.name))]
-            : [],
-          max_body_bytes: 262144,
-          content_types: ['application/json']
+          approval_mode: approvalMode,
+          methods,
+          path_patterns: pathPatterns,
+          query_allowlist: queryAllowlist,
+          header_forward_allowlist: headerForwardAllowlist,
+          max_body_bytes: maxBodyBytes,
+          content_types: contentTypes,
+          upstream_auth: upstreamAuth
         }
       ]
     }

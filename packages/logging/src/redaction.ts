@@ -1,4 +1,6 @@
 const DEFAULT_SENSITIVE_SUBSTRINGS = [
+  'accesskeyid',
+  'access_key_id',
   'token',
   'secret',
   'api_key',
@@ -18,15 +20,13 @@ const DEFAULT_SENSITIVE_SUBSTRINGS = [
 const REDACTED_VALUE = '[REDACTED]';
 const MAX_RECURSION_DEPTH = 12;
 
-const normalizeKey = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9_]/gu, '');
+const normalizeKey = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/gu, '');
 
-const isSensitiveKey = ({
-  key,
-  extraSensitiveKeys
-}: {
-  key: string;
-  extraSensitiveKeys: Set<string>;
-}) => {
+const isSensitiveKey = ({key, extraSensitiveKeys}: {key: string; extraSensitiveKeys: Set<string>}) => {
   const normalized = normalizeKey(key);
   if (extraSensitiveKeys.has(normalized)) {
     return true;
@@ -60,11 +60,7 @@ const sanitizeInternal = ({
     return value;
   }
 
-  if (
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'boolean'
-  ) {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
     return value;
   }
 
@@ -136,7 +132,9 @@ export const sanitizeForLog = ({
   value: unknown;
   extraSensitiveKeys?: string[];
 }): unknown => {
-  const normalizedExtraKeys = new Set(extraSensitiveKeys.map(item => normalizeKey(item)).filter(item => item.length > 0));
+  const normalizedExtraKeys = new Set(
+    extraSensitiveKeys.map(item => normalizeKey(item)).filter(item => item.length > 0)
+  );
 
   return sanitizeInternal({
     value,
