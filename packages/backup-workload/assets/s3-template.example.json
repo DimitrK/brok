@@ -1,0 +1,59 @@
+{
+  "template_id": "tpl_backup_s3",
+  "version": 1,
+  "provider": "aws_s3",
+  "description": "Backup workload access to broker backup bucket",
+  "allowed_schemes": ["https"],
+  "allowed_ports": [443],
+  "allowed_hosts": ["backup-bucket.s3.eu-west-1.amazonaws.com"],
+  "redirect_policy": {
+    "mode": "deny"
+  },
+  "path_groups": [
+    {
+      "group_id": "bucket-list",
+      "risk_tier": "low",
+      "approval_mode": "none",
+      "methods": ["GET"],
+      "path_patterns": ["/"],
+      "query_allowlist": ["list-type", "prefix", "continuation-token"],
+      "header_forward_allowlist": ["range"],
+      "body_policy": {
+        "max_bytes": 0,
+        "content_types": []
+      },
+      "constraints": {
+        "upstream_auth": {
+          "type": "aws_sigv4",
+          "service": "s3"
+        }
+      }
+    },
+    {
+      "group_id": "backup-objects",
+      "risk_tier": "medium",
+      "approval_mode": "none",
+      "methods": ["GET", "PUT"],
+      "path_patterns": ["/backups/**"],
+      "query_allowlist": [],
+      "header_forward_allowlist": ["content-type", "range"],
+      "body_policy": {
+        "max_bytes": 1048576,
+        "content_types": ["application/octet-stream", "application/json"]
+      },
+      "constraints": {
+        "upstream_auth": {
+          "type": "aws_sigv4",
+          "service": "s3"
+        }
+      }
+    }
+  ],
+  "network_safety": {
+    "deny_private_ip_ranges": true,
+    "deny_link_local": true,
+    "deny_loopback": true,
+    "deny_metadata_ranges": true,
+    "dns_resolution_required": true
+  }
+}

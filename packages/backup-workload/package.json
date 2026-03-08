@@ -1,0 +1,27 @@
+{
+  "name": "@broker-interceptor/backup-workload",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "backup": "pnpm --filter @broker-interceptor/interceptor-node run build && pnpm run build && node dist/run.js backup",
+    "restore": "pnpm --filter @broker-interceptor/interceptor-node run build && pnpm run build && node dist/run.js restore"
+  },
+  "prettier": "@broker-interceptor/prettier-config",
+  "devDependencies": {
+    "@broker-interceptor/eslint-config": "workspace:*",
+    "@broker-interceptor/prettier-config": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@broker-interceptor/interceptor-node": "workspace:*",
+    "zod": "^4.3.6"
+  }
+}
