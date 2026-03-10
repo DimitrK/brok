@@ -33,7 +33,7 @@
     "@nestjs/core": "^11.1.13",
     "@nestjs/platform-express": "^11.1.13",
     "@peculiar/x509": "^1.12.3",
-    "@prisma/client": "^6.16.3",
+    "@prisma/client": "^7.4.0",
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "jose": "^6.1.3",
