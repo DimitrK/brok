@@ -16,7 +16,7 @@
     "@broker-interceptor/eslint-config": "workspace:*",
     "@broker-interceptor/prettier-config": "workspace:*",
     "@types/express": "^5.0.3",
-    "@vitest/coverage-v8": "^2.1.8",
+    "@vitest/coverage-v8": "^4.0.18",
     "prisma": "6.16.3",
     "vitest": "^2.1.8"
   },
