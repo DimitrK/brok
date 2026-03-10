@@ -4,7 +4,7 @@ import {describe, expect, it} from 'vitest';
 
 import {canonicalizeExecuteRequest} from '../index';
 import type {CanonicalizeExecuteRequestInput} from '../index';
-import {buildS3Template, buildTemplate} from './fixtures/canonicalization-vectors';
+import {buildAuthSensitiveTemplate, buildS3Template, buildTemplate} from './fixtures/canonicalization-vectors';
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -47,6 +47,34 @@ const buildS3Input = (): CanonicalizeExecuteRequestInput => ({
         {name: 'x-amz-date', value: '20260301T101500Z'},
         {name: 'X-Amz-Content-Sha256', value: 'UNSIGNED-PAYLOAD'},
         {name: 'x-amz-security-token', value: '  session-token  '}
+      ]
+    }
+  }
+});
+
+const buildAuthSensitiveInput = (): CanonicalizeExecuteRequestInput => ({
+  context: {
+    tenant_id: 't_signed',
+    workload_id: 'w_signed',
+    integration_id: 'i_signed'
+  },
+  template: buildAuthSensitiveTemplate(),
+  execute_request: {
+    integration_id: 'i_signed',
+    request: {
+      method: 'GET',
+      url:
+        'https://signed.example.com/signed?' +
+        'X-Amz-Date=20260308T000000Z&' +
+        'X-Amz-Credential=AKIA%2F20260308%2Feu-west-1%2Fs3%2Faws4_request&' +
+        'X-Amz-SignedHeaders=host%3Bx-amz-date&' +
+        'X-Amz-Algorithm=AWS4-HMAC-SHA256&' +
+        'X-Amz-Expires=900&' +
+        'X-Amz-Signature=abc%7e123',
+      headers: [
+        {name: 'Host', value: 'signed.example.com'},
+        {name: 'x-amz-date', value: '20260308T000000Z'},
+        {name: 'x-amz-security-token', value: ' token '}
       ]
     }
   }
@@ -603,5 +631,77 @@ describe('canonicalizeExecuteRequest', () => {
       'https://storage.example.com/tenant-a/backups/folder%2F2026%2Fmanifest.json'
     );
     expect(result.value.descriptor.query_keys).toEqual([]);
+  });
+
+  it('canonicalizes auth-sensitive query parameters deterministically', () => {
+    const input = buildAuthSensitiveInput();
+
+    const result = canonicalizeExecuteRequest(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.matched_path_group_id).toBe('signed_query');
+    expect(result.value.canonical_url).toBe(
+      'https://signed.example.com/signed?' +
+        'X-Amz-Algorithm=AWS4-HMAC-SHA256&' +
+        'X-Amz-Credential=AKIA%2F20260308%2Feu-west-1%2Fs3%2Faws4_request&' +
+        'X-Amz-Date=20260308T000000Z&' +
+        'X-Amz-Expires=900&' +
+        'X-Amz-Signature=abc~123&' +
+        'X-Amz-SignedHeaders=host%3Bx-amz-date'
+    );
+    expect(result.value.descriptor.query_keys).toEqual([
+      'X-Amz-Algorithm',
+      'X-Amz-Credential',
+      'X-Amz-Date',
+      'X-Amz-Expires',
+      'X-Amz-Signature',
+      'X-Amz-SignedHeaders'
+    ]);
+  });
+
+  it('rejects duplicate auth-sensitive query keys by default', () => {
+    const input = buildAuthSensitiveInput();
+    input.execute_request.request.url =
+      'https://signed.example.com/signed?' +
+      'X-Amz-Date=20260308T000000Z&' +
+      'X-Amz-Date=20260308T000001Z&' +
+      'X-Amz-Algorithm=AWS4-HMAC-SHA256&' +
+      'X-Amz-Credential=AKIA%2F20260308%2Feu-west-1%2Fs3%2Faws4_request&' +
+      'X-Amz-Expires=900&' +
+      'X-Amz-SignedHeaders=host%3Bx-amz-date&' +
+      'X-Amz-Signature=abc123';
+
+    const result = canonicalizeExecuteRequest(input);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.error.code).toBe('request_query_duplicate_key_forbidden');
+  });
+
+  it('computes request-body digest for auth-sensitive requests by default', () => {
+    const input = buildAuthSensitiveInput();
+    input.execute_request.request.method = 'POST';
+    input.execute_request.request.url = 'https://signed.example.com/signed-body';
+    input.execute_request.request.headers = [
+      {name: 'content-type', value: 'application/json; charset=utf-8'},
+      {name: 'x-amz-date', value: '20260308T000000Z'},
+      {name: 'x-amz-content-sha256', value: 'UNSIGNED-PAYLOAD'}
+    ];
+    input.execute_request.request.body_base64 = Buffer.from('{"ok":true}', 'utf8').toString('base64');
+
+    const result = canonicalizeExecuteRequest(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value.matched_path_group_id).toBe('signed_body');
+    expect(result.value.descriptor.body_sha256_base64).toBe(
+      crypto.createHash('sha256').update('{"ok":true}').digest('base64')
+    );
   });
 });

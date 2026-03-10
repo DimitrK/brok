@@ -11,7 +11,13 @@ import {ToggleSwitch} from '../../components/ToggleSwitch';
 import {useAdminStore} from '../../store/adminStore';
 import {
   buildIntegrationSecretMaterial,
+  createEmptyIntegrationSecretDraft,
+  getIntegrationSecretAdapter,
   hasRequiredIntegrationSecretMaterial,
+  integrationSecretTypeOptions,
+  type IntegrationSecretDraft,
+  type IntegrationSecretFieldDefinition,
+  type IntegrationSecretFieldKey,
   type IntegrationSecretType
 } from './integrationSecretMaterial';
 
@@ -78,12 +84,7 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
   const [provider, setProvider] = useState('openai');
   const [name, setName] = useState('openai-prod');
   const [createTemplateId, setCreateTemplateId] = useState('');
-  const [secretType, setSecretType] = useState<IntegrationSecretType>('api_key');
-  const [secretValue, setSecretValue] = useState('');
-  const [accessKeyId, setAccessKeyId] = useState('');
-  const [secretAccessKey, setSecretAccessKey] = useState('');
-  const [sessionToken, setSessionToken] = useState('');
-  const [region, setRegion] = useState('');
+  const [secretDraft, setSecretDraft] = useState<IntegrationSecretDraft>(() => createEmptyIntegrationSecretDraft());
   const [draftsByIntegrationId, setDraftsByIntegrationId] = useState<Record<string, IntegrationDraft>>({});
   const [savingByIntegrationId, setSavingByIntegrationId] = useState<Record<string, boolean>>({});
   const [saveErrorByIntegrationId, setSaveErrorByIntegrationId] = useState<Record<string, string | undefined>>({});
@@ -92,14 +93,29 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
   const normalizedProvider = provider.trim();
   const normalizedName = name.trim();
   const normalizedCreateTemplateId = createTemplateId.trim();
-  const hasRequiredSecretMaterial = hasRequiredIntegrationSecretMaterial({
-    secretType,
-    secretValue,
-    accessKeyId,
-    secretAccessKey,
-    sessionToken,
-    region
-  });
+  const hasRequiredSecretMaterial = hasRequiredIntegrationSecretMaterial(secretDraft);
+  const activeSecretAdapter = useMemo(
+    () => getIntegrationSecretAdapter(secretDraft.secretType),
+    [secretDraft.secretType]
+  );
+  const secretInlineFieldRows = useMemo(() => {
+    const rows = new Map<string, IntegrationSecretFieldDefinition[]>();
+    for (const field of activeSecretAdapter.fields) {
+      if (field.width !== 'default') {
+        continue;
+      }
+
+      const rowId = field.rowId ?? field.key;
+      const currentRow = rows.get(rowId) ?? [];
+      rows.set(rowId, [...currentRow, field]);
+    }
+
+    return [...rows.values()];
+  }, [activeSecretAdapter.fields]);
+  const secretWideFields = useMemo(
+    () => activeSecretAdapter.fields.filter(field => field.width === 'wide'),
+    [activeSecretAdapter.fields]
+  );
 
   const integrationsQuery = useQuery({
     queryKey: ['integrations', selectedTenantId],
@@ -136,24 +152,13 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
         provider: normalizedProvider,
         name: normalizedName,
         template_id: normalizedCreateTemplateId,
-        secret_material: buildIntegrationSecretMaterial({
-          secretType,
-          secretValue,
-          accessKeyId,
-          secretAccessKey,
-          sessionToken,
-          region
-        })
+        secret_material: buildIntegrationSecretMaterial(secretDraft)
       });
 
       return api.createIntegration({tenantId: selectedTenantId ?? '', payload});
     },
     onSuccess: async () => {
-      setSecretValue('');
-      setAccessKeyId('');
-      setSecretAccessKey('');
-      setSessionToken('');
-      setRegion('');
+      setSecretDraft(current => createEmptyIntegrationSecretDraft(current.secretType));
       setCreateTemplateId('');
       setShowCreateForm(false);
       await queryClient.invalidateQueries({queryKey: ['integrations', selectedTenantId]});
@@ -182,7 +187,7 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
     setProvider(preset.provider);
     setName(preset.name);
     setCreateTemplateId(preset.templateId ?? '');
-    setSecretType(preset.secretType);
+    setSecretDraft(createEmptyIntegrationSecretDraft(preset.secretType));
   };
 
   const createIntegrationDisabled =
@@ -288,6 +293,13 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
     scheduleIntegrationAutosave(integration, nextDraft);
   };
 
+  const updateSecretDraftField = (fieldKey: IntegrationSecretFieldKey, value: string) => {
+    setSecretDraft(current => ({
+      ...current,
+      [fieldKey]: value
+    }));
+  };
+
   return (
     <Panel
       title="Integrations"
@@ -349,76 +361,52 @@ export const IntegrationsPanel = ({api}: IntegrationsPanelProps) => {
 
             <label className="field">
               <span>Secret type</span>
-              <select value={secretType} onChange={event => setSecretType(event.currentTarget.value as typeof secretType)}>
-                <option value="api_key">api_key</option>
-                <option value="oauth_refresh_token">oauth_refresh_token</option>
-                <option value="aws_sigv4">aws_sigv4</option>
+              <select
+                value={secretDraft.secretType}
+                onChange={event =>
+                  setSecretDraft(createEmptyIntegrationSecretDraft(event.currentTarget.value as IntegrationSecretType))
+                }
+              >
+                {integrationSecretTypeOptions.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
 
-          {secretType === 'aws_sigv4' ? (
-            <>
-              <div className="inline-form">
-                <label className="field">
-                  <span>Access key ID</span>
+          {secretInlineFieldRows.map((fieldRow, index) => (
+            <div key={`secret-row-${index}`} className="inline-form">
+              {fieldRow.map(field => (
+                <label key={field.key} className="field">
+                  <span>{field.optional ? `${field.label} (optional)` : field.label}</span>
                   <input
-                    value={accessKeyId}
-                    onChange={event => setAccessKeyId(event.currentTarget.value)}
-                    autoComplete="off"
-                    placeholder="AKIA..."
+                    value={secretDraft[field.key]}
+                    onChange={event => updateSecretDraftField(field.key, event.currentTarget.value)}
+                    type={field.inputType ?? 'text'}
+                    autoComplete={field.autoComplete}
+                    placeholder={field.placeholder}
                   />
                 </label>
+              ))}
+            </div>
+          ))}
 
-                <label className="field">
-                  <span>Region</span>
-                  <input
-                    value={region}
-                    onChange={event => setRegion(event.currentTarget.value)}
-                    autoComplete="off"
-                    placeholder="eu-west-1"
-                  />
-                </label>
-              </div>
-              <p className="helper-text">
-                Region is required for SigV4 credentials. For non-AWS or custom S3-compatible hosts, use the explicit
-                region expected by the upstream signer configuration.
-              </p>
+          {activeSecretAdapter.helpText ? <p className="helper-text">{activeSecretAdapter.helpText}</p> : null}
 
-              <label className="field wide">
-                <span>Secret access key</span>
-                <input
-                  value={secretAccessKey}
-                  onChange={event => setSecretAccessKey(event.currentTarget.value)}
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder="AWS secret access key"
-                />
-              </label>
-
-              <label className="field wide">
-                <span>Session token (optional)</span>
-                <input
-                  value={sessionToken}
-                  onChange={event => setSessionToken(event.currentTarget.value)}
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder="Temporary credentials session token"
-                />
-              </label>
-            </>
-          ) : (
-            <label className="field wide">
-              <span>Secret value</span>
+          {secretWideFields.map(field => (
+            <label key={field.key} className="field wide">
+              <span>{field.optional ? `${field.label} (optional)` : field.label}</span>
               <input
-                value={secretValue}
-                onChange={event => setSecretValue(event.currentTarget.value)}
-                type="password"
-                autoComplete="new-password"
-                placeholder={secretType === 'api_key' ? 'sk-...' : 'refresh-token'}
+                value={secretDraft[field.key]}
+                onChange={event => updateSecretDraftField(field.key, event.currentTarget.value)}
+                type={field.inputType ?? 'text'}
+                autoComplete={field.autoComplete}
+                placeholder={field.placeholder}
               />
             </label>
-          )}
+          ))}
 
           <p className="helper-text">
             Template selection is required before creating an integration. For S3-compatible storage, choose

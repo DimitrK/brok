@@ -323,6 +323,7 @@ const normalizeConstraintStringList = ({
 const normalizePolicyConstraints = (
   constraints: OpenApiPolicyRule['constraints']
 ): NormalizePolicyConstraintsResult => {
+  // Policy rules use only bounded approval/policy constraints. Runtime auth remains a template path-group concern.
   if (!constraints) {
     return {
       ok: true,

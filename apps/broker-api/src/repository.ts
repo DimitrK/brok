@@ -58,7 +58,6 @@ import {
   type OpenApiIntegration,
   type OpenApiManifestKeys,
   type OpenApiPolicyRule,
-  type SecretMaterial,
   type OpenApiTemplate,
   type OpenApiWorkload
 } from '@broker-interceptor/schemas'
@@ -67,7 +66,8 @@ import {z} from 'zod'
 import type {Prisma} from '@prisma/client'
 
 import type {BrokerRedisClient, ProcessInfrastructure} from './infrastructure';
-import {buildExecuteAuthHeaders} from './upstreamAuth'
+import {buildExecuteAuthHeaders, resolveRuntimeAuthStrategy} from './runtimeAuth'
+import {isRuntimeAuthError} from './runtimeAuth/errors'
 
 export class DataPlaneRepositoryError extends Error {
   public readonly code: string
@@ -83,37 +83,6 @@ export const isDataPlaneRepositoryError = (value: unknown): value is DataPlaneRe
   value instanceof DataPlaneRepositoryError
 
 type CryptoEncryptedSecretMaterialInput = Parameters<typeof decryptSecretMaterial>[0]['encrypted_secret_material']
-
-const serializeDecryptedSecretMaterial = (secretMaterial: SecretMaterial): string => {
-  if (
-    (secretMaterial.type === 'api_key' || secretMaterial.type === 'oauth_refresh_token') &&
-    typeof secretMaterial.value === 'string'
-  ) {
-    return secretMaterial.value
-  }
-
-  if (secretMaterial.type === 'aws_sigv4') {
-    if (
-      typeof secretMaterial.access_key_id === 'string' &&
-      typeof secretMaterial.secret_access_key === 'string' &&
-      typeof secretMaterial.region === 'string'
-    ) {
-      return JSON.stringify({
-        access_key_id: secretMaterial.access_key_id,
-        secret_access_key: secretMaterial.secret_access_key,
-        ...(typeof secretMaterial.session_token === 'string'
-          ? {session_token: secretMaterial.session_token}
-          : {}),
-        region: secretMaterial.region
-      })
-    }
-  }
-
-  throw new DataPlaneRepositoryError({
-    code: 'integration_secret_invalid',
-    message: 'Decrypted integration secret payload is invalid'
-  })
-}
 
 const sessionRecordSchema = z
   .object({
@@ -589,6 +558,10 @@ const toCryptoStoreFailure = ({
 }) => {
   const code = toErrorCode(error)
   const message = `${method}: ${toErrorMessage(error)}`
+  if (code === 'dependency_not_configured' || code === 'invalid_repository_response') {
+    return cryptoErr(code, message)
+  }
+
   if (code === 'not_found') {
     return method.toLowerCase().includes('manifest')
       ? cryptoErr('manifest_key_not_found', message)
@@ -603,7 +576,7 @@ const toCryptoStoreFailure = ({
     return cryptoErr('manifest_key_rotation_invalid', message)
   }
 
-  return cryptoErr('invalid_input', message)
+  return cryptoErr('invalid_repository_response', message)
 }
 
 export type DataPlaneRepositoryCreateInput = {
@@ -845,7 +818,7 @@ export class DataPlaneRepository {
         throw new Error(`Unable to load shared manifest keyset before rotation: ${sharedKeysetResult.error.message}`)
       }
 
-      const currentManifestKeys = sharedKeysetResult.ok
+      const currentManifestKeys = sharedKeysetResult.ok && sharedKeysetResult.value
         ? sharedKeysetResult.value.manifest_keys
         : this.getManifestVerificationKeys()
       const signingAlgorithm = this.getManifestSigningPrivateKey().alg
@@ -1847,7 +1820,7 @@ export class DataPlaneRepository {
       acquireCryptoRotationLock: async input => {
         if (!rotationLockAdapter || !redis) {
           return cryptoErr(
-            'invalid_input',
+            'dependency_not_configured',
             'acquireCryptoRotationLock: Redis-backed crypto rotation lock adapter is not configured'
           )
         }
@@ -1873,7 +1846,7 @@ export class DataPlaneRepository {
       releaseCryptoRotationLock: async input => {
         if (!rotationLockAdapter || !redis) {
           return cryptoErr(
-            'invalid_input',
+            'dependency_not_configured',
             'releaseCryptoRotationLock: Redis-backed crypto rotation lock adapter is not configured'
           )
         }
@@ -2005,12 +1978,16 @@ export class DataPlaneRepository {
           `Unable to verify active manifest signing key metadata after bootstrap: ${verifiedActiveKeyResult.error.message}`
         )
       }
+      const verifiedActiveKey = verifiedActiveKeyResult.value
+      if (!verifiedActiveKey) {
+        throw new Error('Unable to verify active manifest signing key metadata after bootstrap: no active key found')
+      }
 
       if (
-        verifiedActiveKeyResult.value.kid !== manifestSigningPrivateKey.kid ||
+        verifiedActiveKey.kid !== manifestSigningPrivateKey.kid ||
         !manifestPublicKeysEqual({
           expected: localPublicKey,
-          actual: verifiedActiveKeyResult.value.public_jwk
+          actual: verifiedActiveKey.public_jwk
         })
       ) {
         throw new Error(
@@ -2025,6 +2002,15 @@ export class DataPlaneRepository {
     }
 
     if (!keysetResult.ok && keysetResult.error.code === 'manifest_key_not_found') {
+      const persistResult = await sharedCryptoStorage.persistManifestKeysetMetadata_INCOMPLETE({
+        etag: etagForManifestKeys(this.getManifestVerificationKeys()),
+        generated_at: nowIso(),
+        max_age_seconds: this.manifestTtlSeconds
+      })
+      if (!persistResult.ok) {
+        throw new Error(`Unable to persist manifest keyset metadata: ${persistResult.error.message}`)
+      }
+    } else if (keysetResult.ok && !keysetResult.value) {
       const persistResult = await sharedCryptoStorage.persistManifestKeysetMetadata_INCOMPLETE({
         etag: etagForManifestKeys(this.getManifestVerificationKeys()),
         generated_at: nowIso(),
@@ -2449,34 +2435,68 @@ export class DataPlaneRepository {
         code: integrationSecretUnavailableCode,
         message
       })
+    const toRuntimeAuthRepositoryError = ({
+      code,
+      message
+    }: {
+      code: string
+      message: string
+    }) =>
+      new DataPlaneRepositoryError({
+        code,
+        message
+      })
 
     const sharedInfrastructureEnabled = this.processInfrastructure?.enabled === true
     const sharedIntegrationRepository = this.processInfrastructure?.dbRepositories?.integrationRepository
     const sharedSecretRepository = this.processInfrastructure?.dbRepositories?.secretRepository
 
-    if (!this.keyManagementService) {
-      if (sharedInfrastructureEnabled) {
-        throw toIntegrationSecretUnavailableError('Secret decryption key not configured for shared infrastructure mode')
-      }
-      return this.getInjectedHeadersForIntegration({integrationId})
-    }
-
-    if (!sharedIntegrationRepository || !sharedSecretRepository) {
-      if (sharedInfrastructureEnabled) {
-        throw toIntegrationSecretUnavailableError(
-          'Shared secret repositories are not configured in shared infrastructure mode'
-        )
-      }
-      return this.getInjectedHeadersForIntegration({integrationId})
-    }
-
     try {
+      const runtimeAuthStrategy = resolveRuntimeAuthStrategy({
+        template,
+        matchedPathGroupId
+      })
+
+      if (!this.keyManagementService) {
+        if (runtimeAuthStrategy) {
+          throw toRuntimeAuthRepositoryError({
+            code: 'runtime_auth_inputs_unavailable',
+            message: 'Typed runtime auth requires shared secret decryption support'
+          })
+        }
+        if (sharedInfrastructureEnabled) {
+          throw toIntegrationSecretUnavailableError('Secret decryption key not configured for shared infrastructure mode')
+        }
+        return this.getInjectedHeadersForIntegration({integrationId})
+      }
+
+      if (!sharedIntegrationRepository || !sharedSecretRepository) {
+        if (runtimeAuthStrategy) {
+          throw toRuntimeAuthRepositoryError({
+            code: 'runtime_auth_inputs_unavailable',
+            message: 'Typed runtime auth requires shared secret repositories'
+          })
+        }
+        if (sharedInfrastructureEnabled) {
+          throw toIntegrationSecretUnavailableError(
+            'Shared secret repositories are not configured in shared infrastructure mode'
+          )
+        }
+        return this.getInjectedHeadersForIntegration({integrationId})
+      }
+
       const integration = await sharedIntegrationRepository.getById({
         integration_id: integrationId,
         tenant_id: tenantId
       })
 
       if (!integration || !integration.secret_ref) {
+        if (runtimeAuthStrategy) {
+          throw toRuntimeAuthRepositoryError({
+            code: 'runtime_auth_inputs_unavailable',
+            message: `No integration secret is configured for runtime auth strategy ${runtimeAuthStrategy.type}`
+          })
+        }
         return this.getInjectedHeadersForIntegration({integrationId})
       }
 
@@ -2485,6 +2505,12 @@ export class DataPlaneRepository {
       })
 
       if (!secretEnvelope) {
+        if (runtimeAuthStrategy) {
+          throw toRuntimeAuthRepositoryError({
+            code: 'runtime_auth_inputs_unavailable',
+            message: `No active secret envelope found for runtime auth strategy ${runtimeAuthStrategy.type}`
+          })
+        }
         if (sharedInfrastructureEnabled) {
           throw toIntegrationSecretUnavailableError(
             `No active secret envelope found for integration secret_ref ${integration.secret_ref}`
@@ -2538,20 +2564,23 @@ export class DataPlaneRepository {
       }
 
       return buildExecuteAuthHeaders({
-        secretValue: serializeDecryptedSecretMaterial(decryptedResult.value),
+        secretMaterial: decryptedResult.value,
         request: executeRequest.request,
         template,
-        matchedPathGroupId
+        matchedPathGroupId,
+        strategy: runtimeAuthStrategy
       })
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'unknown error'
+      const runtimeAuthFailure = isRuntimeAuthError(error)
       this.logger.warn({
-        event: 'repository.secret.fetch_failed',
-        component: 'repository.secret',
-        message: 'Error fetching integration secret',
+        event: runtimeAuthFailure ? 'repository.runtime_auth.failed' : 'repository.secret.fetch_failed',
+        component: runtimeAuthFailure ? 'repository.runtime_auth' : 'repository.secret',
+        message: runtimeAuthFailure ? 'Runtime auth strategy resolution failed' : 'Error fetching integration secret',
         ...(correlationId ? {correlation_id: correlationId} : {}),
-        reason_code: 'BROKER_API_SECRET_FETCH_WARNING',
+        reason_code: runtimeAuthFailure ? error.code : 'BROKER_API_SECRET_FETCH_WARNING',
         metadata: {
+          ...(runtimeAuthFailure ? {warning_code: 'BROKER_API_RUNTIME_AUTH_WARNING'} : {}),
           error: errorMessage,
           integration_id: integrationId,
           tenant_id: tenantId
@@ -2561,8 +2590,21 @@ export class DataPlaneRepository {
         if (isDataPlaneRepositoryError(error)) {
           throw error
         }
+        if (runtimeAuthFailure) {
+          throw toRuntimeAuthRepositoryError({
+            code: error.code,
+            message: error.message
+          })
+        }
 
         throw toIntegrationSecretUnavailableError(errorMessage)
+      }
+
+      if (runtimeAuthFailure) {
+        throw toRuntimeAuthRepositoryError({
+          code: error.code,
+          message: error.message
+        })
       }
 
       return this.getInjectedHeadersForIntegration({integrationId})
@@ -2739,21 +2781,25 @@ export class DataPlaneRepository {
 
     const activeKeyResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE()
         // If no active key in shared store, bootstrap local key
-    if (!activeKeyResult.ok && activeKeyResult.error.code === 'manifest_key_not_found') {
+    if ((!activeKeyResult.ok && activeKeyResult.error.code === 'manifest_key_not_found') || (activeKeyResult.ok && !activeKeyResult.value)) {
       return this.syncLocalKeyToSharedStore()
     }
 
     if (!activeKeyResult.ok) {
       throw new Error(`Unable to load active manifest signing key metadata: ${activeKeyResult.error.message}`)
     }
+    const activeKey = activeKeyResult.value
+    if (!activeKey) {
+      throw new Error('Unable to load active manifest signing key metadata: no active key found')
+    }
 
     let localManifestSigningKey = this.resolveManifestSigningPrivateKeyByReference({
-      privateKeyRef: activeKeyResult.value.private_key_ref
+      privateKeyRef: activeKey.private_key_ref
     })
 
     if (!localManifestSigningKey) {
       const fallbackByKid = this.getLocalManifestSigningPrivateKeyByKid({
-        kid: activeKeyResult.value.kid
+        kid: activeKey.kid
       })
       if (fallbackByKid) {
         localManifestSigningKey = fallbackByKid
@@ -2764,26 +2810,26 @@ export class DataPlaneRepository {
       const localActiveKey = this.getManifestSigningPrivateKey()
       if (!this.processInfrastructure?.redis) {
         throw new Error(
-          `Manifest signing key mismatch between broker-api state (${localActiveKey.kid}) and shared store (${activeKeyResult.value.kid})`
+          `Manifest signing key mismatch between broker-api state (${localActiveKey.kid}) and shared store (${activeKey.kid})`
         )
       }
 
       return this.rotateManifestSigningPrivateKeyShared({
-        reason: `active_private_key_ref_unresolved:${activeKeyResult.value.private_key_ref}`,
+        reason: `active_private_key_ref_unresolved:${activeKey.private_key_ref}`,
         retainPreviousKeyCount: defaultRetainedManifestPrivateKeys
       })
     }
 
     const localPublicKey = publicKeyFromPrivateKey(localManifestSigningKey)
-    if (activeKeyResult.value.kid !== localManifestSigningKey.kid) {
+    if (activeKey.kid !== localManifestSigningKey.kid) {
       if (!this.processInfrastructure?.redis) {
         throw new Error(
-          `Manifest signing key mismatch between broker-api state (${localManifestSigningKey.kid}) and shared store (${activeKeyResult.value.kid})`
+          `Manifest signing key mismatch between broker-api state (${localManifestSigningKey.kid}) and shared store (${activeKey.kid})`
         );
       }
 
       return this.rotateManifestSigningPrivateKeyShared({
-        reason: `active_kid_mismatch:local=${localManifestSigningKey.kid}:shared=${activeKeyResult.value.kid}`,
+        reason: `active_kid_mismatch:local=${localManifestSigningKey.kid}:shared=${activeKey.kid}`,
         retainPreviousKeyCount: defaultRetainedManifestPrivateKeys
       });
     }
@@ -2791,7 +2837,7 @@ export class DataPlaneRepository {
     if (
       !manifestPublicKeysEqual({
         expected: localPublicKey,
-        actual: activeKeyResult.value.public_jwk
+        actual: activeKey.public_jwk
       })
     ) {
       if (!this.processInfrastructure?.redis) {
@@ -2839,7 +2885,7 @@ export class DataPlaneRepository {
 
     // Retire the current active key first (DB has unique constraint: only one active key allowed)
     const currentActiveResult = await sharedCryptoStorage.getActiveManifestSigningKeyRecord_INCOMPLETE()
-    if (currentActiveResult.ok && currentActiveResult.value.kid !== localKey.kid) {
+    if (currentActiveResult.ok && currentActiveResult.value && currentActiveResult.value.kid !== localKey.kid) {
       const retireResult = await sharedCryptoStorage.retireManifestSigningKey_INCOMPLETE({
         kid: currentActiveResult.value.kid,
         retired_at: nowIso()
@@ -2875,6 +2921,9 @@ export class DataPlaneRepository {
     const keysetResult = await sharedCryptoStorage.listManifestVerificationKeysWithEtag_INCOMPLETE()
     if (!keysetResult.ok) {
       throw new Error(`Unable to load manifest verification keys: ${keysetResult.error.message}`)
+    }
+    if (!keysetResult.value) {
+      return this.getManifestVerificationKeys()
     }
 
     return clone(keysetResult.value.manifest_keys)

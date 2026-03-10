@@ -16,10 +16,10 @@ Generated outputs:
 - Do not re-define API DTOs in app/package code.
 - Import DTO types and parsers from `@broker-interceptor/schemas`.
 - When contracts change, update source schemas/OpenAPI and regenerate.
-- Write-side secret material contracts are strict discriminated unions via the OpenAPI-derived schemas.
-  Shared storage contracts keep a stable `type` shape for downstream envelope/repository consumers.
-- Downstream packages that only need the secret type discriminator should use `SecretMaterialTypeSchema`
-  instead of reaching into `SecretMaterialSchema.shape.type`.
+- `SecretMaterialSchema` is the canonical discriminated union for stored and write-side secret payloads.
+- `TemplatePathGroupConstraintsSchema.shape.upstream_auth` is a separate discriminated union for runtime-auth strategy selection.
+- Downstream packages that only need the discriminator values should use `SecretMaterialTypeSchema`
+  or `UpstreamAuthTypeSchema` instead of reaching into object schemas.
 
 ## Usage
 

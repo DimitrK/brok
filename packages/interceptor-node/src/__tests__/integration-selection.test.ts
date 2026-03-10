@@ -82,6 +82,20 @@ describe('resolveInterceptionTarget', () => {
     }
   });
 
+  it('keeps selection tied to manifest order even when matching rules use different provider strings', () => {
+    const manifest = createManifest();
+    manifest.match_rules[0]!.provider = 'future-provider-a';
+    manifest.match_rules[1]!.provider = 'future-provider-b';
+
+    const result = resolveInterceptionTarget('https://bucket.s3.example.com/?list-type=2', manifest, undefined);
+
+    expect(result.matched).toBe(true);
+    if (result.matched) {
+      expect(result.integrationId).toBe('int_default');
+      expect(result.source).toBe('manifest');
+    }
+  });
+
   it('uses an explicit override when multiple manifest rules match the same request', () => {
     const overrides: IntegrationOverride[] = [
       {
@@ -96,6 +110,31 @@ describe('resolveInterceptionTarget', () => {
     ];
 
     const result = resolveInterceptionTarget('https://bucket.s3.example.com/?list-type=2&prefix=backups%2F', createManifest(), overrides);
+
+    expect(result.matched).toBe(true);
+    if (result.matched) {
+      expect(result.integrationId).toBe('int_backup');
+      expect(result.source).toBe('override');
+    }
+  });
+
+  it('uses the explicit override regardless of provider string differences between matching integrations', () => {
+    const manifest = createManifest();
+    manifest.match_rules[0]!.provider = 'future-provider-a';
+    manifest.match_rules[1]!.provider = 'future-provider-b';
+    const overrides: IntegrationOverride[] = [
+      {
+        integrationId: 'int_backup',
+        match: {
+          hosts: ['bucket.s3.example.com'],
+          schemes: ['https'],
+          ports: [443],
+          path_groups: ['/']
+        }
+      }
+    ];
+
+    const result = resolveInterceptionTarget('https://bucket.s3.example.com/?list-type=2&prefix=backups%2F', manifest, overrides);
 
     expect(result.matched).toBe(true);
     if (result.matched) {

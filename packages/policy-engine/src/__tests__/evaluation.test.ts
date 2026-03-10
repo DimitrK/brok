@@ -447,6 +447,50 @@ describe('evaluatePolicyDecision', () => {
     expect(decision.reason_code).toBe('invalid_path_pattern')
   })
 
+  it('keeps policy precedence unchanged when matched path group includes runtime auth constraints', async () => {
+    const templateWithRuntimeAuth = TemplateSchema.parse({
+      ...template,
+      path_groups: [
+        template.path_groups[0],
+        {
+          ...template.path_groups[1],
+          constraints: {
+            upstream_auth: {
+              type: 'aws_sigv4',
+              service: 's3',
+              region: 'eu-west-1'
+            }
+          }
+        }
+      ]
+    })
+    const allowRule = createRule({
+      policy_id: 'pol_allow_send',
+      rule_type: 'allow',
+      scope: {
+        tenant_id: 'tenant-1',
+        integration_id: 'integration-1',
+        action_group: 'gmail_send',
+        method: 'POST',
+        host: 'gmail.googleapis.com'
+      }
+    })
+
+    const decision = await evaluatePolicyDecision({
+      descriptor: createDescriptor(),
+      template: templateWithRuntimeAuth,
+      policies: [allowRule]
+    })
+
+    expect(decision.decision).toBe('allowed')
+    expect(decision.reason_code).toBe('policy_allow')
+    expect(decision.policy_match).toEqual({
+      policy_id: 'pol_allow_send',
+      rule_type: 'allow',
+      match_type: 'scoped'
+    })
+  })
+
   it('falls back to unclassified action group when descriptor action group is empty', async () => {
     const descriptorWithEmptyGroup = createDescriptor({
       matched_path_group_id: '',

@@ -11,7 +11,7 @@ export type AuditEvent = z.infer<typeof AuditEventSchema>
 export const CanonicalRequestDescriptorSchema = z.object({"tenant_id": z.string(), "workload_id": z.string(), "integration_id": z.string(), "template_id": z.string(), "template_version": z.number().int().gte(1), "method": z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]), "canonical_url": z.string().url(), "matched_path_group_id": z.string(), "normalized_headers": z.array(z.object({"name": z.string(), "value": z.string()}).strict()), "query_keys": z.array(z.string()), "query_fingerprint_base64": z.string().nullable().optional(), "body_sha256_base64": z.string().nullable().optional()}).strict()
 export type CanonicalRequestDescriptor = z.infer<typeof CanonicalRequestDescriptorSchema>
 
-export const IntegrationWriteSchema = z.object({"provider": z.string(), "name": z.string(), "template_id": z.string(), "secret_material": z.union([z.object({"type": z.enum(["api_key"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["oauth_refresh_token"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["aws_sigv4"]), "access_key_id": z.string().min(1).max(256), "secret_access_key": z.string().min(1).max(256), "session_token": z.string().min(1).max(4096).optional(), "region": z.string().min(1).max(64)}).strict()])}).strict()
+export const IntegrationWriteSchema = z.object({"provider": z.string(), "name": z.string(), "template_id": z.string(), "secret_material": z.lazy(() => SecretMaterialSchema)}).strict()
 export type IntegrationWrite = z.infer<typeof IntegrationWriteSchema>
 
 export const IntegrationSchema = z.object({"integration_id": z.string(), "tenant_id": z.string(), "provider": z.string(), "name": z.string(), "template_id": z.string(), "enabled": z.boolean(), "secret_ref": z.string().nullable().optional(), "secret_version": z.number().int().gte(1).nullable().optional(), "last_rotated_at": z.string().datetime({offset: true}).nullable().optional()}).strict()
@@ -41,11 +41,17 @@ export type SecretMaterialType = z.infer<typeof SecretMaterialTypeSchema>
 export const SecretMaterialSchema = z.union([z.object({"type": z.enum(["api_key"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["oauth_refresh_token"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["aws_sigv4"]), "access_key_id": z.string().min(1).max(256), "secret_access_key": z.string().min(1).max(256), "session_token": z.string().min(1).max(4096).optional(), "region": z.string().min(1).max(64)}).strict()])
 export type SecretMaterial = z.infer<typeof SecretMaterialSchema>
 
-export const TemplatePathGroupConstraintsSchema = z.object({"allow_duplicate_query_keys": z.union([z.boolean(), z.array(z.string().min(1))]).optional(), "upstream_auth": z.object({"type": z.literal("aws_sigv4"), "service": z.literal("s3"), "region": z.string().min(1).max(64).optional()}).strict().optional()}).strict()
+export const TemplatePathGroupConstraintsSchema = z.object({"allow_duplicate_query_keys": z.union([z.boolean(), z.array(z.string().min(1))]).optional(), "upstream_auth": z.lazy(() => UpstreamAuthStrategySchema).optional()}).strict()
 export type TemplatePathGroupConstraints = z.infer<typeof TemplatePathGroupConstraintsSchema>
 
 export const TemplateSchema = z.object({"template_id": z.string().regex(new RegExp("^tpl_[a-z0-9_]+$")), "version": z.number().int().gte(1), "provider": z.string(), "description": z.string().optional(), "allowed_schemes": z.array(z.enum(["https"])).min(1), "allowed_ports": z.array(z.union([z.literal(443)])).min(1), "allowed_hosts": z.array(z.string().min(1)).min(1), "redirect_policy": z.object({"mode": z.enum(["deny"]), "max_hops": z.number().int().gte(0).lte(5).optional()}).strict(), "path_groups": z.array(z.object({"group_id": z.string(), "risk_tier": z.enum(["low", "medium", "high"]), "approval_mode": z.enum(["none", "required"]), "methods": z.array(z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"])).min(1), "path_patterns": z.array(z.string().min(1)).min(1), "query_allowlist": z.array(z.string()), "header_forward_allowlist": z.array(z.string()), "body_policy": z.object({"max_bytes": z.number().int().gte(0), "content_types": z.array(z.string())}).strict(), "constraints": z.lazy(() => TemplatePathGroupConstraintsSchema).optional()}).strict()).min(1), "network_safety": z.object({"deny_private_ip_ranges": z.boolean(), "deny_link_local": z.boolean(), "deny_loopback": z.boolean(), "deny_metadata_ranges": z.boolean(), "dns_resolution_required": z.boolean()}).strict()}).strict()
 export type Template = z.infer<typeof TemplateSchema>
+
+export const UpstreamAuthStrategySchema = z.union([z.object({"type": z.enum(["aws_sigv4"]), "service": z.literal("s3"), "region": z.string().min(1).max(64).optional()}).strict()])
+export type UpstreamAuthStrategy = z.infer<typeof UpstreamAuthStrategySchema>
+
+export const UpstreamAuthTypeSchema = z.enum(["aws_sigv4"])
+export type UpstreamAuthType = z.infer<typeof UpstreamAuthTypeSchema>
 
 export const WorkloadSchema = z.object({"workload_id": z.string(), "tenant_id": z.string(), "name": z.string(), "mtls_san_uri": z.string(), "enabled": z.boolean(), "ip_allowlist": z.array(z.string()).optional(), "created_at": z.string().datetime({offset: true}).nullable().optional()}).strict()
 export type Workload = z.infer<typeof WorkloadSchema>
@@ -161,7 +167,7 @@ export type OpenApiIntegrationCreateResponse = z.infer<typeof OpenApiIntegration
 export const OpenApiIntegrationListResponseSchema = z.object({"integrations": z.array(z.lazy(() => OpenApiIntegrationSchema))}).strict()
 export type OpenApiIntegrationListResponse = z.infer<typeof OpenApiIntegrationListResponseSchema>
 
-export const OpenApiIntegrationSecretMaterialWriteSchema = z.union([z.object({"type": z.enum(["api_key"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["oauth_refresh_token"]), "value": z.string().min(1)}).strict(), z.object({"type": z.enum(["aws_sigv4"]), "access_key_id": z.string().min(1).max(256), "secret_access_key": z.string().min(1).max(256), "session_token": z.string().min(1).max(4096).optional(), "region": z.string().min(1).max(64)}).strict()])
+export const OpenApiIntegrationSecretMaterialWriteSchema = z.lazy(() => SecretMaterialSchema)
 export type OpenApiIntegrationSecretMaterialWrite = z.infer<typeof OpenApiIntegrationSecretMaterialWriteSchema>
 
 export const OpenApiIntegrationUpdateRequestSchema = z.object({"enabled": z.boolean().optional(), "template_id": z.string().optional()}).strict()
@@ -224,6 +230,9 @@ export type OpenApiWorkloadCreateRequest = z.infer<typeof OpenApiWorkloadCreateR
 export const OpenApiWorkloadCreateResponseSchema = z.object({"workload_id": z.string(), "enrollment_token": z.string(), "mtls_ca_pem": z.string()}).strict()
 export type OpenApiWorkloadCreateResponse = z.infer<typeof OpenApiWorkloadCreateResponseSchema>
 
+export const OpenApiWorkloadEnrollmentPolicyResponseSchema = z.object({"client_cert_ttl_seconds_max": z.number().int().gte(1)}).strict()
+export type OpenApiWorkloadEnrollmentPolicyResponse = z.infer<typeof OpenApiWorkloadEnrollmentPolicyResponseSchema>
+
 export const OpenApiWorkloadEnrollmentTokenIssueRequestSchema = z.object({"rotation_mode": z.enum(["if_absent", "always"])}).strict()
 export type OpenApiWorkloadEnrollmentTokenIssueRequest = z.infer<typeof OpenApiWorkloadEnrollmentTokenIssueRequestSchema>
 
@@ -258,6 +267,8 @@ export const schemaRegistry = {
   SecretMaterialSchema: SecretMaterialSchema,
   TemplatePathGroupConstraintsSchema: TemplatePathGroupConstraintsSchema,
   TemplateSchema: TemplateSchema,
+  UpstreamAuthStrategySchema: UpstreamAuthStrategySchema,
+  UpstreamAuthTypeSchema: UpstreamAuthTypeSchema,
   WorkloadSchema: WorkloadSchema,
   OpenApiAdminAccessRequestSchema: OpenApiAdminAccessRequestSchema,
   OpenApiAdminAccessRequestApproveRequestSchema: OpenApiAdminAccessRequestApproveRequestSchema,
@@ -317,6 +328,7 @@ export const schemaRegistry = {
   OpenApiWorkloadSchema: OpenApiWorkloadSchema,
   OpenApiWorkloadCreateRequestSchema: OpenApiWorkloadCreateRequestSchema,
   OpenApiWorkloadCreateResponseSchema: OpenApiWorkloadCreateResponseSchema,
+  OpenApiWorkloadEnrollmentPolicyResponseSchema: OpenApiWorkloadEnrollmentPolicyResponseSchema,
   OpenApiWorkloadEnrollmentTokenIssueRequestSchema: OpenApiWorkloadEnrollmentTokenIssueRequestSchema,
   OpenApiWorkloadEnrollmentTokenIssueResponseSchema: OpenApiWorkloadEnrollmentTokenIssueResponseSchema,
   OpenApiWorkloadEnrollRequestSchema: OpenApiWorkloadEnrollRequestSchema,

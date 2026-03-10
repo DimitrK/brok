@@ -31,6 +31,9 @@ Integrations now support typed `aws_sigv4` secret material with dedicated fields
 optional session token, and region.
 Template path groups now support typed S3 SigV4 upstream-auth constraints and include a helper preset for bucket-root
 list-object coverage used by backup-workload flows.
+Integration secret authoring and template runtime-auth authoring are driven by local typed adapter registries keyed by
+the OpenAPI-derived discriminators, so future credential/runtime-auth types can be added without raw JSON inputs or
+inline panel branching.
 Audit workflow now supports selecting failing events and drafting template contracts with prefilled traits.
 Template editor includes template-level and per-path-group cURL request checks for fast regex/method/host validation.
 Audit events list now uses a reusable `VirtualizedInfiniteTable` (12-row viewport, virtualized rows, infinite load on
@@ -38,6 +41,9 @@ scroll, end-of-list indicator) plus reusable cursor-page fetch composition (`use
 `/v1/audit/events?limit=&cursor=`.
 Primary table-based management panels also use a reusable `MobileEntityList` pattern on small screens, where each row is
 presented as a tap target that opens a focused detail view with entry-specific actions/forms.
+Workload certificate enrollment accepts human-friendly TTL inputs such as `1d`, `5h`, `1 month`, `1mo`, or raw seconds and
+converts them to the API `requested_ttl_seconds` field client-side, validating the result against the live max TTL
+returned by `GET /v1/workloads/enrollment-policy`.
 
 ## Routing
 
@@ -145,6 +151,6 @@ auth/base-url state and triggers query invalidation for fresh server data.
 
 ## Pending Feedback
 
-Last checked: 2026-03-02
+Last checked: 2026-03-09
 
 - None.

@@ -2,6 +2,8 @@ import {z} from 'zod';
 
 export const cryptoErrorCodeSchema = z.enum([
   'invalid_input',
+  'dependency_not_configured',
+  'invalid_repository_response',
   'invalid_base64',
   'invalid_key_id',
   'invalid_key_length',

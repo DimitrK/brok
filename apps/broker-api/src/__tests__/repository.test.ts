@@ -1715,7 +1715,7 @@ describe('data plane repository', () => {
       retired_at: '2026-02-01T00:00:00.000Z'
     })
     expect(retireFailure.ok).toBe(false)
-    expect(retireFailure.error?.code).toBe('invalid_input')
+    expect(retireFailure.error?.code).toBe('invalid_repository_response')
 
     secretRepository.revokeManifestSigningKey.mockRejectedValueOnce(new Error('revoke failed'))
     const revokeFailure = await storage.revokeManifestSigningKey_INCOMPLETE({
@@ -1723,12 +1723,12 @@ describe('data plane repository', () => {
       revoked_at: '2026-02-01T00:00:00.000Z'
     })
     expect(revokeFailure.ok).toBe(false)
-    expect(revokeFailure.error?.code).toBe('invalid_input')
+    expect(revokeFailure.error?.code).toBe('invalid_repository_response')
 
     secretRepository.listManifestVerificationKeysWithEtag.mockRejectedValueOnce(new Error('keyset failed'))
     const keysetFailure = await storage.listManifestVerificationKeysWithEtag_INCOMPLETE()
     expect(keysetFailure.ok).toBe(false)
-    expect(keysetFailure.error?.code).toBe('invalid_input')
+    expect(keysetFailure.error?.code).toBe('invalid_repository_response')
 
     secretRepository.persistManifestKeysetMetadata.mockRejectedValueOnce(new Error('persist failed'))
     const persistFailure = await storage.persistManifestKeysetMetadata_INCOMPLETE({
@@ -1737,14 +1737,14 @@ describe('data plane repository', () => {
       max_age_seconds: 120
     })
     expect(persistFailure.ok).toBe(false)
-    expect(persistFailure.error?.code).toBe('invalid_input')
+    expect(persistFailure.error?.code).toBe('invalid_repository_response')
 
     secretRepository.getCryptoVerificationDefaultsByTenant.mockRejectedValueOnce(new Error('defaults failed'))
     const defaultsFailure = await storage.getCryptoVerificationDefaultsByTenant_INCOMPLETE({
       tenant_id: 't_1'
     })
     expect(defaultsFailure.ok).toBe(false)
-    expect(defaultsFailure.error?.code).toBe('invalid_input')
+    expect(defaultsFailure.error?.code).toBe('invalid_repository_response')
 
     secretRepository.upsertCryptoVerificationDefaults.mockRejectedValueOnce(new Error('upsert defaults failed'))
     const upsertDefaultsFailure = await storage.upsertCryptoVerificationDefaults_INCOMPLETE({
@@ -1753,21 +1753,21 @@ describe('data plane repository', () => {
       max_clock_skew_seconds: 0
     })
     expect(upsertDefaultsFailure.ok).toBe(false)
-    expect(upsertDefaultsFailure.error?.code).toBe('invalid_input')
+    expect(upsertDefaultsFailure.error?.code).toBe('invalid_repository_response')
 
     const acquireWithoutRedis = await storage.acquireCryptoRotationLock_INCOMPLETE({
       lock_name: 'manifest-rotation',
       ttl_ms: 10_000
     })
     expect(acquireWithoutRedis.ok).toBe(false)
-    expect(acquireWithoutRedis.error?.code).toBe('invalid_input')
+    expect(acquireWithoutRedis.error?.code).toBe('dependency_not_configured')
 
     const releaseWithoutRedis = await storage.releaseCryptoRotationLock_INCOMPLETE({
       lock_name: 'manifest-rotation',
       token: 'f73918ce-2fca-4b57-8cfc-f4fe37e2f9b4'
     })
     expect(releaseWithoutRedis.ok).toBe(false)
-    expect(releaseWithoutRedis.error?.code).toBe('invalid_input')
+    expect(releaseWithoutRedis.error?.code).toBe('dependency_not_configured')
   })
 
   it('uses redis-backed crypto rotation lock adapter when redis is available', async () => {

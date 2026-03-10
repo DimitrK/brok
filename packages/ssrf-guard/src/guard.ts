@@ -50,6 +50,10 @@ const normalizeHostValue = (value: string): string | null => {
     return null;
   }
 
+  if (/[*?]/u.test(trimmed)) {
+    return null;
+  }
+
   const withoutBrackets =
     trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
   const withoutTrailingDot = withoutBrackets.endsWith('.')

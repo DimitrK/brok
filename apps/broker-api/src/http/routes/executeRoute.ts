@@ -10,6 +10,7 @@ import {
   OpenApiExecuteResponseExecutedSchema
 } from '@broker-interceptor/schemas'
 import {enforceRedirectDenyPolicy, guardExecuteRequestDestination} from '@broker-interceptor/ssrf-guard'
+import {z} from 'zod'
 
 import {badRequest, conflict, isAppError, serviceUnavailable} from '../../errors'
 import {parseJsonBody, sendJson} from '../../http'
@@ -18,6 +19,58 @@ import type {BrokerApiRouteLogicHandler} from './types'
 
 const minimumForwarderIdempotencyTtlSeconds = 60
 const maximumForwarderIdempotencyTtlSeconds = 60 * 60 * 24
+const badRequestRuntimeAuthReasonCodes = new Set([
+  'runtime_auth_constraint_invalid',
+  'runtime_auth_path_group_missing',
+  'runtime_auth_secret_type_incompatible'
+])
+const serviceUnavailableRuntimeAuthReasonCodes = new Set([
+  'runtime_auth_strategy_unsupported',
+  'runtime_auth_inputs_unavailable'
+])
+
+type OpenApiExecuteRequest = z.infer<typeof OpenApiExecuteRequestSchema>
+
+const hasRequestHeader = ({
+  headers,
+  name
+}: {
+  headers: OpenApiExecuteRequest['request']['headers']
+  name: string
+}) => headers.some(header => header.name.trim().toLowerCase() === name)
+
+const ensureBufferedRequestContentLength = ({
+  executeRequest,
+  decodedBodyByteLength
+}: {
+  executeRequest: OpenApiExecuteRequest
+  decodedBodyByteLength: number
+}) => {
+  if (decodedBodyByteLength === 0) {
+    return executeRequest
+  }
+
+  if (
+    hasRequestHeader({headers: executeRequest.request.headers, name: 'content-length'}) ||
+    hasRequestHeader({headers: executeRequest.request.headers, name: 'transfer-encoding'})
+  ) {
+    return executeRequest
+  }
+
+  return {
+    ...executeRequest,
+    request: {
+      ...executeRequest.request,
+      headers: [
+        ...executeRequest.request.headers,
+        {
+          name: 'content-length',
+          value: String(decodedBodyByteLength)
+        }
+      ]
+    }
+  }
+}
 
 export const handleExecuteRoute: BrokerApiRouteLogicHandler = async ({
   request,
@@ -76,10 +129,16 @@ export const handleExecuteRoute: BrokerApiRouteLogicHandler = async ({
     maxBodyBytes: runtime.config.maxBodyBytes,
     required: true
   })
+  const executeRequestWithFraming = ensureBufferedRequestContentLength({
+    executeRequest,
+    decodedBodyByteLength: executeRequest.request.body_base64
+      ? runtime.decodedBase64ByteLength(executeRequest.request.body_base64)
+      : 0
+  })
 
   const integration = await runtime.repository.getIntegrationByTenantAndIdShared({
     tenantId: mtls.tenant_id,
-    integrationId: executeRequest.integration_id
+    integrationId: executeRequestWithFraming.integration_id
   })
   if (!integration) {
     throw badRequest('integration_not_found', 'Integration was not found for tenant')
@@ -140,7 +199,7 @@ export const handleExecuteRoute: BrokerApiRouteLogicHandler = async ({
       integration_id: integration.integration_id
     },
     template,
-    execute_request: executeRequest
+    execute_request: executeRequestWithFraming
   })
   if (!canonicalized.ok) {
     throw badRequest(canonicalized.error.code, canonicalized.error.message)
@@ -387,7 +446,7 @@ export const handleExecuteRoute: BrokerApiRouteLogicHandler = async ({
   let ssrfResolvedIps: string[] = []
   const ssrfResult = await guardExecuteRequestDestination({
     input: {
-      execute_request: executeRequest,
+      execute_request: executeRequestWithFraming,
       template
     },
     options: {
@@ -594,7 +653,7 @@ export const handleExecuteRoute: BrokerApiRouteLogicHandler = async ({
 
       const idempotencyFingerprint = runtime.toForwarderIdempotencyFingerprint({
         descriptor: canonicalized.value.descriptor as unknown as Record<string, unknown>,
-        request: executeRequest.request as unknown as Record<string, unknown>
+        request: executeRequestWithFraming.request as unknown as Record<string, unknown>
       })
 
       const idempotencyResult = await runtime.repository.createForwarderIdempotencyRecordShared({
@@ -637,7 +696,7 @@ export const handleExecuteRoute: BrokerApiRouteLogicHandler = async ({
       injectedHeaders = await runtime.repository.buildExecuteRequestHeadersShared({
         tenantId: mtls.tenant_id,
         integrationId: integration.integration_id,
-        executeRequest,
+        executeRequest: executeRequestWithFraming,
         template,
         matchedPathGroupId: canonicalized.value.matched_path_group_id,
         correlationId
@@ -678,13 +737,52 @@ export const handleExecuteRoute: BrokerApiRouteLogicHandler = async ({
           'Integration secret material is unavailable for execute request'
         )
       }
+      if (
+        isDataPlaneRepositoryError(error) &&
+        (badRequestRuntimeAuthReasonCodes.has(error.code) || serviceUnavailableRuntimeAuthReasonCodes.has(error.code))
+      ) {
+        state.executeAuditRecorded = true
+        await runtime.appendAuditEvent({
+          event: runtime.buildAuditEvent({
+            correlationId,
+            tenantId: mtls.tenant_id,
+            event: {
+              workload_id: mtls.workload_id,
+              integration_id: integration.integration_id,
+              event_type: 'execute',
+              decision: 'denied',
+              action_group: decision.action_group,
+              risk_tier: decision.risk_tier,
+              destination: {
+                scheme: 'https',
+                host: ssrfResult.value.destination.host,
+                port: ssrfResult.value.destination.port,
+                path_group: decision.action_group
+              },
+              latency_ms: null,
+              upstream_status_code: null,
+              canonical_descriptor: canonicalized.value.descriptor,
+              message: `Execution denied: ${error.code}`,
+              metadata: {
+                reason_code: error.code
+              }
+            }
+          })
+        })
+
+        if (badRequestRuntimeAuthReasonCodes.has(error.code)) {
+          throw badRequest(error.code, 'Execute request is incompatible with the configured runtime auth strategy')
+        }
+
+        throw serviceUnavailable(error.code, 'Runtime auth support is unavailable for execute request')
+      }
 
       throw error
     }
 
     const forwardResult = await forwardExecuteRequest({
       input: {
-        execute_request: executeRequest,
+        execute_request: executeRequestWithFraming,
         template,
         matched_path_group_id: canonicalized.value.matched_path_group_id,
         injected_headers: injectedHeaders,

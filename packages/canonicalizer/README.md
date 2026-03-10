@@ -167,12 +167,14 @@ Pending wiring in other package:
 - `setApprovalOnceCacheInRedis_INCOMPLETE`
 - `incrementRateLimitCounterInRedis_INCOMPLETE`
 - `loadManifestVerificationKeysFromDb_INCOMPLETE`
+3. Manifest signing helpers are tracked in `apps/broker-admin-api/INCOMPLETE_METHODS_TRACKER.md` and
+   `packages/crypto/src/storage.ts`; there are no canonicalizer-owned manifest signing methods.
 
-3. Canonicalizer methods pending runtime wiring from broker-api execute pipeline:
+4. Canonicalizer methods pending runtime wiring from broker-api execute pipeline:
 - `canonicalizeExecuteRequest` (from this package)
 - `validateTemplateForUpload` (from this package)
 
-4. Mapping for pending cross-package wiring:
+5. Mapping for pending cross-package wiring:
 - Other package module: `apps/broker-api/src/dependencyBridge.ts`
 - Other package pending method: `listRequiredDependencies_INCOMPLETE`
 - Canonicalizer methods to wire: `canonicalizeExecuteRequest`, `validateTemplateForUpload`

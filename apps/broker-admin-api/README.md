@@ -74,6 +74,7 @@ Vault issuer hardening env (vault mode only):
 - `GET /v1/tenants`
 - `POST /v1/tenants/{tenantId}/workloads`
 - `GET /v1/tenants/{tenantId}/workloads`
+- `GET /v1/workloads/enrollment-policy`
 - `POST /v1/workloads/{workloadId}/enroll`
 - `PATCH /v1/workloads/{workloadId}`
 - `POST /v1/tenants/{tenantId}/integrations`
@@ -164,6 +165,7 @@ Interactive OAuth behavior:
 - Vault mode enforces `https` Vault addresses in production configuration.
 - Invalid request URLs (including malformed Host header combinations) are rejected with deterministic 400 responses.
 - Manifest key rotation fails closed if persisted key material for an existing `kid` does not match the rotated keyset.
+- `GET /v1/workloads/enrollment-policy` exposes the effective workload client-certificate TTL ceiling in seconds so UIs can validate human-friendly TTL input without hardcoding deployment policy.
 
 ## Dependency Integration Status
 

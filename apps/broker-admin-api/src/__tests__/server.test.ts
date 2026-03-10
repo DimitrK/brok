@@ -1266,6 +1266,15 @@ describe.skipIf(!canBindLoopback)('broker-admin-api server routes', () => {
     })
     expect(listWorkloads.status).toBe(200)
 
+    const workloadEnrollmentPolicy = await context.request({
+      method: 'GET',
+      path: '/v1/workloads/enrollment-policy'
+    })
+    expect(workloadEnrollmentPolicy.status).toBe(200)
+    expect(workloadEnrollmentPolicy.body).toMatchObject({
+      client_cert_ttl_seconds_max: 3600
+    })
+
     const updateWorkload = await context.request({
       method: 'PATCH',
       path: `/v1/workloads/${workloadBody.workload_id}`,

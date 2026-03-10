@@ -2,12 +2,13 @@ import {describe, expect, it} from 'vitest';
 
 import {
   buildTemplatePathGroupConstraints,
-  resolveTemplateUpstreamAuthMode,
-  resolveTemplateUpstreamAuthRegion,
-  s3ListObjectsPathGroupPreset
-} from './templateS3Auth';
+  getTemplateUpstreamAuthAdapter,
+  resolveTemplateUpstreamAuthDraft,
+  s3ListObjectsPathGroupPreset,
+  templateUpstreamAuthOptions
+} from './templateUpstreamAuth';
 
-describe('templateS3Auth', () => {
+describe('templateUpstreamAuth', () => {
   it('builds aws sigv4 template constraints with optional region', () => {
     expect(
       buildTemplatePathGroupConstraints({
@@ -32,7 +33,7 @@ describe('templateS3Auth', () => {
     ).toBeUndefined();
   });
 
-  it('reads upstream auth state from template path groups', () => {
+  it('reads upstream auth state from template path groups through the registry', () => {
     const pathGroup = {
       constraints: {
         upstream_auth: {
@@ -43,8 +44,24 @@ describe('templateS3Auth', () => {
       }
     };
 
-    expect(resolveTemplateUpstreamAuthMode(pathGroup)).toBe('aws_sigv4');
-    expect(resolveTemplateUpstreamAuthRegion(pathGroup)).toBe('us-east-1');
+    expect(resolveTemplateUpstreamAuthDraft(pathGroup)).toEqual({
+      upstreamAuthMode: 'aws_sigv4',
+      upstreamAuthRegion: 'us-east-1'
+    });
+  });
+
+  it('exposes registry-backed upstream auth options and field metadata', () => {
+    expect(templateUpstreamAuthOptions).toEqual([
+      {value: 'none', label: 'none'},
+      {value: 'aws_sigv4', label: 'AWS SigV4 (S3)'}
+    ]);
+    expect(getTemplateUpstreamAuthAdapter('aws_sigv4')?.fields).toEqual([
+      {
+        key: 'upstreamAuthRegion',
+        label: 'SigV4 region override',
+        placeholder: 'eu-west-1'
+      }
+    ]);
   });
 
   it('exposes bucket-root list objects preset guidance', () => {

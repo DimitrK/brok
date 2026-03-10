@@ -2,6 +2,7 @@ import {OpenApiAuditEventSchema, OpenApiIntegrationSchema} from '@broker-interce
 import {describe, expect, it, vi} from 'vitest'
 
 import {AuditAppendEventResultSchema} from '../contracts'
+import {summarizeCredentialMaterial} from '../credentialSummary'
 import {
   appendIntegrationCreatedAuditEvent,
   appendIntegrationDeletedAuditEvent,
@@ -58,6 +59,40 @@ const createMockAuditAppender = () => {
 }
 
 describe('integration lifecycle audit emission helpers', () => {
+  it('provides explicit safe summaries for every supported credential type', () => {
+    expect(
+      summarizeCredentialMaterial({
+        type: 'api_key',
+        value: 'sk-live-secret'
+      })
+    ).toEqual({
+      credential_type: 'api_key'
+    })
+
+    expect(
+      summarizeCredentialMaterial({
+        type: 'oauth_refresh_token',
+        value: 'refresh-token'
+      })
+    ).toEqual({
+      credential_type: 'oauth_refresh_token'
+    })
+
+    expect(
+      summarizeCredentialMaterial({
+        type: 'aws_sigv4',
+        access_key_id: 'AKIA_TEST_ACCESS_KEY',
+        secret_access_key: 'super-secret',
+        session_token: 'session-token',
+        region: 'eu-west-1'
+      })
+    ).toEqual({
+      credential_type: 'aws_sigv4',
+      credential_region: 'eu-west-1',
+      temporary_session_present: true
+    })
+  })
+
   it('emits created events for aws_sigv4 integrations without raw secret values', async () => {
     const audit = createMockAuditAppender()
 
@@ -90,7 +125,7 @@ describe('integration lifecycle audit emission helpers', () => {
     expect(event.decision).toBe('allowed')
     expect(metadata.credential_type).toBe('aws_sigv4')
     expect(metadata.credential_region).toBe('eu-west-1')
-    expect(metadata.credential_has_session_token).toBe(true)
+    expect(metadata.temporary_session_present).toBe(true)
     expect(metadata).not.toHaveProperty('secret_access_key')
     expect(metadata).not.toHaveProperty('session_token')
     expect(metadata).not.toHaveProperty('access_key_id')
@@ -142,6 +177,7 @@ describe('integration lifecycle audit emission helpers', () => {
     expect(updatedMetadata.next_enabled).toBe(false)
     expect(updatedMetadata.credential_type).toBe('aws_sigv4')
     expect(updatedMetadata.credential_region).toBe('eu-central-1')
+    expect(updatedMetadata.temporary_session_present).toBe(false)
 
     expect(deletedEvent.action_group).toBe('admin.integration.deleted')
     expect(deletedMetadata.provider).toBe('s3_compatible')

@@ -1,10 +1,4 @@
-export {
-  getLogContext,
-  LogContextSchema,
-  runWithLogContext,
-  setLogContextFields,
-  type LogContext
-} from './context';
+export {getLogContext, LogContextSchema, runWithLogContext, setLogContextFields, type LogContext} from './context';
 export {
   createNoopLogger,
   createStructuredLogger,
@@ -16,4 +10,10 @@ export {
   type StructuredLoggerOptions,
   type StructuredLogWriter
 } from './logger';
-export {sanitizeForLog} from './redaction';
+export {
+  DEFAULT_REDACTION_KEY_FAMILIES,
+  flattenRedactionKeyFamilies,
+  sanitizeForLog,
+  type RedactionKeyFamilies,
+  type RedactionKeyFamilyName
+} from './redaction';

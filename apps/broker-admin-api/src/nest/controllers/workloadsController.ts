@@ -4,6 +4,7 @@ import {
   OpenApiWorkloadCreateRequestSchema,
   OpenApiWorkloadCreateResponseSchema,
   OpenApiWorkloadEnrollRequestSchema,
+  OpenApiWorkloadEnrollmentPolicyResponseSchema,
   OpenApiWorkloadEnrollResponseSchema,
   OpenApiWorkloadEnrollmentTokenIssueRequestSchema,
   OpenApiWorkloadEnrollmentTokenIssueResponseSchema,
@@ -91,6 +92,29 @@ export class WorkloadsController {
         requireAnyRole({principal, allowed: [...listAccessRoles]})
         const workloads = await this.context.repository.listWorkloads({tenantId})
         const payload = OpenApiWorkloadListResponseSchema.parse({workloads})
+        sendJson({
+          response,
+          status: 200,
+          correlationId,
+          payload
+        })
+      }
+    })
+  }
+
+  @Get('/v1/workloads/enrollment-policy')
+  public async getEnrollmentPolicy(@Req() request: Request, @Res() response: Response): Promise<void> {
+    await this.context.handleRequest({
+      request,
+      response,
+      handler: async ({correlationId}) => {
+        const principal = await this.context.authenticateRequest({request})
+        requireAnyRole({principal, allowed: [...listAccessRoles]})
+
+        const payload = OpenApiWorkloadEnrollmentPolicyResponseSchema.parse({
+          client_cert_ttl_seconds_max: this.context.config.clientCertTtlSecondsMax
+        })
+
         sendJson({
           response,
           status: 200,

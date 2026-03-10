@@ -76,6 +76,7 @@ type DbFixture = {
     };
     secretRepository: {
       createSecretEnvelopeVersion: ReturnType<typeof vi.fn>;
+      getActiveSecretEnvelope: ReturnType<typeof vi.fn>;
       listManifestVerificationKeysWithEtag: ReturnType<typeof vi.fn>;
     };
     templateRepository: {
@@ -142,6 +143,45 @@ const makeTemplate = (): OpenApiTemplate => ({
       body_policy: {
         max_bytes: 4096,
         content_types: ['application/json']
+      }
+    }
+  ],
+  network_safety: {
+    deny_private_ip_ranges: true,
+    deny_link_local: true,
+    deny_loopback: true,
+    deny_metadata_ranges: true,
+    dns_resolution_required: true
+  }
+});
+
+const makeS3Template = (): OpenApiTemplate => ({
+  template_id: 'tpl_s3_db',
+  version: 1,
+  provider: 's3_compatible',
+  allowed_schemes: ['https'],
+  allowed_ports: [443],
+  allowed_hosts: ['gateway.storjshare.io'],
+  redirect_policy: {mode: 'deny'},
+  path_groups: [
+    {
+      group_id: 'backup_list',
+      risk_tier: 'medium',
+      approval_mode: 'required',
+      methods: ['GET'],
+      path_patterns: ['^/$'],
+      query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+      header_forward_allowlist: ['accept'],
+      body_policy: {
+        max_bytes: 0,
+        content_types: []
+      },
+      constraints: {
+        upstream_auth: {
+          type: 'aws_sigv4',
+          service: 's3',
+          region: 'eu-west-1'
+        }
       }
     }
   ],
@@ -387,6 +427,23 @@ const makeFixture = ({
     },
     secretRepository: {
       createSecretEnvelopeVersion: vi.fn(async () => undefined),
+      getActiveSecretEnvelope: vi.fn(async () => ({
+        secret_ref: integration.secret_ref ?? 'sec_db_1',
+        tenant_id: tenant.tenant_id,
+        integration_id: integration.integration_id,
+        secret_type: 'api_key',
+        version: integration.secret_version ?? 1,
+        envelope: {
+          key_id: 'kid-db',
+          content_encryption_alg: 'A256GCM',
+          key_encryption_alg: 'dir',
+          wrapped_data_key_b64: 'wrapped',
+          iv_b64: 'iv',
+          ciphertext_b64: 'cipher',
+          auth_tag_b64: 'tag'
+        },
+        created_at: new Date().toISOString()
+      })),
       listManifestVerificationKeysWithEtag: vi.fn(async () => ({
         manifest_keys: manifestKeys,
         etag: 'W/"manifest-etag"',
@@ -786,6 +843,121 @@ describe('control plane repository db wiring', () => {
     expect(await repository.getManifestKeys()).toEqual({
       payload: manifestKeys,
       etag: 'W/"manifest-etag"'
+    });
+  });
+
+  it('rejects incompatible integration secret and template runtime auth combinations before db persistence', async () => {
+    const tenant: OpenApiTenantSummary = {tenant_id: 't_db_1', name: 'Tenant DB'};
+    const workload: OpenApiWorkload = {
+      workload_id: 'w_db_1',
+      tenant_id: 't_db_1',
+      name: 'workload-db',
+      mtls_san_uri: 'spiffe://broker/tenants/t_db_1/workloads/w_db_1',
+      enabled: true,
+      created_at: new Date().toISOString()
+    };
+    const integration: OpenApiIntegration = {
+      integration_id: 'i_db_1',
+      tenant_id: 't_db_1',
+      provider: 'openai',
+      name: 'openai-db',
+      template_id: 'tpl_openai_db',
+      enabled: true,
+      secret_ref: 'sec_db_1',
+      secret_version: 1,
+      last_rotated_at: new Date().toISOString()
+    };
+    const policy = makePolicy({tenantId: tenant.tenant_id, integrationId: integration.integration_id});
+    const approval = makeApproval({
+      approvalId: 'appr_db_1',
+      tenantId: tenant.tenant_id,
+      workloadId: workload.workload_id,
+      integrationId: integration.integration_id
+    });
+    const auditEvent: OpenApiAuditEvent = {
+      event_id: 'evt_db_1',
+      timestamp: new Date().toISOString(),
+      tenant_id: 't_db_1',
+      workload_id: null,
+      integration_id: null,
+      correlation_id: 'corr_db',
+      event_type: 'admin_action',
+      decision: null,
+      action_group: null,
+      risk_tier: null,
+      destination: null,
+      latency_ms: null,
+      upstream_status_code: null,
+      canonical_descriptor: null,
+      policy: null,
+      message: null,
+      metadata: {}
+    };
+
+    activeDbFixture = makeFixture({
+      tenant,
+      workload,
+      integration,
+      policy,
+      approval,
+      auditEvent,
+      manifestKeys: {keys: []}
+    });
+
+    activeDbFixture.repositories.templateRepository.getLatestTemplateByTenantTemplateId = vi.fn(async ({template_id}: {
+      template_id: string;
+    }) => (template_id === 'tpl_s3_db' ? makeS3Template() : makeTemplate()));
+
+    const {ControlPlaneRepository} = await import('../repository');
+    const repository = await ControlPlaneRepository.create({
+      manifestKeys: {keys: []},
+      enrollmentTokenTtlSeconds: 600,
+      processInfrastructure: {
+        enabled: true,
+        prisma: {
+          templateVersion: {
+            findMany: vi.fn(async () => [{templateJson: makeTemplate()}])
+          },
+          policyRule: {
+            findMany: vi.fn(async () => [{policyJson: policy}])
+          }
+        },
+        redis: {},
+        redisKeyPrefix: 'broker-admin-api:test',
+        withTransaction: async <T>(operation: () => Promise<T>) => operation(),
+        close: async () => undefined
+      } as unknown as ProcessInfrastructure
+    });
+
+    await expect(
+      repository.createIntegration({
+        tenantId: tenant.tenant_id,
+        payload: {
+          provider: 'aws_s3',
+          name: 'invalid-s3-secret',
+          template_id: 'tpl_s3_db',
+          secret_material: {type: 'api_key', value: 'sk-test'}
+        },
+        secretKey: Buffer.alloc(32, 1),
+        secretKeyId: 'kid-db'
+      })
+    ).rejects.toMatchObject({
+      code: 'integration_secret_runtime_auth_incompatible'
+    });
+    expect(activeDbFixture.repositories.integrationRepository.create).not.toHaveBeenCalled();
+    expect(activeDbFixture.repositories.secretRepository.createSecretEnvelopeVersion).not.toHaveBeenCalled();
+
+    await expect(
+      repository.updateIntegration({
+        integrationId: integration.integration_id,
+        templateId: 'tpl_s3_db'
+      })
+    ).rejects.toMatchObject({
+      code: 'integration_secret_runtime_auth_incompatible'
+    });
+    expect(activeDbFixture.repositories.integrationRepository.update).not.toHaveBeenCalled();
+    expect(activeDbFixture.repositories.secretRepository.getActiveSecretEnvelope).toHaveBeenCalledWith({
+      secret_ref: integration.secret_ref
     });
   });
 

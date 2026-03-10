@@ -238,6 +238,28 @@ describe('validatePolicyRule', () => {
     })
   })
 
+  it('rejects template runtime auth constraints inside policy rules', () => {
+    const result = validatePolicyRule({
+      policy: {
+        ...basePolicy,
+        constraints: {
+          upstream_auth: {
+            type: 'aws_sigv4',
+            service: 's3'
+          }
+        }
+      } as unknown as OpenApiPolicyRule
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'policy_rule_invalid',
+        message: 'Policy payload failed schema validation'
+      }
+    })
+  })
+
   it('rejects duplicate bounded constraint values for deterministic behavior', () => {
     const result = validatePolicyRule({
       policy: {
@@ -358,6 +380,29 @@ describe('derivePolicyFromApprovalDecision', () => {
       policy_id: 'pol_invalid_constraints',
       constraints: {
         ad_hoc_rule: true
+      } as unknown as Record<string, unknown>
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'approval_decision_invalid',
+        message: 'Approval decision payload failed schema validation'
+      }
+    })
+  })
+
+  it('rejects runtime auth template constraints in approval-derived policy inputs', () => {
+    const result = derivePolicyFromApprovalDecision({
+      approval_status: 'approved',
+      approval_mode: 'rule',
+      descriptor: createDescriptor(),
+      policy_id: 'pol_invalid_runtime_auth_constraints',
+      constraints: {
+        upstream_auth: {
+          type: 'aws_sigv4',
+          service: 's3'
+        }
       } as unknown as Record<string, unknown>
     })
 

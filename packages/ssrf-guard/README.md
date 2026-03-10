@@ -60,6 +60,15 @@ Exports from `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-intercepto
 - If a workflow needs virtual-host style bucket routing, each intended hostname must be allowlisted explicitly.
 - Exact host allowlisting does not bypass DNS/IP safety checks. Resolved private, loopback, link-local, and metadata addresses are still rejected fail-closed.
 
+## Runtime-auth SSRF guard checklist
+
+- Exact host allowlisting remains the default. Wildcards (`*` or `?`) are rejected.
+- No runtime-auth strategy should broaden host scope implicitly. Any request host must match a normalized allowlist entry exactly.
+- New strategy support must be activated by typed template constraints in `@broker-interceptor/schemas`, not provider strings.
+- Unsupported strategies or mismatched constraint/secret combinations must fail closed with stable reason codes.
+- DNS/IP safety checks must still be enforced for any custom host (private, loopback, link-local, metadata ranges).
+- Any proposal to broaden host semantics requires a threat-model update and explicit approval.
+
 ## Usage
 
 ```ts

@@ -295,6 +295,28 @@ describe('guardExecuteRequestDestination', () => {
     expect(result.error.code).toBe('template_host_invalid');
   });
 
+  it('fails closed when template host entries contain wildcards', async () => {
+    const template = buildTemplate({
+      allowedHosts: ['*.storage.example.com']
+    });
+
+    const result = await guardExecuteRequestDestination({
+      input: {
+        execute_request: buildExecuteRequest('https://storage.example.com/v1/messages'),
+        template
+      },
+      options: {
+        dns_resolver: () => ['93.184.216.34']
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.error.code).toBe('template_host_invalid');
+  });
+
   it('rejects hosts outside template allowlist', async () => {
     const result = await guardExecuteRequestDestination({
       input: {

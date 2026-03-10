@@ -45,8 +45,10 @@ import {
   type OpenApiIntegrationWrite,
   type OpenApiManifestKeys,
   type OpenApiPolicyRule,
+  type SecretMaterialType,
   type OpenApiTemplate,
   type OpenApiTenantSummary,
+  type UpstreamAuthType,
   type OpenApiWorkload
 } from '@broker-interceptor/schemas';
 import {createNoopLogger, type StructuredLogger} from '@broker-interceptor/logging';
@@ -190,6 +192,17 @@ const hasConsumedEnrollmentToken = ({
 
 const GLOBAL_TEMPLATE_TENANT_ID = 'global';
 const GLOBAL_TEMPLATE_TENANT_NAME = 'Global Templates';
+
+// Keep control-plane secret/runtime-auth compatibility explicit and fail closed.
+const runtimeAuthCompatibleSecretTypes: Readonly<Record<UpstreamAuthType, readonly SecretMaterialType[]>> = {
+  aws_sigv4: ['aws_sigv4']
+};
+
+const runtimeAuthTypesRequiredBySecretType: Readonly<Record<SecretMaterialType, readonly UpstreamAuthType[]>> = {
+  api_key: [],
+  oauth_refresh_token: [],
+  aws_sigv4: ['aws_sigv4']
+};
 
 type EnrollmentTokenIssueInput = {
   token_hash: string;
@@ -773,6 +786,15 @@ export class ControlPlaneRepository {
     return template;
   }
 
+  private findLatestTemplate(templateId: string): OpenApiTemplate {
+    const templates = this.state.templates.filter(item => item.template_id === templateId);
+    if (templates.length === 0) {
+      throw notFound('template_not_found', `Template ${templateId} was not found`);
+    }
+
+    return templates.reduce((latest, candidate) => (candidate.version > latest.version ? candidate : latest));
+  }
+
   private findWorkload(workloadId: string): OpenApiWorkload {
     const workload = this.state.workloads.find(item => item.workload_id === workloadId);
     if (!workload) {
@@ -789,6 +811,62 @@ export class ControlPlaneRepository {
     }
 
     return integration;
+  }
+
+  private collectTemplateRuntimeAuthTypes(template: OpenApiTemplate): UpstreamAuthType[] {
+    return [...new Set(template.path_groups.flatMap(group => {
+      const strategy = group.constraints?.upstream_auth;
+      return strategy ? [strategy.type] : [];
+    }))].sort();
+  }
+
+  private assertIntegrationTemplateCompatibility({
+    secretType,
+    template
+  }: {
+    secretType: SecretMaterialType;
+    template: OpenApiTemplate;
+  }): void {
+    const requiredRuntimeAuthTypes = this.collectTemplateRuntimeAuthTypes(template);
+    const secretRuntimeAuthTypes = runtimeAuthTypesRequiredBySecretType[secretType];
+
+    for (const runtimeAuthType of requiredRuntimeAuthTypes) {
+      const compatibleSecretTypes = runtimeAuthCompatibleSecretTypes[runtimeAuthType];
+      if (!compatibleSecretTypes?.includes(secretType)) {
+        throw badRequest(
+          'integration_secret_runtime_auth_incompatible',
+          `Template ${template.template_id} requires runtime auth ${runtimeAuthType}, which is incompatible with secret type ${secretType}`
+        );
+      }
+    }
+
+    for (const runtimeAuthType of secretRuntimeAuthTypes) {
+      if (!requiredRuntimeAuthTypes.includes(runtimeAuthType)) {
+        throw badRequest(
+          'integration_secret_runtime_auth_incompatible',
+          `Secret type ${secretType} requires template runtime auth ${runtimeAuthType}, but template ${template.template_id} does not declare it`
+        );
+      }
+    }
+  }
+
+  private findSecretTypeForIntegration(integration: OpenApiIntegration): SecretMaterialType {
+    if (!integration.secret_ref) {
+      throw conflict(
+        'integration_secret_binding_missing',
+        `Integration ${integration.integration_id} has no active secret binding`
+      );
+    }
+
+    const secret = this.state.secrets.find(item => item.secret_ref === integration.secret_ref);
+    if (!secret) {
+      throw notFound(
+        'integration_secret_not_found',
+        `Active secret for integration ${integration.integration_id} was not found`
+      );
+    }
+
+    return secret.type;
   }
 
   public async listTenants() {
@@ -1673,6 +1751,11 @@ export class ControlPlaneRepository {
             throw notFound('template_not_found', `Template ${payload.template_id} was not found`);
           }
 
+          this.assertIntegrationTemplateCompatibility({
+            secretType: payload.secret_material.type,
+            template
+          });
+
           const integration = await repositories.integrationRepository.create({
             tenant_id: tenantId,
             payload,
@@ -1722,7 +1805,12 @@ export class ControlPlaneRepository {
 
     return this.withWriteLock(async () => {
       this.findTenant(tenantId);
-      this.findTemplate(payload.template_id);
+      const template = this.findLatestTemplate(payload.template_id);
+
+      this.assertIntegrationTemplateCompatibility({
+        secretType: payload.secret_material.type,
+        template
+      });
 
       const integrationId = generateId('i_');
       const secretRef = generateId('sec_');
@@ -1783,6 +1871,13 @@ export class ControlPlaneRepository {
     if (this.isDbEnabled()) {
       try {
         if (templateId) {
+          const existing = await this.requireDbRepositories().integrationRepository.getById({
+            integration_id: integrationId
+          });
+          if (!existing) {
+            throw notFound('integration_not_found', `Integration ${integrationId} was not found`);
+          }
+
           const template = await this.requireDbRepositories().templateRepository.getLatestTemplateByTenantTemplateId({
             tenant_id: GLOBAL_TEMPLATE_TENANT_ID,
             template_id: templateId
@@ -1790,6 +1885,25 @@ export class ControlPlaneRepository {
           if (!template) {
             throw notFound('template_not_found', `Template ${templateId} was not found`);
           }
+
+          if (!existing.secret_ref) {
+            throw conflict(
+              'integration_secret_binding_missing',
+              `Integration ${integrationId} has no active secret binding`
+            );
+          }
+
+          const activeSecret = await this.requireDbRepositories().secretRepository.getActiveSecretEnvelope({
+            secret_ref: existing.secret_ref
+          });
+          if (!activeSecret) {
+            throw notFound('integration_secret_not_found', `Active secret for integration ${integrationId} was not found`);
+          }
+
+          this.assertIntegrationTemplateCompatibility({
+            secretType: activeSecret.secret_type,
+            template
+          });
         }
 
         return await this.requireDbRepositories().integrationRepository.update({
@@ -1808,7 +1922,13 @@ export class ControlPlaneRepository {
       const integration = this.findIntegration(integrationId);
 
       if (templateId) {
-        this.findTemplate(templateId);
+        const template = this.findLatestTemplate(templateId);
+        const secretType = this.findSecretTypeForIntegration(integration);
+
+        this.assertIntegrationTemplateCompatibility({
+          secretType,
+          template
+        });
       }
 
       const updated = OpenApiIntegrationSchema.parse({

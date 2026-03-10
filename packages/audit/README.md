@@ -172,9 +172,9 @@ await appendIntegrationCreatedAuditEvent({
 ```
 
 The emitted metadata intentionally stores only non-secret summaries such as provider, template ID, credential type,
-and region. Raw secret values are not included by the helper and are still masked by the package redaction layer if a
-caller accidentally includes them in metadata. Fields whose names match the default sensitive-key rules are masked by
-the default redaction profile even when they are boolean or summary-only.
+region, and whether a temporary session is present when the credential family supports it. The package now derives these
+fields through explicit credential-summary adapters keyed by `secret_material.type`. Raw secret values are not included
+by the helper and are still masked by the package redaction layer if a caller accidentally includes them in metadata.
 
 ## Dependency Injection And Transactions
 

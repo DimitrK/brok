@@ -5,6 +5,7 @@ import {
   TemplatePathGroupConstraintsSchema
 } from '../../../schemas/dist/index.js';
 
+// Optional verifier for one workload pattern. This is not a generic auth-extension contract.
 const AwsSigV4SecretMaterialSchema = OpenApiIntegrationSecretMaterialWriteSchema.refine(
   (value: OpenApiIntegrationSecretMaterialWrite) => value.type === 'aws_sigv4',
   {

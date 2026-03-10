@@ -272,6 +272,305 @@ describe('control plane repository', () => {
     expect(await repository.listIntegrations({tenantId: tenant.tenant_id})).toHaveLength(1);
   });
 
+  it('rejects incompatible secret type and template runtime auth combinations before persistence', async () => {
+    const repository = await ControlPlaneRepository.create({
+      manifestKeys: {keys: []},
+      enrollmentTokenTtlSeconds: 600
+    });
+
+    const tenant = await repository.createTenant({name: 'Tenant Compatibility'});
+    await repository.createTemplate({
+      payload: {
+        template_id: 'tpl_openai_repo',
+        version: 1,
+        provider: 'openai',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['api.openai.com'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'openai_responses',
+            risk_tier: 'low',
+            approval_mode: 'none',
+            methods: ['POST'],
+            path_patterns: ['^/v1/responses$'],
+            query_allowlist: [],
+            header_forward_allowlist: ['content-type'],
+            body_policy: {max_bytes: 4096, content_types: ['application/json']}
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      }
+    });
+    await repository.createTemplate({
+      payload: {
+        template_id: 'tpl_s3_repo',
+        version: 1,
+        provider: 's3_compatible',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['gateway.storjshare.io'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'backup_list',
+            risk_tier: 'medium',
+            approval_mode: 'required',
+            methods: ['GET'],
+            path_patterns: ['^/$'],
+            query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+            header_forward_allowlist: ['accept'],
+            body_policy: {max_bytes: 0, content_types: []},
+            constraints: {
+              upstream_auth: {
+                type: 'aws_sigv4',
+                service: 's3',
+                region: 'eu-west-1'
+              }
+            }
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      }
+    });
+
+    await expect(
+      repository.createIntegration({
+        tenantId: tenant.tenant_id,
+        payload: {
+          provider: 'aws_s3',
+          name: 'invalid-s3-secret',
+          template_id: 'tpl_s3_repo',
+          secret_material: {type: 'api_key', value: 'sk-test'}
+        },
+        secretKey: Buffer.alloc(32, 1),
+        secretKeyId: 'kid-invalid'
+      })
+    ).rejects.toMatchObject({code: 'integration_secret_runtime_auth_incompatible'});
+
+    await expect(
+      repository.createIntegration({
+        tenantId: tenant.tenant_id,
+        payload: {
+          provider: 'openai',
+          name: 'invalid-openai-secret',
+          template_id: 'tpl_openai_repo',
+          secret_material: {
+            type: 'aws_sigv4',
+            access_key_id: 'AKIA_TEST',
+            secret_access_key: 'secret-test-key',
+            region: 'eu-west-1'
+          }
+        },
+        secretKey: Buffer.alloc(32, 2),
+        secretKeyId: 'kid-invalid-2'
+      })
+    ).rejects.toMatchObject({code: 'integration_secret_runtime_auth_incompatible'});
+  });
+
+  it('rejects template changes that would invalidate the integration secret runtime auth', async () => {
+    const repository = await ControlPlaneRepository.create({
+      manifestKeys: {keys: []},
+      enrollmentTokenTtlSeconds: 600
+    });
+
+    const tenant = await repository.createTenant({name: 'Tenant Update Compatibility'});
+    await repository.createTemplate({
+      payload: {
+        template_id: 'tpl_openai_repo',
+        version: 1,
+        provider: 'openai',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['api.openai.com'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'openai_responses',
+            risk_tier: 'low',
+            approval_mode: 'none',
+            methods: ['POST'],
+            path_patterns: ['^/v1/responses$'],
+            query_allowlist: [],
+            header_forward_allowlist: ['content-type'],
+            body_policy: {max_bytes: 4096, content_types: ['application/json']}
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      }
+    });
+    await repository.createTemplate({
+      payload: {
+        template_id: 'tpl_s3_repo',
+        version: 1,
+        provider: 's3_compatible',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['gateway.storjshare.io'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'backup_list',
+            risk_tier: 'medium',
+            approval_mode: 'required',
+            methods: ['GET'],
+            path_patterns: ['^/$'],
+            query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+            header_forward_allowlist: ['accept'],
+            body_policy: {max_bytes: 0, content_types: []},
+            constraints: {
+              upstream_auth: {
+                type: 'aws_sigv4',
+                service: 's3',
+                region: 'eu-west-1'
+              }
+            }
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      }
+    });
+
+    const integration = await repository.createIntegration({
+      tenantId: tenant.tenant_id,
+      payload: {
+        provider: 'openai',
+        name: 'openai',
+        template_id: 'tpl_openai_repo',
+        secret_material: {type: 'api_key', value: 'sk-secret'}
+      },
+      secretKey: Buffer.alloc(32, 3),
+      secretKeyId: 'kid-openai'
+    });
+
+    await expect(
+      repository.updateIntegration({
+        integrationId: integration.integration_id,
+        templateId: 'tpl_s3_repo'
+      })
+    ).rejects.toMatchObject({code: 'integration_secret_runtime_auth_incompatible'});
+  });
+
+  it('uses the latest in-memory template version for compatibility validation', async () => {
+    const repository = await ControlPlaneRepository.create({
+      manifestKeys: {keys: []},
+      enrollmentTokenTtlSeconds: 600
+    });
+
+    const tenant = await repository.createTenant({name: 'Tenant Latest Template'});
+    await repository.createTemplate({
+      payload: {
+        template_id: 'tpl_versioned_repo',
+        version: 1,
+        provider: 's3_compatible',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['gateway.storjshare.io'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'backup_list',
+            risk_tier: 'medium',
+            approval_mode: 'required',
+            methods: ['GET'],
+            path_patterns: ['^/$'],
+            query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+            header_forward_allowlist: ['accept'],
+            body_policy: {max_bytes: 0, content_types: []},
+            constraints: {
+              upstream_auth: {
+                type: 'aws_sigv4',
+                service: 's3',
+                region: 'eu-west-1'
+              }
+            }
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      }
+    });
+    await repository.createTemplate({
+      payload: {
+        template_id: 'tpl_versioned_repo',
+        version: 2,
+        provider: 's3_compatible',
+        allowed_schemes: ['https'],
+        allowed_ports: [443],
+        allowed_hosts: ['gateway.storjshare.io'],
+        redirect_policy: {mode: 'deny'},
+        path_groups: [
+          {
+            group_id: 'backup_list',
+            risk_tier: 'medium',
+            approval_mode: 'none',
+            methods: ['GET'],
+            path_patterns: ['^/$'],
+            query_allowlist: ['list-type', 'prefix', 'continuation-token'],
+            header_forward_allowlist: ['accept'],
+            body_policy: {max_bytes: 0, content_types: []}
+          }
+        ],
+        network_safety: {
+          deny_private_ip_ranges: true,
+          deny_link_local: true,
+          deny_loopback: true,
+          deny_metadata_ranges: true,
+          dns_resolution_required: true
+        }
+      }
+    });
+
+    await expect(
+      repository.createIntegration({
+        tenantId: tenant.tenant_id,
+        payload: {
+          provider: 'aws_s3',
+          name: 'versioned-template-secret',
+          template_id: 'tpl_versioned_repo',
+          secret_material: {
+            type: 'aws_sigv4',
+            access_key_id: 'AKIA_TEST',
+            secret_access_key: 'secret-test-key',
+            region: 'eu-west-1'
+          }
+        },
+        secretKey: Buffer.alloc(32, 4),
+        secretKeyId: 'kid-versioned'
+      })
+    ).rejects.toMatchObject({code: 'integration_secret_runtime_auth_incompatible'});
+  });
+
   it('rotates enrollment tokens for existing workloads with explicit confirmation semantics', async () => {
     const repository = await ControlPlaneRepository.create({
       manifestKeys: {keys: []},

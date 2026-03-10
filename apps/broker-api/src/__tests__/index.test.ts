@@ -10,7 +10,7 @@ import {
   encryptSecretMaterial
 } from '@broker-interceptor/crypto';
 import type {StructuredLogger} from '@broker-interceptor/logging';
-import {OpenApiManifestSchema} from '@broker-interceptor/schemas';
+import {OpenApiManifestSchema, type SecretMaterial} from '@broker-interceptor/schemas';
 import {calculateJwkThumbprint} from '@broker-interceptor/auth';
 import {exportJWK, generateKeyPair, SignJWT, type JWK} from 'jose';
 import {afterEach, describe, expect, it, vi} from 'vitest';
@@ -93,7 +93,14 @@ const createMockSecretRepository = () => {
     setActiveManifestSigningKey: vi.fn(() => Promise.resolve(undefined)),
     retireManifestSigningKey: vi.fn(() => Promise.resolve(undefined)),
     revokeManifestSigningKey: vi.fn(() => Promise.resolve(undefined)),
-    listManifestVerificationKeysWithEtag: vi.fn(() => Promise.resolve({keys: [], etag: 'test'})),
+    listManifestVerificationKeysWithEtag: vi.fn(() =>
+      Promise.resolve({
+        manifest_keys: {keys: []},
+        etag: 'test',
+        generated_at: new Date().toISOString(),
+        max_age_seconds: 600
+      })
+    ),
     persistManifestKeysetMetadata: vi.fn(() => Promise.resolve(undefined)),
     getCryptoVerificationDefaultsByTenant: vi.fn(() => Promise.resolve(null)),
     upsertCryptoVerificationDefaults: vi.fn(() => Promise.resolve(undefined))
@@ -310,11 +317,13 @@ const buildDpopProof = async ({
   return {jwt, jkt, keyPair: effectiveKeyPair};
 };
 
-const encryptApiKeyEnvelope = async ({
+const encryptSecretEnvelope = async ({
+  secretMaterial,
   secretKey,
   keyId,
   aadContext
 }: {
+  secretMaterial: SecretMaterial;
   secretKey: Buffer;
   keyId: string;
   aadContext: Readonly<Record<string, string>>;
@@ -330,10 +339,7 @@ const encryptApiKeyEnvelope = async ({
   }
 
   const encrypted = await encryptSecretMaterial({
-    secret_material: {
-      type: 'api_key',
-      value: 'provider-secret'
-    },
+    secret_material: secretMaterial,
     key_management_service: kms.value,
     requested_key_id: keyId,
     aad: buildEnvelopeAad(aadContext)
@@ -343,6 +349,26 @@ const encryptApiKeyEnvelope = async ({
   }
 
   return encrypted.value.envelope;
+};
+
+const encryptApiKeyEnvelope = async ({
+  secretKey,
+  keyId,
+  aadContext
+}: {
+  secretKey: Buffer;
+  keyId: string;
+  aadContext: Readonly<Record<string, string>>;
+}) => {
+  return encryptSecretEnvelope({
+    secretMaterial: {
+      type: 'api_key',
+      value: 'provider-secret'
+    },
+    secretKey,
+    keyId,
+    aadContext
+  });
 };
 
 const invokeHandler = async ({
@@ -547,7 +573,8 @@ const createContext = async ({
     manifestTtlSeconds: 600,
     ...(processInfrastructure ? {processInfrastructure} : {}),
     ...(secretKey ? {secretKey} : {}),
-    ...(secretKeyId ? {secretKeyId} : {})
+    ...(secretKeyId ? {secretKeyId} : {}),
+    ...(logger ? {logger} : {})
   });
 
   const auditStore = createInMemoryAuditStore();
@@ -832,6 +859,14 @@ describe('broker-api', () => {
       }
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const firstFetchCall = fetchImpl.mock.calls.at(0) as unknown[] | undefined;
+    const upstreamRequestInit = firstFetchCall?.[1] as RequestInit | undefined;
+    const upstreamHeaders = new Headers(
+      (upstreamRequestInit?.headers ?? {}) as ConstructorParameters<typeof Headers>[0]
+    );
+    expect(upstreamHeaders.get('content-length')).toBe(
+      String(Buffer.byteLength(JSON.stringify({input: 'hello'}), 'utf8'))
+    );
 
     const auditResult = await context.auditService.queryAuditEvents({
       query: {
@@ -1109,6 +1144,201 @@ describe('broker-api', () => {
     expect(executeResponse.status).toBe(200);
     expect(executeResponse.body).toMatchObject({status: 'executed'});
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed instead of downgrading aws_sigv4 secret material to bearer auth when the template has no runtime auth strategy', async () => {
+    const logger = createMockLogger();
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ok: true}), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json'
+          }
+        })
+      )
+    );
+    const secretKey = Buffer.from('yOCF/8/MDF8pKtg/UaGstwJ8w8ncBxQ4xcVeO7yXSC8=', 'base64');
+    const secretKeyId = 'v1';
+    const envelope = await encryptSecretEnvelope({
+      secretMaterial: {
+        type: 'aws_sigv4',
+        access_key_id: 'AKIDEXAMPLE',
+        secret_access_key: 'secret',
+        region: 'eu-west-1'
+      },
+      secretKey,
+      keyId: secretKeyId,
+      aadContext: {
+        tenant_id: 't_1',
+        integration_id: 'i_1',
+        secret_type: 'aws_sigv4'
+      }
+    });
+    const secretRepositoryBase = createMockSecretRepository();
+    const secretRepository = {
+      ...secretRepositoryBase,
+      getActiveSecretEnvelope: vi.fn(() =>
+        Promise.resolve({
+          secret_ref: 'sec_1',
+          tenant_id: 't_1',
+          integration_id: 'i_1',
+          secret_type: 'aws_sigv4',
+          version: 1,
+          envelope: {
+            key_id: envelope.key_id,
+            content_encryption_alg: envelope.content_encryption_alg,
+            key_encryption_alg: envelope.key_encryption_alg,
+            wrapped_data_key_b64: envelope.wrapped_data_key_b64,
+            iv_b64: envelope.iv_b64,
+            ciphertext_b64: envelope.ciphertext_b64,
+            auth_tag_b64: envelope.auth_tag_b64,
+            ...(envelope.aad_b64 ? {aad_b64: envelope.aad_b64} : {})
+          },
+          created_at: new Date().toISOString()
+        })
+      )
+    };
+    const state = {
+      ...createBaseState({includeAllowPolicy: false}),
+      integrations: [
+        {
+          integration_id: 'i_1',
+          tenant_id: 't_1',
+          provider: 'aws_s3',
+          name: 'Backup Integration',
+          template_id: 'tpl_backup_s3',
+          enabled: true
+        }
+      ],
+      templates: [
+        {
+          template_id: 'tpl_backup_s3',
+          version: 1,
+          provider: 'aws_s3',
+          allowed_schemes: ['https'],
+          allowed_ports: [443],
+          allowed_hosts: ['backup-bucket.s3.eu-west-1.amazonaws.com'],
+          redirect_policy: {mode: 'deny'},
+          path_groups: [
+            {
+              group_id: 'bucket_object',
+              risk_tier: 'medium',
+              approval_mode: 'none',
+              methods: ['GET'],
+              path_patterns: ['^/backups/latest\\.json$'],
+              query_allowlist: [],
+              header_forward_allowlist: [],
+              body_policy: {
+                max_bytes: 1024 * 1024,
+                content_types: ['application/octet-stream']
+              },
+              constraints: {}
+            }
+          ],
+          network_safety: {
+            deny_private_ip_ranges: true,
+            deny_link_local: true,
+            deny_loopback: true,
+            deny_metadata_ranges: true,
+            dns_resolution_required: true
+          }
+        }
+      ],
+      policies: [
+        {
+          policy_id: 'pol_allow_s3',
+          rule_type: 'allow' as const,
+          scope: {
+            tenant_id: 't_1',
+            workload_id: 'w_1',
+            integration_id: 'i_1',
+            template_id: 'tpl_backup_s3',
+            template_version: 1,
+            action_group: 'bucket_object',
+            method: 'GET',
+            host: 'backup-bucket.s3.eu-west-1.amazonaws.com',
+            query_keys: []
+          }
+        }
+      ],
+      integration_secret_headers: {
+        i_1: [{name: 'authorization', value: 'Bearer should-not-be-used'}]
+      }
+    };
+
+    const context = await createContext({
+      state,
+      fetchImpl,
+      processInfrastructure: {
+        enabled: true,
+        prisma: {} as never,
+        redis: null,
+        dbRepositories: {
+          integrationRepository: {
+            getById: vi.fn(() =>
+              Promise.resolve({
+                ...state.integrations[0],
+                secret_ref: 'sec_1'
+              })
+            ),
+            getIntegrationTemplateForExecute: vi.fn(() =>
+              Promise.resolve({
+                workload_enabled: true,
+                integration_enabled: true,
+                executable: true,
+                execution_status: 'executable',
+                template: state.templates[0],
+                template_id: 'tpl_backup_s3',
+                template_version: 1
+              })
+            )
+          },
+          secretRepository
+        } as never,
+        redisKeyPrefix: 'broker-api:test',
+        withTransaction: async operation => operation({} as never),
+        close: () => Promise.resolve()
+      },
+      secretKey,
+      secretKeyId,
+      logger
+    });
+
+    const sessionResponse = await context.request({
+      method: 'POST',
+      path: '/v1/session',
+      body: {
+        requested_ttl_seconds: 900,
+        scopes: ['execute']
+      }
+    });
+    const token = (sessionResponse.body as {session_token: string}).session_token;
+
+    const executeResponse = await context.request({
+      method: 'POST',
+      path: '/v1/execute',
+      token,
+      body: {
+        integration_id: 'i_1',
+        request: {
+          method: 'GET',
+          url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/latest.json',
+          headers: []
+        }
+      }
+    });
+
+    expect(executeResponse.status).toBe(400);
+    expect(executeResponse.body).toMatchObject({error: 'runtime_auth_secret_type_incompatible'});
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'repository.runtime_auth.failed',
+        component: 'repository.runtime_auth',
+        reason_code: 'runtime_auth_secret_type_incompatible'
+      })
+    );
   });
 
   it('fails closed when shared secret envelope AAD omits secret_type', async () => {

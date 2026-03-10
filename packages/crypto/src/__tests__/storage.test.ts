@@ -98,7 +98,7 @@ describe('storage integration placeholders', () => {
     for (const result of placeholderResults) {
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.error.code).toBe('invalid_input');
+        expect(result.error.code).toBe('dependency_not_configured');
         expect(result.error.message.includes('_INCOMPLETE')).toBe(true);
       }
     }
@@ -197,7 +197,7 @@ describe('storage integration placeholders', () => {
       transaction_client: transactionClient
     });
     expect(activeKey.ok).toBe(true);
-    if (!activeKey.ok) {
+    if (!activeKey.ok || activeKey.value === null) {
       return;
     }
 
@@ -217,6 +217,109 @@ describe('storage integration placeholders', () => {
     expect(defaults.value.max_clock_skew_seconds).toBe(0);
   });
 
+  it('preserves not-found envelope lookups as successful null results', async () => {
+    const service = createCryptoStorageService_INCOMPLETE({
+      getActiveSecretEnvelope: () => ({
+        ok: true,
+        value: null
+      }),
+      getSecretEnvelopeVersion: () => ({
+        ok: true,
+        value: null
+      }),
+      getActiveManifestSigningKeyRecord: () => ({
+        ok: true,
+        value: null
+      }),
+      listManifestVerificationKeysWithEtag: () => ({
+        ok: true,
+        value: null
+      })
+    });
+
+    const active = await service.getActiveSecretEnvelope_INCOMPLETE({
+      secret_ref: 'secret_1'
+    });
+    expect(active.ok).toBe(true);
+    if (!active.ok) {
+      return;
+    }
+
+    expect(active.value).toBeNull();
+
+    const version = await service.getSecretEnvelopeVersion_INCOMPLETE({
+      secret_ref: 'secret_1',
+      version: 99
+    });
+    expect(version.ok).toBe(true);
+    if (!version.ok) {
+      return;
+    }
+
+    expect(version.value).toBeNull();
+
+    const activeKey = await service.getActiveManifestSigningKeyRecord_INCOMPLETE();
+    expect(activeKey.ok).toBe(true);
+    if (!activeKey.ok) {
+      return;
+    }
+
+    expect(activeKey.value).toBeNull();
+
+    const keyset = await service.listManifestVerificationKeysWithEtag_INCOMPLETE();
+    expect(keyset.ok).toBe(true);
+    if (!keyset.ok) {
+      return;
+    }
+
+    expect(keyset.value).toBeNull();
+  });
+
+  it('fails closed when an injected repository returns an invalid result shape', async () => {
+    const service = createCryptoStorageService_INCOMPLETE({
+      getActiveSecretEnvelope: () =>
+        ({
+          ok: true,
+          value: {
+            secret_ref: 'secret_1'
+          }
+        }) as never,
+      getCryptoVerificationDefaultsByTenant: () =>
+        ({
+          ok: false,
+          error: {
+            code: 'not_a_real_crypto_code',
+            message: 'bad'
+          }
+        }) as never,
+      listManifestVerificationKeysWithEtag: () => {
+        throw new Error('boom');
+      }
+    });
+
+    const active = await service.getActiveSecretEnvelope_INCOMPLETE({
+      secret_ref: 'secret_1'
+    });
+    expect(active.ok).toBe(false);
+    if (!active.ok) {
+      expect(active.error.code).toBe('invalid_repository_response');
+    }
+
+    const defaults = await service.getCryptoVerificationDefaultsByTenant_INCOMPLETE({
+      tenant_id: 'tenant_1'
+    });
+    expect(defaults.ok).toBe(false);
+    if (!defaults.ok) {
+      expect(defaults.error.code).toBe('invalid_repository_response');
+    }
+
+    const listed = await service.listManifestVerificationKeysWithEtag_INCOMPLETE();
+    expect(listed.ok).toBe(false);
+    if (!listed.ok) {
+      expect(listed.error.code).toBe('invalid_repository_response');
+    }
+  });
+
   it('fails closed from factory when repositories are not provided', async () => {
     const service = createCryptoStorageService_INCOMPLETE({});
     const listed = await service.listManifestVerificationKeysWithEtag_INCOMPLETE();
@@ -226,7 +329,7 @@ describe('storage integration placeholders', () => {
       return;
     }
 
-    expect(listed.error.code).toBe('invalid_input');
+    expect(listed.error.code).toBe('dependency_not_configured');
     expect(listed.error.message.includes('_INCOMPLETE')).toBe(true);
 
     const defaults = await service.getCryptoVerificationDefaultsByTenant_INCOMPLETE({
@@ -234,7 +337,7 @@ describe('storage integration placeholders', () => {
     });
     expect(defaults.ok).toBe(false);
     if (!defaults.ok) {
-      expect(defaults.error.code).toBe('invalid_input');
+      expect(defaults.error.code).toBe('dependency_not_configured');
       expect(defaults.error.message.includes('_INCOMPLETE')).toBe(true);
     }
   });

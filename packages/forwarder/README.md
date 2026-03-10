@@ -109,14 +109,26 @@ await bridge.createForwarderIdempotencyRecord_INCOMPLETE(payload, {transactionCl
 - Rejects streaming request/response modes in MVP.
 - Buffers responses with max-size limits and allowlisted response headers only.
 - Preserves the execute request URL string exactly as received from upstream policy/canonicalization layers.
-- Dispatches validated request headers to `fetch` as raw header tuples instead of rebuilding them through `Headers`, which reduces signature-shape drift for SigV4-signed S3-compatible requests.
+- Dispatches validated request headers through the built-in Node HTTP transport as raw header pairs.
 
-## SigV4 Compatibility Notes
+## Request Shape Fidelity Contract
 
-- Forwarder does not sign requests. SigV4 signing remains an upstream responsibility outside this package.
-- Forwarder preserves SigV4-critical query ordering by forwarding the validated request URL string unchanged.
-- Injected signing headers such as `authorization`, `x-amz-date`, `x-amz-content-sha256`, and `x-amz-security-token` are forwarded after validation and override conflicting client-provided values.
-- `host` is still not forwarded from the client because the upstream URL remains the source of truth; the HTTP client derives the final `Host` header from the target URL.
+- Header tuple preservation is a supported forwarder contract for strategy-based upstream auth, not an incidental S3-specific behavior.
+- Duplicate allowlisted request headers are preserved in order when forwarded upstream.
+- Duplicate injected headers are also preserved in order, while still overriding conflicting client-provided headers of the same name.
+- The execute request URL string, including query ordering and encoding, is forwarded unchanged after upstream policy/canonicalization has validated it.
+- Client-provided `host` is never forwarded; the upstream URL remains the source of truth for final host derivation.
+- The built-in dispatch path never reconstructs outbound headers through `Headers`, which avoids duplicate-header coalescing before the request reaches Node's HTTP client.
+- The built-in dispatch path explicitly sets the final `host` header from the target URL before sending raw header pairs.
+- Validated `Content-Length` is re-applied from framing metadata, including explicit zero-length bodies; `Transfer-Encoding` is rejected in the built-in buffering path.
+- Proxy-safety controls still apply first: hop-by-hop headers are stripped, broker/internal auth headers are denied, and injected headers are validated before dispatch.
+
+## Strategy-Based Auth Notes
+
+- Forwarder does not sign requests. Runtime auth translation remains an upstream responsibility outside this package.
+- Injected auth headers such as `authorization`, `x-amz-date`, `x-amz-content-sha256`, and `x-amz-security-token` are forwarded after validation and override conflicting client-provided values.
+- `host` is still not forwarded from the client; the forwarder derives the final `Host` header from the target URL on the built-in transport path.
+- `fetchImpl` remains an explicit custom test/integration seam. The request-shape guarantees above apply to the built-in Node transport path.
 
 ## Source of Truth
 

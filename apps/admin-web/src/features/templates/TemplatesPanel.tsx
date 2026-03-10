@@ -30,12 +30,15 @@ import {
 } from './templateVersioning';
 import {parseTemplateDiffSummaryLine} from './templateDiffPresentation';
 import {
+  createEmptyTemplateUpstreamAuthDraft,
   buildTemplatePathGroupConstraints,
-  resolveTemplateUpstreamAuthMode,
-  resolveTemplateUpstreamAuthRegion,
+  getTemplateUpstreamAuthAdapter,
+  resolveTemplateUpstreamAuthDraft,
   s3ListObjectsPathGroupPreset,
+  templateUpstreamAuthOptions,
+  type TemplateUpstreamAuthDraft,
   type TemplateUpstreamAuthMode
-} from './templateS3Auth';
+} from './templateUpstreamAuth';
 import {TEMPLATE_DRAFT_STORAGE_KEY, type TemplateDraft} from './templateDraftRoute';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -58,9 +61,7 @@ type PathGroupDraft = {
   headerForwardAllowlist: string;
   maxBodyBytes: string;
   contentTypes: string;
-  upstreamAuthMode: TemplateUpstreamAuthMode;
-  upstreamAuthRegion: string;
-};
+} & TemplateUpstreamAuthDraft;
 
 let pathGroupDraftCounter = 0;
 const nextPathGroupDraftId = () => {
@@ -79,8 +80,8 @@ const createPathGroupDraft = (input: Partial<Omit<PathGroupDraft, 'draftId'>> = 
   headerForwardAllowlist: input.headerForwardAllowlist ?? 'content-type,accept',
   maxBodyBytes: input.maxBodyBytes ?? '262144',
   contentTypes: input.contentTypes ?? 'application/json',
-  upstreamAuthMode: input.upstreamAuthMode ?? 'none',
-  upstreamAuthRegion: input.upstreamAuthRegion ?? ''
+  ...createEmptyTemplateUpstreamAuthDraft(input.upstreamAuthMode ?? 'none'),
+  ...input
 });
 
 const defaultTemplateName = 'OpenAI Core';
@@ -378,8 +379,7 @@ export const TemplatesPanel = ({api, initialTemplateDraft}: TemplatesPanelProps)
           headerForwardAllowlist: pathGroup.header_forward_allowlist.join(', '),
           maxBodyBytes: String(pathGroup.body_policy.max_bytes),
           contentTypes: pathGroup.body_policy.content_types.join(', '),
-          upstreamAuthMode: resolveTemplateUpstreamAuthMode(pathGroup),
-          upstreamAuthRegion: resolveTemplateUpstreamAuthRegion(pathGroup)
+          ...resolveTemplateUpstreamAuthDraft(pathGroup)
         })
       )
     );
@@ -612,8 +612,11 @@ export const TemplatesPanel = ({api, initialTemplateDraft}: TemplatesPanelProps)
           </div>
           <div className="stack-form">
             <h3>Path groups</h3>
-            {pathGroups.map((pathGroup, index) => (
-              <article key={pathGroup.draftId} className="editor-card">
+            {pathGroups.map((pathGroup, index) => {
+              const upstreamAuthAdapter = getTemplateUpstreamAuthAdapter(pathGroup.upstreamAuthMode);
+
+              return (
+                <article key={pathGroup.draftId} className="editor-card">
                 <header className="editor-card-header">
                   <h4>Path group {index + 1}</h4>
                   <button
@@ -791,28 +794,35 @@ export const TemplatesPanel = ({api, initialTemplateDraft}: TemplatesPanelProps)
                         }));
                       }}
                     >
-                      <option value="none">none</option>
-                      <option value="aws_sigv4">aws_sigv4 (S3)</option>
+                      {templateUpstreamAuthOptions.map(option => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
 
-                  <label className="field">
-                    <span>SigV4 region override</span>
-                    <input
-                      value={pathGroup.upstreamAuthRegion}
-                      onChange={event => {
-                        const nextUpstreamAuthRegion = event.currentTarget.value;
-                        updatePathGroup(pathGroup.draftId, current => ({
-                          ...current,
-                          upstreamAuthRegion: nextUpstreamAuthRegion
-                        }));
-                      }}
-                      placeholder="eu-west-1"
-                    />
-                  </label>
+                  {upstreamAuthAdapter?.fields.map(field => (
+                    <label key={field.key} className="field">
+                      <span>{field.label}</span>
+                      <input
+                        value={pathGroup[field.key]}
+                        onChange={event => {
+                          const nextValue = event.currentTarget.value;
+                          updatePathGroup(pathGroup.draftId, current => ({
+                            ...current,
+                            [field.key]: nextValue
+                          }));
+                        }}
+                        placeholder={field.placeholder}
+                      />
+                    </label>
+                  ))}
                 </div>
-              </article>
-            ))}
+                {upstreamAuthAdapter?.helpText ? <p className="helper-text">{upstreamAuthAdapter.helpText}</p> : null}
+                </article>
+              );
+            })}
 
             <div className="row-actions">
               <button

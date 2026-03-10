@@ -26,6 +26,8 @@ const createTemplate = () =>
           'accept',
           'x-client-id',
           'authorization',
+          'x-auth-fragment',
+          'x-trace-id',
           'x-amz-content-sha256',
           'x-amz-date',
           'x-amz-security-token'
@@ -149,6 +151,9 @@ describe('forwardExecuteRequest', () => {
       const upstreamHeaders = new Headers(init?.headers);
       expect(upstreamHeaders.get('authorization')).toBe('Bearer provider-secret');
       expect(upstreamHeaders.get('x-client-id')).toBe('workload_1');
+      expect(upstreamHeaders.get('content-length')).toBe(
+        String(Buffer.from(JSON.stringify({message: 'hello'})).byteLength)
+      );
       expect(upstreamHeaders.get('connection')).toBeNull();
 
       return Promise.resolve(new Response(JSON.stringify({ok: true}), {
@@ -189,7 +194,7 @@ describe('forwardExecuteRequest', () => {
     expect(Buffer.from(result.value.upstream.body_base64, 'base64').toString('utf8')).toContain('"ok":true');
   });
 
-  it('preserves SigV4-signed URL query order and forwards signing headers as raw tuples', async () => {
+  it('passes SigV4-signed URL query order and signing headers to the transport seam', async () => {
     const signedUrl =
       'https://api.example.com/v1/messages?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20260301%2Feu-west-1%2Fs3%2Faws4_request&X-Amz-Date=20260301T101112Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host%3Bx-amz-content-sha256%3Bx-amz-date%3Bx-amz-security-token&list-type=2&prefix=backups%2Ftenant-a%2F&continuation-token=opaque-token';
     const request = createExecuteRequest();
@@ -282,6 +287,90 @@ describe('forwardExecuteRequest', () => {
               'AWS4-HMAC-SHA256 Credential=AKIA/.../s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef'
           },
           {name: 'X-Amz-Date', value: '20260301T101112Z'}
+        ]
+      },
+      fetchImpl: fetchSpy
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('builds duplicate request headers and strips host before transport dispatch', async () => {
+    const request = createExecuteRequest();
+    request.request.method = 'GET';
+    request.request.headers = [
+      {name: 'X-Trace-Id', value: 'trace-1'},
+      {name: 'X-Trace-Id', value: 'trace-2'},
+      {name: 'Host', value: 'evil.example'},
+      {name: 'Accept', value: 'application/json'}
+    ];
+    delete request.request.body_base64;
+
+    const fetchSpy = vi.fn((_input: unknown, init?: RequestInit) => {
+      expect(init?.headers).toEqual([
+        ['x-trace-id', 'trace-1'],
+        ['x-trace-id', 'trace-2'],
+        ['accept', 'application/json'],
+        ['authorization', 'Bearer provider-secret']
+      ]);
+
+      return Promise.resolve(new Response(JSON.stringify({ok: true}), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json'
+        }
+      }));
+    });
+
+    const result = await forwardExecuteRequest({
+      input: {
+        execute_request: request,
+        template: createTemplate(),
+        matched_path_group_id: 'group_a',
+        injected_headers: [{name: 'Authorization', value: 'Bearer provider-secret'}]
+      },
+      fetchImpl: fetchSpy
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes duplicate injected headers to the transport seam', async () => {
+    const request = createExecuteRequest();
+    request.request.method = 'GET';
+    request.request.headers = [
+      {name: 'Accept', value: 'application/json'},
+      {name: 'X-Auth-Fragment', value: 'stale-client-fragment'}
+    ];
+    delete request.request.body_base64;
+
+    const fetchSpy = vi.fn((_input: unknown, init?: RequestInit) => {
+      expect(init?.headers).toEqual([
+        ['accept', 'application/json'],
+        ['authorization', 'Bearer provider-secret'],
+        ['x-auth-fragment', 'fragment-a'],
+        ['x-auth-fragment', 'fragment-b']
+      ]);
+
+      return Promise.resolve(new Response(JSON.stringify({ok: true}), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json'
+        }
+      }));
+    });
+
+    const result = await forwardExecuteRequest({
+      input: {
+        execute_request: request,
+        template: createTemplate(),
+        matched_path_group_id: 'group_a',
+        injected_headers: [
+          {name: 'Authorization', value: 'Bearer provider-secret'},
+          {name: 'X-Auth-Fragment', value: 'fragment-a'},
+          {name: 'X-Auth-Fragment', value: 'fragment-b'}
         ]
       },
       fetchImpl: fetchSpy
@@ -450,6 +539,85 @@ describe('forwardExecuteRequest', () => {
     }
 
     expect(result.error.code).toBe('request_body_base64_invalid');
+  });
+
+  it('fails closed when a buffered request body lacks Content-Length', async () => {
+    const request = createExecuteRequest();
+    request.request.headers = request.request.headers.filter(
+      header => header.name.toLowerCase() !== 'content-length'
+    );
+
+    const result = await forwardExecuteRequest({
+      input: {
+        execute_request: request,
+        template: createTemplate(),
+        matched_path_group_id: 'group_a'
+      },
+      fetchImpl: vi.fn()
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+
+    expect(result.error.code).toBe('request_content_length_required');
+  });
+
+  it('preserves explicit Content-Length zero for bodyless requests', async () => {
+    const request = createExecuteRequest();
+    delete request.request.body_base64;
+    request.request.headers = [
+      {name: 'Accept', value: 'application/json'},
+      {name: 'Content-Length', value: '0'}
+    ];
+
+    const fetchSpy = vi.fn((_input: unknown, init?: RequestInit) => {
+      const upstreamHeaders = new Headers(init?.headers);
+      expect(upstreamHeaders.get('content-length')).toBe('0');
+
+      return Promise.resolve(new Response(JSON.stringify({ok: true}), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json'
+        }
+      }));
+    });
+
+    const result = await forwardExecuteRequest({
+      input: {
+        execute_request: request,
+        template: createTemplate(),
+        matched_path_group_id: 'group_a'
+      },
+      fetchImpl: fetchSpy
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when Transfer-Encoding is present for a buffered request body', async () => {
+    const request = createExecuteRequest();
+    request.request.headers = request.request.headers
+      .filter(header => header.name.toLowerCase() !== 'content-length')
+      .concat({name: 'Transfer-Encoding', value: 'chunked'});
+
+    const result = await forwardExecuteRequest({
+      input: {
+        execute_request: request,
+        template: createTemplate(),
+        matched_path_group_id: 'group_a'
+      },
+      fetchImpl: vi.fn()
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+
+    expect(result.error.code).toBe('request_transfer_encoding_not_supported');
   });
 
   it('rejects forbidden injected upstream headers', async () => {

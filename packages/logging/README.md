@@ -24,6 +24,15 @@ All extra details are emitted under `metadata`.
 `sanitizeForLog` redacts values for keys that match sensitive families (case-insensitive), including:
 - `access_key_id`, `token`, `secret`, `authorization`, `cookie`, `dpop`, `private_key`, `ciphertext`, `auth_tag`, and request/response body keys.
 
+Named default families are exported via `DEFAULT_REDACTION_KEY_FAMILIES`:
+- `credential_fields`
+- `token_fields`
+- `auth_transport`
+- `encrypted_material`
+- `request_payloads`
+
+Future credential types should extend the named family map in [redaction.ts](/Users/dimitriskyriazopoulos/Development/brok/packages/logging/src/redaction.ts) instead of appending anonymous matchers.
+
 ## Exports
 
 - `LogLevelSchema`, `LogLevel`
@@ -34,6 +43,8 @@ All extra details are emitted under `metadata`.
 - `runWithLogContext(context, fn)`
 - `getLogContext()`
 - `setLogContextFields(partial)`
+- `DEFAULT_REDACTION_KEY_FAMILIES`
+- `flattenRedactionKeyFamilies(families)`
 - `sanitizeForLog(value)`
 
 ## Usage

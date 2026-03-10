@@ -4,7 +4,9 @@ import {
   OpenApiIntegrationSecretMaterialWriteSchema,
   SecretMaterialTypeSchema,
   SecretMaterialSchema,
-  TemplatePathGroupConstraintsSchema
+  TemplatePathGroupConstraintsSchema,
+  UpstreamAuthStrategySchema,
+  UpstreamAuthTypeSchema
 } from '../index';
 
 describe('@broker-interceptor/schemas secret material contracts', () => {
@@ -62,15 +64,22 @@ describe('@broker-interceptor/schemas secret material contracts', () => {
 });
 
 describe('@broker-interceptor/schemas template constraints', () => {
+  it('exports upstream auth discriminator types for downstream strategy selection', () => {
+    expect(UpstreamAuthTypeSchema.parse('aws_sigv4')).toBe('aws_sigv4');
+    expect(UpstreamAuthTypeSchema.safeParse('unsupported').success).toBe(false);
+  });
+
   it('accepts aws_sigv4 s3 upstream auth constraints with optional region override', () => {
+    const upstreamAuth = {
+      type: 'aws_sigv4',
+      service: 's3',
+      region: 'us-east-1'
+    };
     const payload = {
-      upstream_auth: {
-        type: 'aws_sigv4',
-        service: 's3',
-        region: 'us-east-1'
-      }
+      upstream_auth: upstreamAuth
     };
 
+    expect(UpstreamAuthStrategySchema.parse(upstreamAuth)).toEqual(upstreamAuth);
     expect(TemplatePathGroupConstraintsSchema.parse(payload)).toEqual(payload);
   });
 

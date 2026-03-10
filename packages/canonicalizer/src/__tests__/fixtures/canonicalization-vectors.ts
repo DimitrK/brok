@@ -112,3 +112,72 @@ export const buildS3Template = (): Template => ({
     dns_resolution_required: true
   }
 });
+
+export const buildAuthSensitiveTemplate = (): Template => ({
+  template_id: 'tpl_signed_auth_v1',
+  version: 1,
+  provider: 'signed_example',
+  description: 'Auth-sensitive canonicalization template',
+  allowed_schemes: ['https'],
+  allowed_ports: [443],
+  allowed_hosts: ['signed.example.com'],
+  redirect_policy: {
+    mode: 'deny'
+  },
+  path_groups: [
+    {
+      group_id: 'signed_query',
+      risk_tier: 'high',
+      approval_mode: 'required',
+      methods: ['GET'],
+      path_patterns: ['^/signed$'],
+      query_allowlist: [
+        'X-Amz-Algorithm',
+        'X-Amz-Credential',
+        'X-Amz-Date',
+        'X-Amz-Expires',
+        'X-Amz-SignedHeaders',
+        'X-Amz-Signature',
+        'X-Amz-Security-Token'
+      ],
+      header_forward_allowlist: ['host', 'x-amz-date', 'x-amz-security-token'],
+      body_policy: {
+        max_bytes: 0,
+        content_types: []
+      },
+      constraints: {
+        allow_duplicate_query_keys: false,
+        upstream_auth: {
+          type: 'aws_sigv4',
+          service: 's3'
+        }
+      }
+    },
+    {
+      group_id: 'signed_body',
+      risk_tier: 'high',
+      approval_mode: 'required',
+      methods: ['POST'],
+      path_patterns: ['^/signed-body$'],
+      query_allowlist: [],
+      header_forward_allowlist: ['content-type', 'x-amz-content-sha256', 'x-amz-date'],
+      body_policy: {
+        max_bytes: 1_024,
+        content_types: ['application/json']
+      },
+      constraints: {
+        upstream_auth: {
+          type: 'aws_sigv4',
+          service: 's3'
+        }
+      }
+    }
+  ],
+  network_safety: {
+    deny_private_ip_ranges: true,
+    deny_link_local: true,
+    deny_loopback: true,
+    deny_metadata_ranges: true,
+    dns_resolution_required: true
+  }
+});

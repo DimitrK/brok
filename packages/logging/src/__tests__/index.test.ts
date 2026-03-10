@@ -1,8 +1,10 @@
 import {describe, expect, it} from 'vitest';
 
 import {
+  DEFAULT_REDACTION_KEY_FAMILIES,
   createNoopLogger,
   createStructuredLogger,
+  flattenRedactionKeyFamilies,
   getLogContext,
   runWithLogContext,
   sanitizeForLog,
@@ -95,6 +97,41 @@ describe('@broker-interceptor/logging', () => {
     expect(diagnostics.AWSAccessKeyId).toBe('[REDACTED]');
     expect(diagnostics.SessionToken).toBe('[REDACTED]');
     expect(diagnostics.region).toBe('eu-central-1');
+  });
+
+  it('publishes reusable redaction families for credential-safe defaults', () => {
+    expect(DEFAULT_REDACTION_KEY_FAMILIES.credential_fields).toContain('access_key_id');
+    expect(DEFAULT_REDACTION_KEY_FAMILIES.token_fields).toContain('token');
+    expect(DEFAULT_REDACTION_KEY_FAMILIES.request_payloads).toContain('body');
+
+    const flattened = flattenRedactionKeyFamilies({
+      future_credentials: [' Access-Key-Id ', 'client_secret', 'Session-Token', '', 'session_token']
+    });
+
+    expect(flattened).toContain('accesskeyid');
+    expect(flattened).toContain('client_secret');
+    expect(flattened).toContain('sessiontoken');
+    expect(flattened).toContain('session_token');
+    expect(new Set(flattened).size).toBe(flattened.length);
+  });
+
+  it('redacts credential family aliases with mixed casing', () => {
+    const sanitized = sanitizeForLog({
+      value: {
+        runtime_auth: {
+          accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+          sessionToken: 'temporary-session-token',
+          client_secret: 'client-secret',
+          region: 'eu-central-1'
+        }
+      }
+    }) as Record<string, unknown>;
+
+    const runtimeAuth = sanitized.runtime_auth as Record<string, unknown>;
+    expect(runtimeAuth.accessKeyId).toBe('[REDACTED]');
+    expect(runtimeAuth.sessionToken).toBe('[REDACTED]');
+    expect(runtimeAuth.client_secret).toBe('[REDACTED]');
+    expect(runtimeAuth.region).toBe('eu-central-1');
   });
 
   it('isolates async context across concurrent requests', async () => {

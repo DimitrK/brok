@@ -240,6 +240,26 @@ describe('BrokerAdminApiClient', () => {
     expect(options?.method).toBe('POST');
   });
 
+  it('reads workload enrollment policy', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      jsonResponse(200, {
+        client_cert_ttl_seconds_max: 31536000
+      })
+    );
+
+    const api = new BrokerAdminApiClient({
+      baseUrl,
+      getToken: () => 'owner-token'
+    });
+
+    const response = await api.getWorkloadEnrollmentPolicy();
+
+    expect(response?.client_cert_ttl_seconds_max).toBe(31536000);
+    expect(toRequestUrl(fetchSpy.mock.calls[0]?.[0])).toContain('/v1/workloads/enrollment-policy');
+    const [, options] = fetchSpy.mock.calls[0] ?? [];
+    expect(options?.method).toBe('GET');
+  });
+
   it('approves and denies admin access requests', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')

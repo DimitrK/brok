@@ -19,22 +19,7 @@
       ]
     },
     "upstream_auth": {
-      "type": "object",
-      "required": ["type", "service"],
-      "properties": {
-        "type": {
-          "const": "aws_sigv4"
-        },
-        "service": {
-          "const": "s3"
-        },
-        "region": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 64
-        }
-      },
-      "additionalProperties": false
+      "$ref": "./upstream-auth-strategy.schema.json"
     }
   },
   "additionalProperties": false

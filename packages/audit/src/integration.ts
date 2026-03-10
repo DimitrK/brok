@@ -13,6 +13,7 @@ import {
 import {z} from 'zod'
 
 import {type AuditAppendEventResult} from './contracts'
+import {summarizeCredentialMaterial} from './credentialSummary'
 import {err, type AuditResult} from './errors'
 
 export const IntegrationLifecycleAuditActionSchema = z.enum([
@@ -76,38 +77,13 @@ const buildActorMetadata = (
   actor_roles: input.actor_roles ?? null
 })
 
-const summarizeSecretMaterial = (
-  secretMaterial: OpenApiIntegrationSecretMaterialWrite
-): Record<string, unknown> => {
-  switch (secretMaterial.type) {
-    case 'api_key':
-      return {
-        credential_type: 'api_key'
-      }
-    case 'oauth_refresh_token':
-      return {
-        credential_type: 'oauth_refresh_token'
-      }
-    case 'aws_sigv4':
-      return {
-        credential_type: 'aws_sigv4',
-        credential_region: secretMaterial.region,
-        credential_has_session_token: secretMaterial.session_token !== undefined
-      }
-    default:
-      return {
-        credential_type: 'unknown'
-      }
-  }
-}
-
 const buildCreatedMetadata = (
   integrationWrite: OpenApiIntegrationWrite
 ): Record<string, unknown> => ({
   provider: integrationWrite.provider,
   integration_name: integrationWrite.name,
   template_id: integrationWrite.template_id,
-  ...summarizeSecretMaterial(integrationWrite.secret_material)
+  ...summarizeCredentialMaterial(integrationWrite.secret_material)
 })
 
 const buildUpdatedMetadata = ({
@@ -128,7 +104,7 @@ const buildUpdatedMetadata = ({
   next_template_id: update.template_id ?? integration.template_id,
   enabled_changed: update.enabled !== undefined,
   next_enabled: update.enabled ?? integration.enabled,
-  ...(secret_material ? summarizeSecretMaterial(secret_material) : {})
+  ...(secret_material ? summarizeCredentialMaterial(secret_material) : {})
 })
 
 const buildDeletedMetadata = ({
@@ -144,7 +120,7 @@ const buildDeletedMetadata = ({
   template_id: integration.template_id,
   credential_ref_present: integration.secret_ref !== null && integration.secret_ref !== undefined,
   credential_version: integration.secret_version ?? null,
-  ...(secret_material ? summarizeSecretMaterial(secret_material) : {})
+  ...(secret_material ? summarizeCredentialMaterial(secret_material) : {})
 })
 
 const buildIntegrationLifecycleAuditEvent = ({

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://broker.example/schemas/upstream-auth-strategy.schema.json",
+  "title": "UpstreamAuthStrategy",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type", "service"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["aws_sigv4"]
+        },
+        "service": {
+          "const": "s3"
+        },
+        "region": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

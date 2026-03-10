@@ -9,6 +9,7 @@ import {MobileEntityList} from '../../components/MobileEntityList';
 import {Panel} from '../../components/Panel';
 import {ToggleSwitch} from '../../components/ToggleSwitch';
 import {useAdminStore} from '../../store/adminStore';
+import {formatWorkloadCertificateTtlSeconds, parseWorkloadCertificateTtlInput} from './workloadCertificateTtl';
 
 const toIpAllowlist = (raw: string) => {
   const entries = raw
@@ -26,6 +27,8 @@ type WorkloadsPanelProps = {
 };
 
 export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
+  const apiBaseUrl = useAdminStore(state => state.apiBaseUrl);
+  const authToken = useAdminStore(state => state.authToken);
   const selectedTenantId = useAdminStore(state => state.selectedTenantId);
   const queryClient = useQueryClient();
 
@@ -39,7 +42,35 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
   const [enrollmentTokenExpiresAt, setEnrollmentTokenExpiresAt] = useState('');
   const [enrollmentTokenRotationRequiresConfirmation, setEnrollmentTokenRotationRequiresConfirmation] = useState(false);
   const [csrPem, setCsrPem] = useState('');
-  const [requestedTtlSeconds, setRequestedTtlSeconds] = useState('3600');
+  const [requestedTtlInput, setRequestedTtlInput] = useState('1h');
+  const workloadEnrollmentPolicyQuery = useQuery({
+    queryKey: ['workload-enrollment-policy', apiBaseUrl, authToken],
+    enabled: Boolean(authToken),
+    queryFn: ({signal}) => api.getWorkloadEnrollmentPolicy(signal)
+  });
+  const requestedTtlParseResult = useMemo(
+    () => parseWorkloadCertificateTtlInput(requestedTtlInput),
+    [requestedTtlInput]
+  );
+  const requestedTtlLimitParseResult = useMemo(() => {
+    const maxSeconds = workloadEnrollmentPolicyQuery.data?.client_cert_ttl_seconds_max;
+    if (!maxSeconds) {
+      return undefined;
+    }
+
+    return parseWorkloadCertificateTtlInput(requestedTtlInput, {maxSeconds});
+  }, [requestedTtlInput, workloadEnrollmentPolicyQuery.data?.client_cert_ttl_seconds_max]);
+  const requestedTtlValidationMessage = useMemo(() => {
+    if (requestedTtlLimitParseResult && !requestedTtlLimitParseResult.success) {
+      return requestedTtlLimitParseResult.message;
+    }
+
+    if (!requestedTtlParseResult.success) {
+      return requestedTtlParseResult.message;
+    }
+
+    return undefined;
+  }, [requestedTtlLimitParseResult, requestedTtlParseResult]);
 
   const workloadsQuery = useQuery({
     queryKey: ['workloads', selectedTenantId],
@@ -94,15 +125,26 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
   });
 
   const enrollMutation = useMutation({
-    mutationFn: () =>
-      api.enrollWorkload({
+    mutationFn: () => {
+      const maxSeconds = workloadEnrollmentPolicyQuery.data?.client_cert_ttl_seconds_max;
+      if (!maxSeconds) {
+        throw new Error('Workload enrollment policy is unavailable. Retry once the policy loads.');
+      }
+
+      const parsedTtl = parseWorkloadCertificateTtlInput(requestedTtlInput, {maxSeconds});
+      if (!parsedTtl.success) {
+        throw new Error(parsedTtl.message);
+      }
+
+      return api.enrollWorkload({
         workloadId: enrollWorkloadId,
         payload: {
           enrollment_token: enrollmentToken,
           csr_pem: csrPem,
-          requested_ttl_seconds: Number.parseInt(requestedTtlSeconds, 10)
+          requested_ttl_seconds: parsedTtl.seconds
         }
-      })
+      });
+    }
   });
 
   const issueEnrollmentTokenMutation = useMutation({
@@ -455,13 +497,29 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
         ) : null}
 
         <label className="field">
-          <span>Requested TTL seconds</span>
+          <span>Requested certificate TTL</span>
           <input
-            value={requestedTtlSeconds}
-            onChange={event => setRequestedTtlSeconds(event.currentTarget.value)}
-            inputMode="numeric"
+            value={requestedTtlInput}
+            onChange={event => setRequestedTtlInput(event.currentTarget.value)}
+            placeholder="1h"
           />
         </label>
+        <p className="helper-text">Examples: `1d`, `5h`, `1 month`, `1mo`, or `900` for seconds.</p>
+        {workloadEnrollmentPolicyQuery.isPending ? <p className="helper-text">Loading workload enrollment policy…</p> : null}
+        {workloadEnrollmentPolicyQuery.data ? (
+          <p className="helper-text">
+            Maximum allowed TTL:{' '}
+            {formatWorkloadCertificateTtlSeconds(workloadEnrollmentPolicyQuery.data.client_cert_ttl_seconds_max)}.
+          </p>
+        ) : null}
+        {requestedTtlInput.trim() && requestedTtlParseResult.success ? (
+          <p className="helper-text">
+            Resolved TTL: {requestedTtlParseResult.seconds} seconds ({requestedTtlParseResult.displayLabel}).
+          </p>
+        ) : null}
+        {requestedTtlInput.trim() && requestedTtlValidationMessage ? (
+          <p className="error-notice">{requestedTtlValidationMessage}</p>
+        ) : null}
 
         <label className="field">
           <span>CSR PEM</span>
@@ -475,13 +533,21 @@ export const WorkloadsPanel = ({api}: WorkloadsPanelProps) => {
 
         <button
           type="submit"
-          disabled={enrollMutation.isPending || issueEnrollmentTokenMutation.isPending || !enrollmentToken}
+          disabled={
+            enrollMutation.isPending ||
+            issueEnrollmentTokenMutation.isPending ||
+            !enrollmentToken ||
+            !requestedTtlParseResult.success ||
+            workloadEnrollmentPolicyQuery.isPending ||
+            !workloadEnrollmentPolicyQuery.data ||
+            Boolean(requestedTtlLimitParseResult && !requestedTtlLimitParseResult.success)
+          }
         >
           Submit CSR
         </button>
       </form>
 
-      <ErrorNotice error={issueEnrollmentTokenError ?? enrollMutation.error} />
+      <ErrorNotice error={workloadsQuery.error ?? workloadEnrollmentPolicyQuery.error ?? issueEnrollmentTokenError ?? enrollMutation.error} />
       {enrollMutation.data ? (
         <div className="enrollment-result">
           <h4>Enrollment Successful</h4>

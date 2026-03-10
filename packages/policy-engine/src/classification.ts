@@ -1,5 +1,7 @@
 import {
   CanonicalRequestDescriptorSchema,
+  MatchedTemplateConfigSchema,
+  type MatchedTemplateConfig,
   type Template
 } from '@broker-interceptor/schemas'
 
@@ -22,9 +24,7 @@ type CompiledPathPattern = {
 }
 
 type CompiledPathGroup = {
-  group_id: string
-  risk_tier: 'low' | 'medium' | 'high'
-  approval_mode: 'none' | 'required'
+  matched_template_config: MatchedTemplateConfig
   methods: Set<CanonicalMethod>
   patterns: CompiledPathPattern[]
 }
@@ -113,11 +113,21 @@ const compilePathGroups = (template: Template): CompiledPathGroupsResult => {
       compiledPatterns.push(compiledPattern)
     }
 
-    compiledGroups.push({
-      group_id: pathGroup.group_id,
+    const matchedTemplateConfig = MatchedTemplateConfigSchema.parse({
+      path_group_id: pathGroup.group_id,
       risk_tier: pathGroup.risk_tier,
       approval_mode: pathGroup.approval_mode,
-      methods: new Set(pathGroup.methods.map(parseCanonicalMethod)),
+      methods: pathGroup.methods,
+      path_patterns: pathGroup.path_patterns,
+      query_allowlist: pathGroup.query_allowlist,
+      header_forward_allowlist: pathGroup.header_forward_allowlist,
+      body_policy: pathGroup.body_policy,
+      ...(pathGroup.constraints ? {constraints: pathGroup.constraints} : {})
+    })
+
+    compiledGroups.push({
+      matched_template_config: matchedTemplateConfig,
+      methods: new Set(matchedTemplateConfig.methods.map(parseCanonicalMethod)),
       patterns: compiledPatterns
     })
   }
@@ -159,9 +169,8 @@ export const classifyPathGroup = (rawInput: ClassifyPathGroupInput): PathGroupCl
         return PathGroupClassificationResultSchema.parse({
           matched: true,
           path_group: {
-            group_id: compiledGroup.group_id,
-            risk_tier: compiledGroup.risk_tier,
-            approval_mode: compiledGroup.approval_mode,
+            ...compiledGroup.matched_template_config,
+            group_id: compiledGroup.matched_template_config.path_group_id,
             matched_pattern: compiledPattern.source
           }
         })
@@ -194,7 +203,7 @@ export const buildCanonicalDescriptorWithPathGroup = (
 
   const descriptor = CanonicalRequestDescriptorSchema.parse({
     ...input.descriptor,
-    matched_path_group_id: classification.path_group.group_id
+    matched_path_group_id: classification.path_group.path_group_id
   })
 
   return BuildCanonicalDescriptorResultSchema.parse({

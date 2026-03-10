@@ -1,8 +1,9 @@
 import {describe, expect, it} from 'vitest';
 
-import {OpenApiTemplateSchema} from '@broker-interceptor/schemas';
+import {OpenApiTemplateSchema, type OpenApiTemplate} from '@broker-interceptor/schemas';
 
-import {buildExecuteAuthHeaders} from '../upstreamAuth';
+import {buildExecuteAuthHeaders} from '../runtimeAuth';
+import {RuntimeAuthError} from '../runtimeAuth/errors';
 
 const baseTemplate = OpenApiTemplateSchema.parse({
   template_id: 'tpl_backup_s3',
@@ -47,7 +48,10 @@ const baseTemplate = OpenApiTemplateSchema.parse({
 describe('buildExecuteAuthHeaders', () => {
   it('returns bearer auth when no special upstream auth is configured', () => {
     const headers = buildExecuteAuthHeaders({
-      secretValue: 'plain-token',
+      secretMaterial: {
+        type: 'api_key',
+        value: 'plain-token'
+      },
       request: {
         method: 'GET',
         url: 'https://example.com/healthz',
@@ -72,10 +76,12 @@ describe('buildExecuteAuthHeaders', () => {
 
   it('builds SigV4 headers for S3 requests using the request body hash', () => {
     const headers = buildExecuteAuthHeaders({
-      secretValue: JSON.stringify({
+      secretMaterial: {
+        type: 'aws_sigv4',
         access_key_id: 'AKIDEXAMPLE',
-        secret_access_key: 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY'
-      }),
+        secret_access_key: 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY',
+        region: 'eu-west-1'
+      },
       request: {
         method: 'PUT',
         url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/backup-000001-20260228T120000Z/payload.bin',
@@ -106,12 +112,13 @@ describe('buildExecuteAuthHeaders', () => {
 
   it('adds the session token when temporary AWS credentials are used', () => {
     const headers = buildExecuteAuthHeaders({
-      secretValue: JSON.stringify({
+      secretMaterial: {
+        type: 'aws_sigv4',
         access_key_id: 'AKIDEXAMPLE',
         secret_access_key: 'secret',
         session_token: 'session-token-value',
         region: 'eu-west-1'
-      }),
+      },
       request: {
         method: 'GET',
         url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/latest.json',
@@ -131,13 +138,42 @@ describe('buildExecuteAuthHeaders', () => {
     );
   });
 
-  it('signs bucket-root list-object requests deterministically', () => {
+  it('comma-joins duplicate forwarded headers when building the SigV4 canonical request', () => {
     const headers = buildExecuteAuthHeaders({
-      secretValue: JSON.stringify({
+      secretMaterial: {
+        type: 'aws_sigv4',
         access_key_id: 'AKIDEXAMPLE',
         secret_access_key: 'secret',
         region: 'eu-west-1'
-      }),
+      },
+      request: {
+        method: 'GET',
+        url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/latest.json',
+        headers: [
+          {name: 'range', value: 'bytes=512-1023'},
+          {name: 'Range', value: 'bytes=0-511'}
+        ]
+      },
+      template: baseTemplate,
+      matchedPathGroupId: 'bucket-object',
+      now: new Date('2026-02-28T12:00:00.000Z')
+    });
+
+    expect(headers.find(header => header.name === 'Authorization')).toEqual({
+      name: 'Authorization',
+      value:
+        'AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260228/eu-west-1/s3/aws4_request, SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=b953ff1d3862e9ccff7a6eeed1cad8006f4426c1f15eab6fd5b5900166a05a6c'
+    });
+  });
+
+  it('signs bucket-root list-object requests deterministically', () => {
+    const headers = buildExecuteAuthHeaders({
+      secretMaterial: {
+        type: 'aws_sigv4',
+        access_key_id: 'AKIDEXAMPLE',
+        secret_access_key: 'secret',
+        region: 'eu-west-1'
+      },
       request: {
         method: 'GET',
         url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/?prefix=backups%2F&continuation-token=next-page&list-type=2',
@@ -175,10 +211,12 @@ describe('buildExecuteAuthHeaders', () => {
     });
 
     const headers = buildExecuteAuthHeaders({
-      secretValue: JSON.stringify({
+      secretMaterial: {
+        type: 'aws_sigv4',
         access_key_id: 'AKIDEXAMPLE',
-        secret_access_key: 'secret'
-      }),
+        secret_access_key: 'secret',
+        region: 'eu-central-1'
+      },
       request: {
         method: 'GET',
         url: 'https://storage.example.internal/backups/latest.json',
@@ -194,13 +232,55 @@ describe('buildExecuteAuthHeaders', () => {
     );
   });
 
+  it('uses secret region over template strategy region override when both are present', () => {
+    const template = OpenApiTemplateSchema.parse({
+      ...baseTemplate,
+      allowed_hosts: ['storage.example.internal'],
+      path_groups: [
+        {
+          ...baseTemplate.path_groups[0],
+          constraints: {
+            upstream_auth: {
+              type: 'aws_sigv4',
+              service: 's3',
+              region: 'us-east-1'
+            }
+          }
+        }
+      ]
+    });
+
+    const headers = buildExecuteAuthHeaders({
+      secretMaterial: {
+        type: 'aws_sigv4',
+        access_key_id: 'AKIDEXAMPLE',
+        secret_access_key: 'secret',
+        region: 'eu-central-1'
+      },
+      request: {
+        method: 'GET',
+        url: 'https://storage.example.internal/backups/latest.json',
+        headers: []
+      },
+      template,
+      matchedPathGroupId: 'bucket-object',
+      now: new Date('2026-02-28T12:00:00.000Z')
+    });
+
+    expect(headers.find(header => header.name === 'Authorization')?.value).toContain(
+      'Credential=AKIDEXAMPLE/20260228/eu-central-1/s3/aws4_request'
+    );
+    expect(headers.find(header => header.name === 'Authorization')?.value).not.toContain('us-east-1');
+  });
+
   it('does not double-encode percent-escaped S3 object key segments when signing', () => {
     const headers = buildExecuteAuthHeaders({
-      secretValue: JSON.stringify({
+      secretMaterial: {
+        type: 'aws_sigv4',
         access_key_id: 'AKIDEXAMPLE',
         secret_access_key: 'secret',
         region: 'eu-west-1'
-      }),
+      },
       request: {
         method: 'GET',
         url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/quarter%201/report%252F2026.json',
@@ -218,37 +298,58 @@ describe('buildExecuteAuthHeaders', () => {
     });
   });
 
-  it('fails closed for non-AWS S3-compatible hosts when no explicit region is available', () => {
-    const template = OpenApiTemplateSchema.parse({
-      ...baseTemplate,
-      allowed_hosts: ['storage.example.internal']
-    });
-
-    expect(() =>
+  it('throws runtime_auth_secret_type_incompatible when api_key secret is paired with an aws_sigv4 strategy', () => {
+    let caughtError: unknown;
+    try {
       buildExecuteAuthHeaders({
-        secretValue: JSON.stringify({
-          access_key_id: 'AKIDEXAMPLE',
-          secret_access_key: 'secret'
-        }),
+        secretMaterial: {type: 'api_key', value: 'plain-token'},
         request: {
           method: 'GET',
-          url: 'https://storage.example.internal/backups/latest.json',
+          url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/latest.json',
           headers: []
         },
-        template,
+        template: baseTemplate,
         matchedPathGroupId: 'bucket-object',
         now: new Date('2026-02-28T12:00:00.000Z')
-      })
-    ).toThrow('Unable to derive AWS region for S3 request host storage.example.internal');
+      });
+    } catch (e) {
+      caughtError = e;
+    }
+
+    expect(caughtError).toBeInstanceOf(RuntimeAuthError);
+    expect((caughtError as RuntimeAuthError).code).toBe('runtime_auth_secret_type_incompatible');
+  });
+
+  it('throws runtime_auth_secret_type_incompatible when oauth_refresh_token secret is paired with an aws_sigv4 strategy', () => {
+    let caughtError: unknown;
+    try {
+      buildExecuteAuthHeaders({
+        secretMaterial: {type: 'oauth_refresh_token', value: 'refresh-token'},
+        request: {
+          method: 'GET',
+          url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/latest.json',
+          headers: []
+        },
+        template: baseTemplate,
+        matchedPathGroupId: 'bucket-object',
+        now: new Date('2026-02-28T12:00:00.000Z')
+      });
+    } catch (e) {
+      caughtError = e;
+    }
+
+    expect(caughtError).toBeInstanceOf(RuntimeAuthError);
+    expect((caughtError as RuntimeAuthError).code).toBe('runtime_auth_secret_type_incompatible');
   });
 
   it('does not sign headers that are not forwarded by the matched path group allowlist', () => {
     const headers = buildExecuteAuthHeaders({
-      secretValue: JSON.stringify({
+      secretMaterial: {
+        type: 'aws_sigv4',
         access_key_id: 'AKIDEXAMPLE',
         secret_access_key: 'secret',
         region: 'eu-west-1'
-      }),
+      },
       request: {
         method: 'PUT',
         url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/latest.bin',
@@ -267,5 +368,70 @@ describe('buildExecuteAuthHeaders', () => {
       'SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date'
     );
     expect(headers.find(header => header.name === 'Authorization')?.value).not.toContain('x-extra-debug-header');
+  });
+
+  it('fails closed instead of downgrading aws_sigv4 secret material to bearer auth when runtime auth is not configured', () => {
+    expect(() =>
+      buildExecuteAuthHeaders({
+        secretMaterial: {
+          type: 'aws_sigv4',
+          access_key_id: 'AKIDEXAMPLE',
+          secret_access_key: 'secret',
+          region: 'eu-west-1'
+        },
+        request: {
+          method: 'GET',
+          url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/latest.json',
+          headers: []
+        },
+        template: OpenApiTemplateSchema.parse({
+          ...baseTemplate,
+          path_groups: [
+            {
+              ...baseTemplate.path_groups[0],
+              constraints: {}
+            }
+          ]
+        }),
+        matchedPathGroupId: 'bucket-object',
+        now: new Date('2026-02-28T12:00:00.000Z')
+      })
+    ).toThrow('Secret type aws_sigv4 requires an explicit runtime auth strategy');
+  });
+
+  it('fails closed when runtime auth constraints are malformed', () => {
+    const malformedTemplate = {
+      ...baseTemplate,
+      path_groups: [
+        {
+          ...baseTemplate.path_groups[0],
+          constraints: {
+            upstream_auth: {
+              type: 'aws_sigv4',
+              service: 'invalid-service'
+            }
+          }
+        }
+      ]
+    } as unknown as OpenApiTemplate;
+
+    expect(() =>
+      buildExecuteAuthHeaders({
+        secretMaterial: {
+          type: 'aws_sigv4',
+          access_key_id: 'AKIDEXAMPLE',
+          secret_access_key: 'secret',
+          region: 'eu-west-1'
+        },
+        request: {
+          method: 'GET',
+          url: 'https://backup-bucket.s3.eu-west-1.amazonaws.com/backups/latest.json',
+          headers: []
+        },
+        template: malformedTemplate,
+        matchedPathGroupId: 'bucket-object',
+        now: new Date('2026-02-28T12:00:00.000Z')
+      })
+    ).toThrow('Runtime auth constraints are invalid for path group bucket-object');
   });
 });

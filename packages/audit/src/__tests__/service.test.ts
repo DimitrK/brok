@@ -198,6 +198,7 @@ describe('AuditService.appendAuditEvent', () => {
           action: 'admin.integration.created',
           credential_type: 'aws_sigv4',
           credential_region: 'eu-west-1',
+          temporary_session_present: true,
           credentials: {
             access_key_id: 'AKIA_TEST_ACCESS_KEY',
             secret_access_key: 'super-secret',
@@ -216,6 +217,7 @@ describe('AuditService.appendAuditEvent', () => {
       action: 'admin.integration.created',
       credential_type: 'aws_sigv4',
       credential_region: 'eu-west-1',
+      temporary_session_present: true,
       credentials: '[REDACTED]'
     })
 

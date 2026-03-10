@@ -460,6 +460,17 @@ components:
           type: string
           format: date-time
       additionalProperties: false
+    WorkloadEnrollmentPolicyResponse:
+      type: object
+      required: [client_cert_ttl_seconds_max]
+      properties:
+        client_cert_ttl_seconds_max:
+          type: integer
+          minimum: 1
+          description:
+            Effective maximum workload client-certificate TTL in seconds for this broker-admin-api
+            deployment.
+      additionalProperties: false
     WorkloadUpdateRequest:
       type: object
       properties:
@@ -687,50 +698,7 @@ components:
     Integration:
       $ref: ./integration.schema.json
     IntegrationSecretMaterialWrite:
-      oneOf:
-        - type: object
-          required: [type, value]
-          properties:
-            type:
-              type: string
-              enum: [api_key]
-            value:
-              type: string
-              minLength: 1
-          additionalProperties: false
-        - type: object
-          required: [type, value]
-          properties:
-            type:
-              type: string
-              enum: [oauth_refresh_token]
-            value:
-              type: string
-              minLength: 1
-          additionalProperties: false
-        - type: object
-          required: [type, access_key_id, secret_access_key, region]
-          properties:
-            type:
-              type: string
-              enum: [aws_sigv4]
-            access_key_id:
-              type: string
-              minLength: 1
-              maxLength: 256
-            secret_access_key:
-              type: string
-              minLength: 1
-              maxLength: 256
-            session_token:
-              type: string
-              minLength: 1
-              maxLength: 4096
-            region:
-              type: string
-              minLength: 1
-              maxLength: 64
-          additionalProperties: false
+      $ref: ./secret-material.schema.json
     IntegrationWrite:
       type: object
       required: [provider, name, template_id, secret_material]
@@ -1601,6 +1569,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkloadEnrollResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/workloads/enrollment-policy:
+    get:
+      summary: Read workload certificate enrollment policy
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Effective workload enrollment policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkloadEnrollmentPolicyResponse'
         '401':
           description: Unauthorized
           content:

@@ -12,6 +12,8 @@ export const forwarderErrorCodes = [
   'request_port_not_allowed',
   'request_body_base64_invalid',
   'request_body_too_large',
+  'request_content_length_required',
+  'request_transfer_encoding_not_supported',
   'request_streaming_not_supported',
   'ambiguous_framing_invalid_content_length',
   'ambiguous_framing_multiple_content_length',

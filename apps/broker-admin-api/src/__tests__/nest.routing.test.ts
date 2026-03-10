@@ -1,5 +1,9 @@
 import {afterEach, describe, expect, it} from 'vitest'
-import {OpenApiTenantCreateResponseSchema, OpenApiWorkloadCreateResponseSchema} from '@broker-interceptor/schemas'
+import {
+  OpenApiTenantCreateResponseSchema,
+  OpenApiWorkloadCreateResponseSchema,
+  OpenApiWorkloadEnrollmentPolicyResponseSchema
+} from '@broker-interceptor/schemas'
 
 import {createAdminApiApp} from '../app'
 import type {ServiceConfig} from '../config'
@@ -163,6 +167,7 @@ describe('nest routing', () => {
       path: string
     }> = [
       {method: 'GET', path: '/v1/tenants'},
+      {method: 'GET', path: '/v1/workloads/enrollment-policy'},
       {method: 'POST', path: '/v1/admin/auth/logout'},
       {method: 'GET', path: '/v1/keys/manifest'}
     ]
@@ -176,6 +181,22 @@ describe('nest routing', () => {
         error: 'admin_auth_missing'
       })
     }
+  })
+
+  it('routes workload enrollment policy through Nest controller mapping', async () => {
+    const baseUrl = await startAppOrSkip()
+    if (!baseUrl) {
+      return
+    }
+
+    const response = await fetch(`${baseUrl}/v1/workloads/enrollment-policy`, {
+      headers: {
+        authorization: `Bearer ${OWNER_TOKEN}`
+      }
+    })
+    expect(response.status).toBe(200)
+    const body = OpenApiWorkloadEnrollmentPolicyResponseSchema.parse(await response.json())
+    expect(body.client_cert_ttl_seconds_max).toBe(3600)
   })
 
   it('routes tenant and workload parameterized paths through Nest controllers', async () => {

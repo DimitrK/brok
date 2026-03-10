@@ -1,22 +1,3 @@
-const DEFAULT_SENSITIVE_SUBSTRINGS = [
-  'accesskeyid',
-  'access_key_id',
-  'token',
-  'secret',
-  'api_key',
-  'apikey',
-  'authorization',
-  'cookie',
-  'dpop',
-  'privatekey',
-  'private_key',
-  'ciphertext',
-  'authtag',
-  'auth_tag',
-  'body',
-  'body_base64'
-] as const;
-
 const REDACTED_VALUE = '[REDACTED]';
 const MAX_RECURSION_DEPTH = 12;
 
@@ -25,6 +6,36 @@ const normalizeKey = (value: string) =>
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_]/gu, '');
+
+export const DEFAULT_REDACTION_KEY_FAMILIES = Object.freeze({
+  credential_fields: Object.freeze([
+    'accesskeyid',
+    'access_key_id',
+    'api_key',
+    'apikey',
+    'privatekey',
+    'private_key',
+    'secret'
+  ]),
+  token_fields: Object.freeze(['token', 'dpop']),
+  auth_transport: Object.freeze(['authorization', 'cookie']),
+  encrypted_material: Object.freeze(['ciphertext', 'authtag', 'auth_tag']),
+  request_payloads: Object.freeze(['body', 'body_base64'])
+} as const);
+
+export type RedactionKeyFamilyName = keyof typeof DEFAULT_REDACTION_KEY_FAMILIES;
+export type RedactionKeyFamilies = Record<string, readonly string[]>;
+
+export const flattenRedactionKeyFamilies = (families: RedactionKeyFamilies) =>
+  Array.from(
+    new Set(
+      Object.values(families).flatMap(family =>
+        family.map(entry => normalizeKey(entry)).filter(entry => entry.length > 0)
+      )
+    )
+  );
+
+const DEFAULT_SENSITIVE_SUBSTRINGS = flattenRedactionKeyFamilies(DEFAULT_REDACTION_KEY_FAMILIES);
 
 const isSensitiveKey = ({key, extraSensitiveKeys}: {key: string; extraSensitiveKeys: Set<string>}) => {
   const normalized = normalizeKey(key);

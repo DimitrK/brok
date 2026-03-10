@@ -12,18 +12,19 @@ This package is the Epic 3.3 / 3.4 core:
 
 All DTOs and runtime contract parsing come from:
 
-- `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/packages/schemas`
+- `/Users/dimitriskyriazopoulos/Development/brok/packages/schemas`
 
 Do not re-define policy/template/descriptor DTOs in this package.
 
 ## Exposed Interface
 
-Public exports are defined in `/Users/dimitriskyriazopoulos/Development/ui/apps/broker-interceptor/packages/policy-engine/src/index.ts`:
+Public exports are defined in `/Users/dimitriskyriazopoulos/Development/brok/packages/policy-engine/src/index.ts`:
 
 - `classifyPathGroup(input)`
   - Input: `ClassifyPathGroupInput`
   - Output: `PathGroupClassificationResult`
   - Behavior: host + method + path-pattern classification, fail-closed with `no_matching_group` or `invalid_path_pattern`.
+  - Contract: matched results carry the schema-owned matched template config fields plus `matched_pattern`; `group_id` remains as a compatibility alias for `path_group_id`.
 - `buildCanonicalDescriptorWithPathGroup(input)`
   - Input: descriptor (without `matched_path_group_id`) + template
   - Output: descriptor with resolved `matched_path_group_id` or classification failure.
@@ -35,6 +36,7 @@ Public exports are defined in `/Users/dimitriskyriazopoulos/Development/ui/apps/
   - Output: normalized policy or stable validation error code.
   - Behavior: semantic validation + normalization for host/method/query keys and cross-field `rule_type`/`rate_limit` rules.
   - Security: host scope is exact-match only (wildcards rejected in MVP) and `constraints` must satisfy bounded shared schema contracts from `@broker-interceptor/schemas`.
+  - Boundary: runtime auth strategy data belongs to template path-group `constraints.upstream_auth`, not policy rules.
 - `derivePolicyFromApprovalDecision(input)`
   - Input: approval status/mode + canonical descriptor + policy id (+ optional constraints)
   - Output: derived policy rule or `null` for approved-once decisions.
@@ -158,7 +160,18 @@ const classification = classifyPathGroup({
   method: descriptor.method,
   canonical_url: descriptor.canonical_url
 })
+
+if (classification.matched) {
+  classification.path_group.path_group_id
+  classification.path_group.constraints?.upstream_auth
+}
 ```
+
+## Runtime Auth Boundary
+
+- Classification surfaces matched template path-group metadata, including typed runtime-auth constraints from the shared schema contracts.
+- Policy evaluation uses only canonical descriptor scope, policy rules, and template approval mode. It does not inspect `constraints.upstream_auth` when selecting `allow`, `deny`, `approval_required`, or `rate_limit`.
+- If overlapping template path groups exist, authored template order remains the deterministic tie-breaker. Validation to prohibit ambiguous authoring belongs outside this package.
 
 ## Quality Gate
 
@@ -171,7 +184,7 @@ pnpm --filter @broker-interceptor/policy-engine run test:coverage
 pnpm --filter @broker-interceptor/policy-engine run build
 ```
 
-Current target: coverage above 80%.
+Current target: coverage above 85%, including branch coverage for changed behavior.
 
 ## Pending feedback
 

@@ -1,12 +1,18 @@
+import {z} from 'zod';
+
 import {
   type EnvelopeCiphertext,
+  EnvelopeCiphertextSchema,
   type ManifestKeysContract,
   type ManifestSigningAlgorithm,
   type ManifestSigningPrivateKey,
+  ManifestSigningPrivateKeySchema,
   type ManifestSigningPublicKey,
+  ManifestSigningPublicKeySchema,
   type SecretMaterialContract
 } from './contracts.js';
-import {err, type CryptoResult} from './errors.js';
+import {OpenApiManifestKeysSchema, SecretMaterialTypeSchema} from './contracts.js';
+import {cryptoErrorCodeSchema, err, type CryptoResult} from './errors.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -127,6 +133,118 @@ export type RotateManifestSigningKeysWithStoreOutput = {
   etag: string;
 };
 
+const NonEmptyStringSchema = z.string().trim().min(1);
+const IsoDateTimeSchema = z.string().datetime({offset: true});
+
+const SecretEnvelopeVersionRecordSchema = z
+  .object({
+    secret_ref: NonEmptyStringSchema,
+    tenant_id: NonEmptyStringSchema,
+    integration_id: NonEmptyStringSchema,
+    secret_type: SecretMaterialTypeSchema,
+    version: z.number().int().positive(),
+    envelope: EnvelopeCiphertextSchema,
+    created_at: IsoDateTimeSchema
+  })
+  .strict();
+
+const NullableSecretEnvelopeVersionRecordSchema = SecretEnvelopeVersionRecordSchema.nullable();
+
+const ManifestSigningKeyRecordSchema = z
+  .object({
+    kid: NonEmptyStringSchema,
+    alg: z.enum(['EdDSA', 'ES256']),
+    public_jwk: ManifestSigningPublicKeySchema,
+    private_key_ref: NonEmptyStringSchema,
+    status: z.enum(['active', 'retired', 'revoked']),
+    created_at: IsoDateTimeSchema,
+    activated_at: IsoDateTimeSchema.optional(),
+    retired_at: IsoDateTimeSchema.optional(),
+    revoked_at: IsoDateTimeSchema.optional()
+  })
+  .strict();
+
+const NullableManifestSigningKeyRecordSchema = ManifestSigningKeyRecordSchema.nullable();
+
+const ManifestVerificationKeysetWithEtagSchema = z
+  .object({
+    manifest_keys: OpenApiManifestKeysSchema,
+    etag: NonEmptyStringSchema,
+    generated_at: IsoDateTimeSchema,
+    max_age_seconds: z.number().int().nonnegative().optional()
+  })
+  .strict();
+
+const NullableManifestVerificationKeysetWithEtagSchema = ManifestVerificationKeysetWithEtagSchema.nullable();
+
+const CryptoVerificationDefaultsSchema = z
+  .object({
+    tenant_id: NonEmptyStringSchema,
+    require_temporal_validity: z.boolean(),
+    max_clock_skew_seconds: z.number().int().nonnegative()
+  })
+  .strict();
+
+const CryptoRotationLockAcquireResultSchema = z
+  .object({
+    acquired: z.boolean(),
+    token: NonEmptyStringSchema
+  })
+  .strict();
+
+const CryptoRotationLockReleaseResultSchema = z
+  .object({
+    released: z.boolean()
+  })
+  .strict();
+
+const RotateManifestSigningKeysWithStoreOutputSchema = z
+  .object({
+    active_signing_private_key: ManifestSigningPrivateKeySchema,
+    rotated_manifest_keys: OpenApiManifestKeysSchema,
+    etag: NonEmptyStringSchema
+  })
+  .strict();
+
+const CryptoFailureSchema = z
+  .object({
+    ok: z.literal(false),
+    error: z
+      .object({
+        code: cryptoErrorCodeSchema,
+        message: NonEmptyStringSchema
+      })
+      .strict()
+  })
+  .strict();
+
+const createCryptoResultSchema = <TOutput>(outputSchema: z.ZodType<TOutput>) =>
+  z.union([
+    z
+      .object({
+        ok: z.literal(true),
+        value: outputSchema
+      })
+      .strict(),
+    CryptoFailureSchema
+  ]);
+
+const invalidRepositoryResponse = (methodName: string, message: string): CryptoResult<never> =>
+  err('invalid_repository_response', `${methodName} repository returned an invalid result: ${message}`);
+
+const parseRepositoryResult = <TOutput>(
+  methodName: string,
+  rawResult: unknown,
+  outputSchema: z.ZodType<TOutput>
+): CryptoResult<TOutput> => {
+  const parsedResult = createCryptoResultSchema(outputSchema).safeParse(rawResult);
+  if (!parsedResult.success) {
+    return invalidRepositoryResponse(methodName, parsedResult.error.message);
+  }
+
+  return parsedResult.data;
+};
+
 export type CryptoStorageRepositories_INCOMPLETE<TTransactionClient = unknown> = {
   createSecretEnvelopeVersion?: (
     input: CreateSecretEnvelopeVersionInput,
@@ -135,11 +253,11 @@ export type CryptoStorageRepositories_INCOMPLETE<TTransactionClient = unknown> =
   getActiveSecretEnvelope?: (
     input: GetSecretEnvelopeInput,
     context?: StorageCallContext<TTransactionClient>
-  ) => MaybePromise<CryptoResult<SecretEnvelopeVersionRecord>>;
+  ) => MaybePromise<CryptoResult<SecretEnvelopeVersionRecord | null>>;
   getSecretEnvelopeVersion?: (
     input: GetSecretEnvelopeInput,
     context?: StorageCallContext<TTransactionClient>
-  ) => MaybePromise<CryptoResult<SecretEnvelopeVersionRecord>>;
+  ) => MaybePromise<CryptoResult<SecretEnvelopeVersionRecord | null>>;
   setActiveSecretEnvelopeVersion?: (
     input: SetActiveSecretEnvelopeVersionInput,
     context?: StorageCallContext<TTransactionClient>
@@ -150,7 +268,7 @@ export type CryptoStorageRepositories_INCOMPLETE<TTransactionClient = unknown> =
   ) => MaybePromise<CryptoResult<ManifestSigningKeyRecord>>;
   getActiveManifestSigningKeyRecord?: (
     context?: StorageCallContext<TTransactionClient>
-  ) => MaybePromise<CryptoResult<ManifestSigningKeyRecord>>;
+  ) => MaybePromise<CryptoResult<ManifestSigningKeyRecord | null>>;
   setActiveManifestSigningKey?: (
     input: SetActiveManifestSigningKeyInput,
     context?: StorageCallContext<TTransactionClient>
@@ -165,7 +283,7 @@ export type CryptoStorageRepositories_INCOMPLETE<TTransactionClient = unknown> =
   ) => MaybePromise<CryptoResult<null>>;
   listManifestVerificationKeysWithEtag?: (
     context?: StorageCallContext<TTransactionClient>
-  ) => MaybePromise<CryptoResult<ManifestVerificationKeysetWithEtag>>;
+  ) => MaybePromise<CryptoResult<ManifestVerificationKeysetWithEtag | null>>;
   persistManifestKeysetMetadata?: (
     input: PersistManifestKeysetMetadataInput,
     context?: StorageCallContext<TTransactionClient>
@@ -200,11 +318,11 @@ export type CryptoStorageService_INCOMPLETE<TTransactionClient = unknown> = {
   getActiveSecretEnvelope_INCOMPLETE: (
     input: GetSecretEnvelopeInput,
     context?: StorageCallContext<TTransactionClient>
-  ) => Promise<CryptoResult<SecretEnvelopeVersionRecord>>;
+  ) => Promise<CryptoResult<SecretEnvelopeVersionRecord | null>>;
   getSecretEnvelopeVersion_INCOMPLETE: (
     input: GetSecretEnvelopeInput,
     context?: StorageCallContext<TTransactionClient>
-  ) => Promise<CryptoResult<SecretEnvelopeVersionRecord>>;
+  ) => Promise<CryptoResult<SecretEnvelopeVersionRecord | null>>;
   setActiveSecretEnvelopeVersion_INCOMPLETE: (
     input: SetActiveSecretEnvelopeVersionInput,
     context?: StorageCallContext<TTransactionClient>
@@ -215,7 +333,7 @@ export type CryptoStorageService_INCOMPLETE<TTransactionClient = unknown> = {
   ) => Promise<CryptoResult<ManifestSigningKeyRecord>>;
   getActiveManifestSigningKeyRecord_INCOMPLETE: (
     context?: StorageCallContext<TTransactionClient>
-  ) => Promise<CryptoResult<ManifestSigningKeyRecord>>;
+  ) => Promise<CryptoResult<ManifestSigningKeyRecord | null>>;
   setActiveManifestSigningKey_INCOMPLETE: (
     input: SetActiveManifestSigningKeyInput,
     context?: StorageCallContext<TTransactionClient>
@@ -230,7 +348,7 @@ export type CryptoStorageService_INCOMPLETE<TTransactionClient = unknown> = {
   ) => Promise<CryptoResult<null>>;
   listManifestVerificationKeysWithEtag_INCOMPLETE: (
     context?: StorageCallContext<TTransactionClient>
-  ) => Promise<CryptoResult<ManifestVerificationKeysetWithEtag>>;
+  ) => Promise<CryptoResult<ManifestVerificationKeysetWithEtag | null>>;
   persistManifestKeysetMetadata_INCOMPLETE: (
     input: PersistManifestKeysetMetadataInput,
     context?: StorageCallContext<TTransactionClient>
@@ -266,7 +384,7 @@ const missingStoreDependency = <TOutput, TInput>(
   void input;
   void context;
   return err(
-    'invalid_input',
+    'dependency_not_configured',
     `${methodName} is _INCOMPLETE and requires @broker-interceptor/db.${requiredStoreMethod} integration`
   );
 };
@@ -277,6 +395,7 @@ const callRepositoryWithInput_INCOMPLETE = async <TInput, TOutput, TTransactionC
     | undefined,
   methodName: string,
   requiredStoreMethod: string,
+  outputSchema: z.ZodType<TOutput>,
   input: TInput,
   context?: StorageCallContext<TTransactionClient>
 ): Promise<CryptoResult<TOutput>> => {
@@ -284,7 +403,12 @@ const callRepositoryWithInput_INCOMPLETE = async <TInput, TOutput, TTransactionC
     return missingStoreDependency<TOutput, TInput>(methodName, requiredStoreMethod, input, context);
   }
 
-  return repository(input, context);
+  try {
+    const rawResult = await repository(input, context);
+    return parseRepositoryResult(methodName, rawResult, outputSchema);
+  } catch {
+    return invalidRepositoryResponse(methodName, 'repository threw unexpectedly');
+  }
 };
 
 const callRepositoryNoInput_INCOMPLETE = async <TOutput, TTransactionClient>(
@@ -293,13 +417,19 @@ const callRepositoryNoInput_INCOMPLETE = async <TOutput, TTransactionClient>(
     | undefined,
   methodName: string,
   requiredStoreMethod: string,
+  outputSchema: z.ZodType<TOutput>,
   context?: StorageCallContext<TTransactionClient>
 ): Promise<CryptoResult<TOutput>> => {
   if (!repository) {
     return missingStoreDependency<TOutput, undefined>(methodName, requiredStoreMethod, undefined, context);
   }
 
-  return repository(context);
+  try {
+    const rawResult = await repository(context);
+    return parseRepositoryResult(methodName, rawResult, outputSchema);
+  } catch {
+    return invalidRepositoryResponse(methodName, 'repository threw unexpectedly');
+  }
 };
 
 export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unknown>(
@@ -310,6 +440,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.createSecretEnvelopeVersion,
       'createSecretEnvelopeVersion_INCOMPLETE',
       'createSecretEnvelopeVersion',
+      SecretEnvelopeVersionRecordSchema,
       input,
       context
     ),
@@ -318,6 +449,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.getActiveSecretEnvelope,
       'getActiveSecretEnvelope_INCOMPLETE',
       'getActiveSecretEnvelope',
+      NullableSecretEnvelopeVersionRecordSchema,
       input,
       context
     ),
@@ -326,6 +458,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.getSecretEnvelopeVersion,
       'getSecretEnvelopeVersion_INCOMPLETE',
       'getSecretEnvelopeVersion',
+      NullableSecretEnvelopeVersionRecordSchema,
       input,
       context
     ),
@@ -334,6 +467,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.setActiveSecretEnvelopeVersion,
       'setActiveSecretEnvelopeVersion_INCOMPLETE',
       'setActiveSecretEnvelopeVersion',
+      z.null(),
       input,
       context
     ),
@@ -342,6 +476,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.createManifestSigningKeyRecord,
       'createManifestSigningKeyRecord_INCOMPLETE',
       'createManifestSigningKeyRecord',
+      ManifestSigningKeyRecordSchema,
       input,
       context
     ),
@@ -350,6 +485,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.getActiveManifestSigningKeyRecord,
       'getActiveManifestSigningKeyRecord_INCOMPLETE',
       'getActiveManifestSigningKeyRecord',
+      NullableManifestSigningKeyRecordSchema,
       context
     ),
   setActiveManifestSigningKey_INCOMPLETE: (input, context) =>
@@ -357,6 +493,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.setActiveManifestSigningKey,
       'setActiveManifestSigningKey_INCOMPLETE',
       'setActiveManifestSigningKey',
+      z.null(),
       input,
       context
     ),
@@ -365,6 +502,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.retireManifestSigningKey,
       'retireManifestSigningKey_INCOMPLETE',
       'retireManifestSigningKey',
+      z.null(),
       input,
       context
     ),
@@ -373,6 +511,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.revokeManifestSigningKey,
       'revokeManifestSigningKey_INCOMPLETE',
       'revokeManifestSigningKey',
+      z.null(),
       input,
       context
     ),
@@ -381,6 +520,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.listManifestVerificationKeysWithEtag,
       'listManifestVerificationKeysWithEtag_INCOMPLETE',
       'listManifestVerificationKeysWithEtag',
+      NullableManifestVerificationKeysetWithEtagSchema,
       context
     ),
   persistManifestKeysetMetadata_INCOMPLETE: (input, context) =>
@@ -388,6 +528,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.persistManifestKeysetMetadata,
       'persistManifestKeysetMetadata_INCOMPLETE',
       'persistManifestKeysetMetadata',
+      z.null(),
       input,
       context
     ),
@@ -396,6 +537,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.acquireCryptoRotationLock,
       'acquireCryptoRotationLock_INCOMPLETE',
       'acquireCryptoRotationLock',
+      CryptoRotationLockAcquireResultSchema,
       input,
       context
     ),
@@ -404,6 +546,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.releaseCryptoRotationLock,
       'releaseCryptoRotationLock_INCOMPLETE',
       'releaseCryptoRotationLock',
+      CryptoRotationLockReleaseResultSchema,
       input,
       context
     ),
@@ -412,6 +555,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.getCryptoVerificationDefaultsByTenant,
       'getCryptoVerificationDefaultsByTenant_INCOMPLETE',
       'getCryptoVerificationDefaultsByTenant',
+      CryptoVerificationDefaultsSchema,
       input,
       context
     ),
@@ -420,6 +564,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.upsertCryptoVerificationDefaults,
       'upsertCryptoVerificationDefaults_INCOMPLETE',
       'upsertCryptoVerificationDefaults',
+      CryptoVerificationDefaultsSchema,
       input,
       context
     ),
@@ -428,6 +573,7 @@ export const createCryptoStorageService_INCOMPLETE = <TTransactionClient = unkno
       repositories.rotateManifestSigningKeysWithStore,
       'rotateManifestSigningKeysWithStore_INCOMPLETE',
       'rotateManifestSigningKeysWithStore',
+      RotateManifestSigningKeysWithStoreOutputSchema,
       input,
       context
     )

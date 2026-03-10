@@ -27,6 +27,7 @@ import {
   stripHopByHopHeaders,
   validateHeaderValue
 } from './headers';
+import {dispatchWithNodeTransport, type BufferedUpstreamResponse} from './nodeTransport';
 
 const BASE64_REGEX = /^[A-Za-z0-9+/]*={0,2}$/u;
 
@@ -189,38 +190,10 @@ const parseHeaderAllowlist = (headerAllowlist: string[]): ForwarderResult<Set<st
   return ok(normalizedAllowlist);
 };
 
-const removeHeadersByName = (headers: OpenApiHeaderList, headerName: string) =>
-  headers.filter(header => header.name !== headerName);
+const normalizeInjectedHeaders = (headers: OpenApiHeaderList): ForwarderResult<OpenApiHeaderList> => {
+  const normalizedHeaders: OpenApiHeaderList = [];
 
-const buildUpstreamHeaders = ({
-  requestHeaders,
-  pathGroupHeaderAllowlist,
-  injectedHeaders
-}: {
-  requestHeaders: OpenApiHeaderList;
-  pathGroupHeaderAllowlist: Set<string>;
-  injectedHeaders: OpenApiHeaderList;
-}): ForwarderResult<OpenApiHeaderList> => {
-  const strippedRequestHeaders = stripHopByHopHeaders(requestHeaders);
-  if (!strippedRequestHeaders.ok) {
-    return strippedRequestHeaders;
-  }
-
-  let upstreamHeaders: OpenApiHeaderList = [];
-
-  for (const header of strippedRequestHeaders.value) {
-    if (!pathGroupHeaderAllowlist.has(header.name)) {
-      continue;
-    }
-
-    if (CLIENT_HEADER_DENYLIST.has(header.name)) {
-      continue;
-    }
-
-    upstreamHeaders.push(header);
-  }
-
-  for (const header of injectedHeaders) {
+  for (const header of headers) {
     const normalizedName = normalizeHeaderName(header.name);
     if (!normalizedName.ok) {
       return normalizedName;
@@ -238,11 +211,94 @@ const buildUpstreamHeaders = ({
       );
     }
 
-    upstreamHeaders = removeHeadersByName(upstreamHeaders, normalizedName.value);
-    upstreamHeaders.push({
+    normalizedHeaders.push({
       name: normalizedName.value,
       value: normalizedValue.value
     });
+  }
+
+  return ok(normalizedHeaders);
+};
+
+const finalizeUpstreamHeaders = ({
+  headers,
+  body,
+  framing
+}: {
+  headers: OpenApiHeaderList;
+  body: Buffer | null;
+  framing: {content_length: number | null; has_transfer_encoding: boolean};
+}): ForwarderResult<OpenApiHeaderList> => {
+  if (framing.has_transfer_encoding) {
+    return err(
+      'request_transfer_encoding_not_supported',
+      'Transfer-Encoding is not supported in buffered forwarding mode'
+    );
+  }
+
+  if (framing.content_length === null && body) {
+    return err(
+      'request_content_length_required',
+      'Buffered request bodies must include an explicit Content-Length header'
+    );
+  }
+
+  if (framing.content_length === null) {
+    return ok(headers);
+  }
+
+  return ok([
+    ...headers,
+    {
+      name: 'content-length',
+      value: String(framing.content_length)
+    }
+  ]);
+};
+
+const buildUpstreamHeaders = ({
+  requestHeaders,
+  pathGroupHeaderAllowlist,
+  injectedHeaders
+}: {
+  requestHeaders: OpenApiHeaderList;
+  pathGroupHeaderAllowlist: Set<string>;
+  injectedHeaders: OpenApiHeaderList;
+}): ForwarderResult<OpenApiHeaderList> => {
+  const strippedRequestHeaders = stripHopByHopHeaders(requestHeaders);
+  if (!strippedRequestHeaders.ok) {
+    return strippedRequestHeaders;
+  }
+
+  const normalizedInjectedHeaders = normalizeInjectedHeaders(injectedHeaders);
+  if (!normalizedInjectedHeaders.ok) {
+    return normalizedInjectedHeaders;
+  }
+
+  const injectedHeaderNames = new Set(
+    normalizedInjectedHeaders.value.map(header => header.name)
+  );
+
+  const upstreamHeaders: OpenApiHeaderList = [];
+
+  for (const header of strippedRequestHeaders.value) {
+    if (!pathGroupHeaderAllowlist.has(header.name)) {
+      continue;
+    }
+
+    if (CLIENT_HEADER_DENYLIST.has(header.name)) {
+      continue;
+    }
+
+    if (injectedHeaderNames.has(header.name)) {
+      continue;
+    }
+
+    upstreamHeaders.push(header);
+  }
+
+  for (const header of normalizedInjectedHeaders.value) {
+    upstreamHeaders.push(header);
   }
 
   return ok(upstreamHeaders);
@@ -253,26 +309,27 @@ const hasStreamingRequestExpectation = (requestHeaders: OpenApiHeaderList) =>
     header => header.name === 'accept' && isStreamingMediaType(header.value)
   );
 
-const hasStreamingResponseContentType = (response: Response) => {
-  const contentType = response.headers.get('content-type');
-  if (!contentType) {
-    return false;
+const getFirstHeaderValue = (headers: OpenApiHeaderList, headerName: string): string | null => {
+  for (const header of headers) {
+    if (header.name === headerName) {
+      return header.value;
+    }
   }
 
-  return isStreamingMediaType(contentType);
+  return null;
 };
 
 const collectResponseHeaders = ({
-  response,
+  headers,
   allowlist
 }: {
-  response: Response;
+  headers: OpenApiHeaderList;
   allowlist: Set<string>;
 }): ForwarderResult<OpenApiHeaderList> => {
   const selectedHeaders: OpenApiHeaderList = [];
 
-  for (const [name, value] of response.headers.entries()) {
-    const normalizedName = normalizeHeaderName(name);
+  for (const header of headers) {
+    const normalizedName = normalizeHeaderName(header.name);
     if (!normalizedName.ok) {
       return normalizedName;
     }
@@ -287,7 +344,7 @@ const collectResponseHeaders = ({
 
     selectedHeaders.push({
       name: normalizedName.value,
-      value
+      value: header.value
     });
   }
 
@@ -299,14 +356,39 @@ const collectResponseHeaders = ({
   return ok(parsedHeaders.data);
 };
 
+const normalizeFetchResponseHeaders = (response: Response): ForwarderResult<OpenApiHeaderList> => {
+  const normalizedHeaders: OpenApiHeaderList = [];
+
+  for (const [name, value] of response.headers.entries()) {
+    const normalizedName = normalizeHeaderName(name);
+    if (!normalizedName.ok) {
+      return normalizedName;
+    }
+
+    const normalizedValue = validateHeaderValue(value);
+    if (!normalizedValue.ok) {
+      return normalizedValue;
+    }
+
+    normalizedHeaders.push({
+      name: normalizedName.value,
+      value: normalizedValue.value
+    });
+  }
+
+  return ok(normalizedHeaders);
+};
+
 const readResponseBodyWithLimit = async ({
   response,
+  responseHeaders,
   maxResponseBytes
 }: {
   response: Response;
+  responseHeaders: OpenApiHeaderList;
   maxResponseBytes: number;
 }): Promise<ForwarderResult<Buffer>> => {
-  const contentLengthHeader = response.headers.get('content-length');
+  const contentLengthHeader = getFirstHeaderValue(responseHeaders, 'content-length');
   if (contentLengthHeader && /^\d+$/u.test(contentLengthHeader.trim())) {
     const contentLength = Number.parseInt(contentLengthHeader, 10);
     if (Number.isSafeInteger(contentLength) && contentLength > maxResponseBytes) {
@@ -383,6 +465,72 @@ const resolveResponseAllowlist = ({
   pathGroupAllowlist: string[];
 }): ForwarderResult<Set<string>> => parseHeaderAllowlist(inputAllowlist ?? pathGroupAllowlist);
 
+const dispatchWithFetch = async ({
+  url,
+  method,
+  headers,
+  body,
+  timeout_ms,
+  max_response_bytes,
+  fetchImpl
+}: {
+  url: string;
+  method: ForwardExecuteRequestInput['execute_request']['request']['method'];
+  headers: OpenApiHeaderList;
+  body: Buffer | null;
+  timeout_ms: number;
+  max_response_bytes: number;
+  fetchImpl: FetchLike;
+}): Promise<ForwarderResult<BufferedUpstreamResponse>> => {
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetchImpl(url, {
+      method,
+      headers: toFetchHeaders(headers),
+      body: body ?? undefined,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeout_ms)
+    });
+  } catch (unknownError) {
+    return mapFetchError(unknownError);
+  }
+
+  const responseHeaders = normalizeFetchResponseHeaders(upstreamResponse);
+  if (!responseHeaders.ok) {
+    return responseHeaders;
+  }
+
+  if (isRedirectStatus(upstreamResponse.status)) {
+    return err(
+      'redirect_denied',
+      `Upstream returned redirect status ${upstreamResponse.status}; redirects are denied`
+    );
+  }
+
+  const contentType = getFirstHeaderValue(responseHeaders.value, 'content-type');
+  if (contentType && isStreamingMediaType(contentType)) {
+    return err(
+      'upstream_streaming_not_supported',
+      'Streaming upstream responses are not supported in MVP buffering mode'
+    );
+  }
+
+  const bufferedResponseBody = await readResponseBodyWithLimit({
+    response: upstreamResponse,
+    responseHeaders: responseHeaders.value,
+    maxResponseBytes: max_response_bytes
+  });
+  if (!bufferedResponseBody.ok) {
+    return bufferedResponseBody;
+  }
+
+  return ok({
+    status_code: upstreamResponse.status,
+    headers: responseHeaders.value,
+    body: bufferedResponseBody.value
+  });
+};
+
 export const forwardExecuteRequest = async ({
   input,
   fetchImpl
@@ -394,6 +542,8 @@ export const forwardExecuteRequest = async ({
   if (!parsedInput.success) {
     return err('invalid_input', parsedInput.error.message);
   }
+
+  const correlationId = buildCorrelationId(parsedInput.data);
 
   const timeouts = {
     ...DEFAULT_FORWARDER_TIMEOUTS,
@@ -474,6 +624,15 @@ export const forwardExecuteRequest = async ({
     return upstreamHeaders;
   }
 
+  const finalizedUpstreamHeaders = finalizeUpstreamHeaders({
+    headers: upstreamHeaders.value,
+    body: parsedBody.value,
+    framing: framingCheck.value
+  });
+  if (!finalizedUpstreamHeaders.ok) {
+    return finalizedUpstreamHeaders;
+  }
+
   const responseHeaderAllowlist = resolveResponseAllowlist({
     inputAllowlist: parsedInput.data.response_header_allowlist,
     pathGroupAllowlist: pathGroup.header_forward_allowlist
@@ -482,50 +641,30 @@ export const forwardExecuteRequest = async ({
     return responseHeaderAllowlist;
   }
 
-  const requestFetch = fetchImpl ?? globalThis.fetch;
-  if (!requestFetch) {
-    return err('upstream_network_error', 'No fetch implementation is available');
-  }
-
-  let upstreamResponse: Response;
-  try {
-    upstreamResponse = await requestFetch(parsedInput.data.execute_request.request.url, {
-      method: parsedInput.data.execute_request.request.method,
-      // Preserve the validated header list shape instead of rebuilding via `Headers`,
-      // which can coalesce duplicates before dispatch and is risky for signed requests.
-      headers: toFetchHeaders(upstreamHeaders.value),
-      body: parsedBody.value ?? undefined,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(timeouts.total_timeout_ms)
-    });
-  } catch (unknownError) {
-    return mapFetchError(unknownError);
-  }
-
-  if (isRedirectStatus(upstreamResponse.status)) {
-    return err(
-      'redirect_denied',
-      `Upstream returned redirect status ${upstreamResponse.status}; redirects are denied`
-    );
-  }
-
-  if (hasStreamingResponseContentType(upstreamResponse)) {
-    return err(
-      'upstream_streaming_not_supported',
-      'Streaming upstream responses are not supported in MVP buffering mode'
-    );
-  }
-
-  const bufferedResponseBody = await readResponseBodyWithLimit({
-    response: upstreamResponse,
-    maxResponseBytes: limits.max_response_bytes
-  });
-  if (!bufferedResponseBody.ok) {
-    return bufferedResponseBody;
+  const dispatchResult = fetchImpl
+    ? await dispatchWithFetch({
+        url: parsedInput.data.execute_request.request.url,
+        method: parsedInput.data.execute_request.request.method,
+        headers: finalizedUpstreamHeaders.value,
+        body: parsedBody.value,
+        timeout_ms: timeouts.total_timeout_ms,
+        max_response_bytes: limits.max_response_bytes,
+        fetchImpl
+      })
+    : await dispatchWithNodeTransport({
+        url: parsedInput.data.execute_request.request.url,
+        method: parsedInput.data.execute_request.request.method,
+        headers: finalizedUpstreamHeaders.value,
+        body: parsedBody.value,
+        timeout_ms: timeouts.total_timeout_ms,
+        max_response_bytes: limits.max_response_bytes
+      });
+  if (!dispatchResult.ok) {
+    return dispatchResult;
   }
 
   const responseHeaders = collectResponseHeaders({
-    response: upstreamResponse,
+    headers: dispatchResult.value.headers,
     allowlist: responseHeaderAllowlist.value
   });
   if (!responseHeaders.ok) {
@@ -534,11 +673,11 @@ export const forwardExecuteRequest = async ({
 
   const executedResponse = OpenApiExecuteResponseExecutedSchema.safeParse({
     status: 'executed',
-    correlation_id: buildCorrelationId(parsedInput.data),
+    correlation_id: correlationId,
     upstream: {
-      status_code: upstreamResponse.status,
+      status_code: dispatchResult.value.status_code,
       headers: responseHeaders.value,
-      body_base64: bufferedResponseBody.value.toString('base64')
+      body_base64: dispatchResult.value.body.toString('base64')
     }
   });
   if (!executedResponse.success) {

@@ -34,6 +34,9 @@ export function resolveInterceptionTarget(
   manifest: ParsedManifest,
   overrides: IntegrationOverride[] | undefined
 ): IntegrationSelectionResult {
+  // Routing is intentionally credential-agnostic. Selection depends only on
+  // manifest match scope and an explicit integration override, never on
+  // provider strings or future runtime-auth metadata.
   const matchingOverrides = (overrides ?? []).filter(override => scopeMatchesUrl(url, override.match));
 
   if (matchingOverrides.length > 1) {

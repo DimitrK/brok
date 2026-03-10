@@ -52,6 +52,11 @@ This prevents ambiguity in downstream logging and alerting pipelines.
 This package now includes an explicit verification helper for the typed `aws_sigv4` integration contract defined in
 `packages/schemas/openapi.yaml`.
 
+Verifier helpers in this package are optional and workload-specific. They are only added when a workload or
+runtime-auth strategy depends on interception assumptions that are not already captured by the core eBPF contracts.
+Policy and criteria are documented in
+`/Users/dimitriskyriazopoulos/Development/brok/packages/interceptor-ebpf/docs/verification-policy.md`.
+
 It verifies that:
 
 - bucket-root list requests such as `GET /?list-type=2&prefix=...`

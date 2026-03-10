@@ -41,7 +41,6 @@ const DEFAULT_METADATA_ALLOW_KEYS = [
   'actor_subject',
   'action_group',
   'correlation_id',
-  'credential_has_session_token',
   'credential_ref_present',
   'credential_region',
   'credential_type',
@@ -62,6 +61,7 @@ const DEFAULT_METADATA_ALLOW_KEYS = [
   'risk_tier',
   'tenant_id',
   'template_id',
+  'temporary_session_present',
   'upstream_status_code',
   'workload_id'
 ]

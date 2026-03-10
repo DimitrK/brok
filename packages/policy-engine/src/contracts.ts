@@ -1,5 +1,6 @@
 import {
   CanonicalRequestDescriptorSchema,
+  MatchedTemplateConfigSchema,
   PolicyRuleSchema,
   TemplateSchema
 } from '@broker-interceptor/schemas'
@@ -28,14 +29,19 @@ export const DecisionReasonCodeSchema = z.enum([
 ])
 export type DecisionReasonCode = z.infer<typeof DecisionReasonCodeSchema>
 
-export const PathGroupClassificationSchema = z
-  .object({
-    group_id: z.string(),
-    risk_tier: z.enum(['low', 'medium', 'high']),
-    approval_mode: z.enum(['none', 'required']),
-    matched_pattern: z.string()
-  })
-  .strict()
+// `group_id` remains as a compatibility alias while `path_group_id` comes from the shared schema DTO.
+export const PathGroupClassificationSchema = MatchedTemplateConfigSchema.extend({
+  group_id: MatchedTemplateConfigSchema.shape.path_group_id,
+  matched_pattern: z.string().min(1)
+}).superRefine((value, context) => {
+  if (value.group_id !== value.path_group_id) {
+    context.addIssue({
+      code: 'custom',
+      path: ['group_id'],
+      message: 'group_id must match path_group_id'
+    })
+  }
+})
 export type PathGroupClassification = z.infer<typeof PathGroupClassificationSchema>
 
 export const ClassificationReasonCodeSchema = z.enum(['no_matching_group', 'invalid_path_pattern'])

@@ -53,7 +53,7 @@ The durable abstraction is:
 
 - `aws_sigv4` as a secret-material variant.
 - `constraints.upstream_auth = { type: "aws_sigv4", service: "s3", region? }`.
-- the SigV4 signer in `apps/broker-api/src/upstreamAuth.ts`.
+- the SigV4 runtime-auth strategy in `apps/broker-api/src/runtimeAuth/strategies/awsSigV4Strategy.ts`.
 - S3 bucket-root list presets and authoring helpers in admin-web.
 - S3-specific verification and compatibility tests.
 
@@ -88,7 +88,9 @@ Use this map when planning the work.
 ### Data plane and routing
 
 - `apps/broker-api/src/repository.ts`
-- `apps/broker-api/src/upstreamAuth.ts`
+- `apps/broker-api/src/runtimeAuth/index.ts`
+- `apps/broker-api/src/runtimeAuth/errors.ts`
+- `apps/broker-api/src/runtimeAuth/strategies/*`
 - `apps/broker-api/src/http/routes/executeRoute.ts`
 - `packages/forwarder/src/forward.ts`
 - `packages/interceptor-node/src/integration-selection.ts`
@@ -99,7 +101,7 @@ Use this map when planning the work.
 
 - `apps/admin-web/src/features/integrations/integrationSecretMaterial.ts`
 - `apps/admin-web/src/features/integrations/IntegrationsPanel.tsx`
-- `apps/admin-web/src/features/templates/templateS3Auth.ts`
+- `apps/admin-web/src/features/templates/templateUpstreamAuth.ts`
 - `apps/admin-web/src/features/templates/TemplatesPanel.tsx`
 - `packages/audit/src/integration.ts`
 - `packages/audit/src/redaction.ts`
@@ -233,7 +235,7 @@ Do not force operators to paste JSON into a generic field.
 Follow the adapter pattern from:
 
 - `apps/admin-web/src/features/integrations/integrationSecretMaterial.ts`
-- `apps/admin-web/src/features/templates/templateS3Auth.ts`
+- `apps/admin-web/src/features/templates/templateUpstreamAuth.ts`
 
 Required work:
 
@@ -258,9 +260,13 @@ That method should:
 
 The current auth-generation seam is:
 
-- `apps/broker-api/src/upstreamAuth.ts`
+- `apps/broker-api/src/runtimeAuth/index.ts`
+- `apps/broker-api/src/runtimeAuth/strategyModule.ts`
+- `apps/broker-api/src/runtimeAuth/strategies/*`
 
-For future credential types, add logic there or, preferably, evolve it into a strategy registry keyed by runtime constraint type.
+For future credential types, keep `index.ts` as a pure discriminator-to-strategy registry and put all
+strategy-specific narrowing and header generation inside the individual strategy module exported through
+`defineRuntimeAuthStrategy(...)`.
 
 Every runtime-auth credential type must explicitly define:
 
@@ -272,8 +278,8 @@ Every runtime-auth credential type must explicitly define:
 
 Note:
 
-- the current implementation still serializes structured secrets to strings/JSON before auth generation and reparses them in `upstreamAuth.ts`
-- if more credential types are added, replace this with typed `SecretMaterial` strategy inputs
+- the current implementation now resolves typed secret material before runtime-auth translation
+- if more credential types are added, keep strategy inputs typed instead of re-introducing ad hoc secret serialization
 
 ### 7. Review forwarder and request-shape fidelity
 
@@ -370,6 +376,42 @@ Minimum required coverage:
 
 If the credential type is for a workload with unusual request shapes, add a focused compatibility verifier similar to the staged eBPF helper, but keep it workload-specific instead of polluting the core abstraction.
 
+### 12. Run the security review checklist before merge
+
+Treat this checklist as mandatory for every new credential type or runtime-auth strategy:
+
+- verify secret values never appear in read/list APIs, audit payloads, structured logs, test snapshots, or thrown error messages
+- verify secret storage remains envelope-opaque and discriminator-driven; do not introduce field-aware persistence without a separate design review
+- verify AAD or equivalent envelope binding still covers `tenant_id`, `integration_id`, and `secret_type`
+- verify malformed secrets, malformed constraints, unsupported strategy types, and incompatible secret/constraint pairs fail closed with stable reason codes
+- verify typed runtime auth never silently downgrades to bearer behavior when a template requires a specific auth strategy
+- verify exact-host allowlisting is preserved; any wildcard or dynamic-host behavior requires a threat-model update and explicit approval
+- verify forwarder, canonicalization, and matcher behavior preserve the exact request shape needed by the auth scheme
+- verify request-signing features preserve query ordering, duplicate-header behavior, `Host` derivation rules, and body-digest expectations
+- verify log redaction and audit summary coverage are extended for every newly introduced credential field family
+- verify docs and operator workflows show the supported typed path, not raw JSON workarounds or implicit provider heuristics
+
+### 13. Follow the cross-team sequencing explicitly
+
+Use this sequence when the work spans multiple code spaces:
+
+1. `@broker-interceptor/schemas`
+   Lock the new secret and runtime-auth discriminators first so every downstream package works from the same contracts.
+2. `@broker-interceptor/crypto` and `@broker-interceptor/db`
+   Extend envelope/storage handling only after the contracts are stable.
+3. `@broker-interceptor/broker-admin-api` and `@broker-interceptor/broker-api`
+   Wire control-plane validation and data-plane auth translation against the finalized shared contracts.
+4. `@broker-interceptor/forwarder`, `@broker-interceptor/policy-engine`, `@broker-interceptor/ssrf-guard`, `@broker-interceptor/canonicalizer`, and `@broker-interceptor/interceptor-node`
+   Review and implement request-shape, routing, policy, and SSRF implications before calling the runtime-auth feature complete.
+5. `@broker-interceptor/admin-web`
+   Build explicit authoring flows once the contracts and control-plane rules are fixed.
+6. `@broker-interceptor/audit` and `@broker-interceptor/logging`
+   Add safe summaries and redaction before closing the feature.
+7. `@broker-interceptor/interceptor-ebpf`
+   Add verifier guidance only when a workload-specific request-shape compatibility check is actually required.
+8. `broker-interceptor`
+   Finish by updating docs, examples, and acceptance guidance so future teams inherit a stable extension model.
+
 ## Recommended Reusable Abstractions for the Next Credential Types
 
 The staged changes make these abstractions explicit enough to standardize:
@@ -397,11 +439,17 @@ Each strategy should own:
 - fail-closed errors
 - optional precedence rules and docs text
 
-Today this logic is centralized in `apps/broker-api/src/upstreamAuth.ts`, but it is still S3-specific.
+The dispatcher in `apps/broker-api/src/runtimeAuth/index.ts` should stay structurally stable as new auth types are
+added. A new type should normally require only:
+
+- schema expansion
+- one new strategy module under `apps/broker-api/src/runtimeAuth/strategies/*`
+- one registry entry in `apps/broker-api/src/runtimeAuth/index.ts`
+- tests/docs for the new type
 
 ### 3. Constraint helper adapters
 
-Follow the `templateS3Auth.ts` pattern, but make it generic:
+Follow the `templateUpstreamAuth.ts` pattern, but make it generic:
 
 - parse existing constraints into draft state
 - build constraints from draft state
@@ -417,11 +465,11 @@ The current `packages/audit/src/integration.ts` `switch` is the right conceptual
 
 ## Current Rough Edges to Keep in Mind
 
-- `template-path-group-constraints.schema.json` is still effectively S3-specific, not a broad upstream-auth framework.
-- `integration-write.schema.json` and `secret-material.schema.json` both need updates for new secret types, so drift is possible.
+- `upstream-auth-strategy.schema.json` currently contains only the `aws_sigv4` / `s3` member, so the framework is typed but still narrow.
+- `integration-write.schema.json` now references `secret-material.schema.json`, but adding a new credential type still requires coordinated schema and OpenAPI generation updates.
 - Postgres enum migration is easy to miss even though envelope payloads are opaque.
 - `PATCH /v1/integrations/{id}` does not currently rotate secret material; secret updates are a separate capability.
-- `apps/broker-api/src/upstreamAuth.ts` reparses structured secrets from JSON strings instead of consuming typed secret objects directly.
+- the runtime-auth registry exists, but only one concrete strategy is implemented today, so more types still need explicit onboarding work across forwarder/policy/SSRF/canonicalization layers.
 - any auth type that signs headers or query params must re-check forwarder fidelity and interceptor request serialization.
 
 ## Definition of Done

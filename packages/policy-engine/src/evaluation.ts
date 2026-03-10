@@ -344,7 +344,7 @@ export const evaluatePolicyDecision = async (
     })
   }
 
-  const actionGroup = classification.path_group.group_id
+  const actionGroup = classification.path_group.path_group_id
   const riskTier = classification.path_group.risk_tier
   trace = appendTrace(trace, {
     stage: 'classification',

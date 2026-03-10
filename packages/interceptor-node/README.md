@@ -193,6 +193,7 @@ node app.js
   - `match.path_groups`
   - optional `match.schemes` and `match.ports`
 - Override matching uses the same host/path semantics as manifest matching.
+- Routing decisions ignore provider strings, secret-material types, and runtime-auth strategy metadata. Client-side selection uses only manifest match scope plus an explicit override.
 - Hosts must be exact. Wildcards are rejected.
 - Path groups support exact paths, prefix patterns like `/x/*`, and anchored regex patterns like `^/x/.*$`.
 - If more than one override matches the same request, the request is blocked.
